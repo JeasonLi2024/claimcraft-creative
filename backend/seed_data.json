@@ -1,0 +1,403 @@
+[
+  {
+    "model": "api.case",
+    "pk": 1,
+    "fields": {
+      "title": "网购退款纠纷——商家超时未发货且拒绝退款",
+      "description": "用户于 2025-06-10 在某电商平台下单购买商品，支付 699 元，商家承诺 48 小时内发货。截至 2025-06-13 物流仍未揽收，用户申请退款被商家以'已发货'为由拒绝，遂进入投诉维权流程。",
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 1,
+    "fields": {
+      "case": 1,
+      "code": "E1",
+      "evidence_type": "订单页",
+      "description": "订单页截图，显示下单时间 2025-06-10 09:20 与金额 699 元",
+      "source_time": "2025-06-10T09:20:00",
+      "has_sensitive_info": true,
+      "order": 1,
+      "image": "",
+      "extracted_text": "订单号：202506101234\n下单时间：2025-06-10 09:20\n金额：699 元\n联系电话：13812345678\n收货地址：北京市朝阳区XX路1号",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 2,
+    "fields": {
+      "case": 1,
+      "code": "E2",
+      "evidence_type": "聊天记录",
+      "description": "商家承诺 48 小时内发货",
+      "source_time": "2025-06-10T09:32:00",
+      "has_sensitive_info": false,
+      "order": 2,
+      "image": "",
+      "extracted_text": "商家承诺：48 小时内发货",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 3,
+    "fields": {
+      "case": 1,
+      "code": "E3",
+      "evidence_type": "付款凭证",
+      "description": "支付宝付款 699 元截图",
+      "source_time": "2025-06-10T09:25:00",
+      "has_sensitive_info": true,
+      "order": 3,
+      "image": "",
+      "extracted_text": "付款金额：699 元",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 4,
+    "fields": {
+      "case": 1,
+      "code": "E4",
+      "evidence_type": "物流页",
+      "description": "物流页面显示超过承诺时间仍未揽收",
+      "source_time": "2025-06-13T11:05:00",
+      "has_sensitive_info": false,
+      "order": 4,
+      "image": "",
+      "extracted_text": "查询时间：2025-06-13 11:05\n物流状态：未揽收",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 5,
+    "fields": {
+      "case": 1,
+      "code": "E5",
+      "evidence_type": "聊天记录",
+      "description": "用户第一次申请退款，商家未回复",
+      "source_time": "2025-06-13T11:10:00",
+      "has_sensitive_info": false,
+      "order": 5,
+      "image": "",
+      "extracted_text": "申请退款时间：2025-06-13 11:10",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 6,
+    "fields": {
+      "case": 1,
+      "code": "E6",
+      "evidence_type": "客服回复",
+      "description": "商家拒绝退款，理由为'已发货'",
+      "source_time": "2025-06-13T14:20:00",
+      "has_sensitive_info": false,
+      "order": 6,
+      "image": "",
+      "extracted_text": "拒绝退款理由：已发货",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 7,
+    "fields": {
+      "case": 1,
+      "code": "E7",
+      "evidence_type": "物流页",
+      "description": "物流更新显示包裹在 06-13 16:00 才被揽收",
+      "source_time": "2025-06-13T16:00:00",
+      "has_sensitive_info": false,
+      "order": 7,
+      "image": "",
+      "extracted_text": "揽收时间：2025-06-13 16:00",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.evidence",
+    "pk": 8,
+    "fields": {
+      "case": 1,
+      "code": "E8",
+      "evidence_type": "身份信息",
+      "description": "用户收货地址与联系方式截图",
+      "source_time": "2025-06-10T09:20:00",
+      "has_sensitive_info": true,
+      "order": 8,
+      "image": "",
+      "extracted_text": "联系电话：13812345678\n收货地址：北京市朝阳区XX路1号",
+      "ocr_status": "done"
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 1,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-10T09:20:00",
+      "event": "用户完成下单并支付 699 元",
+      "related_evidence_codes": "E1,E3",
+      "order": 1,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 2,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-10T09:32:00",
+      "event": "商家承诺 48 小时内发货",
+      "related_evidence_codes": "E2",
+      "order": 2,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 3,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-13T11:05:00",
+      "event": "物流仍未揽收，超过承诺发货时间",
+      "related_evidence_codes": "E4",
+      "order": 3,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 4,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-13T11:10:00",
+      "event": "用户第一次申请退款",
+      "related_evidence_codes": "E5",
+      "order": 4,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 5,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-13T14:20:00",
+      "event": "商家拒绝退款，纠纷进入投诉阶段",
+      "related_evidence_codes": "E6",
+      "order": 5,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.timelinenode",
+    "pk": 6,
+    "fields": {
+      "case": 1,
+      "datetime": "2025-06-13T16:00:00",
+      "event": "物流才显示揽收记录",
+      "related_evidence_codes": "E7",
+      "order": 6,
+      "auto_generated": false
+    }
+  },
+  {
+    "model": "api.complainttemplate",
+    "pk": 1,
+    "fields": {
+      "case": 1,
+      "template_type": "platform",
+      "title": "退款投诉——商家超时未发货且拒绝退款",
+      "content": "您好，本人于 2025-06-10 09:20 在贵平台下单并支付 699 元（见 E1、E3），下单后商家客服明确承诺 48 小时内发货（见 E2）。然而截至 2025-06-13 11:05，物流页面仍显示未揽收，已超过承诺发货时间（见 E4）。本人于 2025-06-13 11:10 申请退款（见 E5），商家却以\"已发货\"为由拒绝退款（见 E6）。但物流记录显示，包裹直到 2025-06-13 16:00 才被揽收（见 E7），明显是在用户申请退款后才发货，属于恶意规避退款义务。现要求平台介入，责令商家全额退款 699 元，并对其违约行为进行处理。请尽快回复处理结果，谢谢。"
+    }
+  },
+  {
+    "model": "api.complainttemplate",
+    "pk": 2,
+    "fields": {
+      "case": 1,
+      "template_type": "regulatory",
+      "title": "关于商家违约行为的投诉书",
+      "content": "投诉人：【姓名】，联系电话：【手机号】，联系地址：【地址】\n\n被投诉方：【商家名称】，经营平台：【电商平台名称】\n\n一、投诉请求\n1. 责令被投诉方退还本人购物款 699 元；\n2. 依法查处被投诉方拖延发货、拒绝退款的违约及欺诈行为；\n3. 督促平台履行监管责任，维护消费者合法权益。\n\n二、事实与理由\n本人于 2025-06-10 09:20 在被投诉方店铺下单并支付 699 元（见 E1、E3），下单后被投诉方明确承诺 48 小时内发货（见 E2）。然而截至 2025-06-13 11:05，物流仍显示未揽收，已超过承诺发货时间（见 E4）。本人于 2025-06-13 11:10 申请退款（见 E5），被投诉方以\"已发货\"为由拒绝退款（见 E6）。但物流记录显示，包裹直至 2025-06-13 16:00 才被揽收（见 E7），系在本人申请退款后才发货，构成恶意规避退款义务。\n\n三、法律依据\n依据《中华人民共和国消费者权益保护法》第五十三条，经营者以预收款方式提供商品或者服务的，应当按照约定提供；未按照约定提供的，应当按照消费者的要求履行约定或者退回预付款。依据《中华人民共和国电子商务法》第四十九条，电子商务经营者应当按照承诺或者与消费者约定的方式、时限向消费者交付商品或者服务。被投诉方行为已构成违约，恳请贵机关依法查处。\n\n此致\n【监管部门名称】\n\n投诉人（签名）：\n日期：    年    月    日"
+    }
+  },
+  {
+    "model": "api.complainttemplate",
+    "pk": 3,
+    "fields": {
+      "case": 1,
+      "template_type": "arbitration",
+      "title": "仲裁申请准备材料",
+      "content": "一、案件概述\n本案系网购合同纠纷，核心争议为商家超时未发货且拒绝退款。证据链完整、时间线清晰，诉求边界明确，具备仲裁申请条件。\n\n二、证据链完整性梳理\n1. 合同成立与付款：E1（订单页截图，显示下单时间 2025-06-10 09:20 与金额 699 元）、E3（支付宝付款 699 元截图）共同证明买卖合同成立且本人已履行付款义务。\n2. 商家承诺：E2（聊天记录）证明商家承诺 48 小时内发货，构成合同组成部分。\n3. 违约事实：E4（物流页面，2025-06-13 11:05 仍未揽收）证明商家超过承诺时间未发货。\n4. 退款申请与拒绝：E5（聊天记录，2025-06-13 11:10 申请退款）、E6（客服回复，商家以\"已发货\"为由拒绝退款）证明本人已行使退款权且被无理拒绝。\n5. 恶意发货：E7（物流页面，2025-06-13 16:00 才揽收）证明商家系在退款申请后才发货，存在恶意规避退款义务之嫌。\n6. 身份与收货信息：E8（用户收货地址与联系方式截图）证明本人身份及收货信息。\n\n三、时间线梳理\n- 2025-06-10 09:20 下单并付款（E1、E3）\n- 2025-06-10 09:32 商家承诺 48 小时发货（E2）\n- 2025-06-13 11:05 物流仍未揽收，超过承诺时间（E4）\n- 2025-06-13 11:10 本人申请退款（E5）\n- 2025-06-13 14:20 商家拒绝退款（E6）\n- 2025-06-13 16:00 物流才显示揽收（E7）\n\n四、诉求边界\n1. 请求裁决被申请人退还货款 699 元；\n2. 请求裁决被申请人承担本案仲裁费用；\n3. 视情况主张因违约造成的合理损失赔偿。\n\n五、备注\n本材料用于仲裁申请准备，正式提交前需结合仲裁机构格式要求及证据原件核对。敏感信息（E1、E3、E8）在对外提交版本中应做打码处理。"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 1,
+    "fields": {
+      "evidence": 1,
+      "field_name": "订单号",
+      "field_value": "202506101234",
+      "confidence": 0.9,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 2,
+    "fields": {
+      "evidence": 1,
+      "field_name": "金额",
+      "field_value": "699",
+      "confidence": 0.85,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 3,
+    "fields": {
+      "evidence": 1,
+      "field_name": "手机号",
+      "field_value": "13812345678",
+      "confidence": 0.9,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 4,
+    "fields": {
+      "evidence": 1,
+      "field_name": "地址",
+      "field_value": "北京市朝阳区XX路1号",
+      "confidence": 0.7,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 5,
+    "fields": {
+      "evidence": 1,
+      "field_name": "时间",
+      "field_value": "2025-06-10 09:20",
+      "confidence": 0.8,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 6,
+    "fields": {
+      "evidence": 2,
+      "field_name": "承诺话术",
+      "field_value": "48 小时内发货",
+      "confidence": 0.75,
+      "created_at": "2025-06-10T09:35:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 7,
+    "fields": {
+      "evidence": 3,
+      "field_name": "金额",
+      "field_value": "699",
+      "confidence": 0.85,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 8,
+    "fields": {
+      "evidence": 4,
+      "field_name": "时间",
+      "field_value": "2025-06-13 11:05",
+      "confidence": 0.8,
+      "created_at": "2025-06-13T11:10:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 9,
+    "fields": {
+      "evidence": 5,
+      "field_name": "时间",
+      "field_value": "2025-06-13 11:10",
+      "confidence": 0.8,
+      "created_at": "2025-06-13T11:15:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 10,
+    "fields": {
+      "evidence": 7,
+      "field_name": "时间",
+      "field_value": "2025-06-13 16:00",
+      "confidence": 0.8,
+      "created_at": "2025-06-13T16:05:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 11,
+    "fields": {
+      "evidence": 8,
+      "field_name": "手机号",
+      "field_value": "13812345678",
+      "confidence": 0.9,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.extractedfield",
+    "pk": 12,
+    "fields": {
+      "evidence": 8,
+      "field_name": "地址",
+      "field_value": "北京市朝阳区XX路1号",
+      "confidence": 0.7,
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.complainttemplaterule",
+    "pk": 1,
+    "fields": {
+      "case": null,
+      "template_type": "platform",
+      "rule_title": "{{ case.title }}——投诉申诉",
+      "rule_content": "尊敬的平台客服：\n\n我于 {{ timeline_nodes[0].datetime.strftime('%Y-%m-%d') }} 在贵平台发生交易纠纷，现提交投诉如下。\n\n一、事实经过\n{% for node in timeline_nodes %}{{ node.datetime.strftime('%Y-%m-%d %H:%M') }} {{ node.event }}（见 {{ node.related_evidence_codes }}）\n{% endfor %}\n二、关键信息\n{% for ef in extracted_fields %}- {{ ef.field_name }}：{{ ef.field_value }}（见 {{ ef.evidence_code }}）\n{% endfor %}\n三、诉求\n1. 全额退款 699 元\n2. 依平台规则处理商家违约行为\n\n请尽快核实处理，谢谢。\n\n投诉人：{{ case.title }}\n"
+    }
+  },
+  {
+    "model": "api.complainttemplaterule",
+    "pk": 2,
+    "fields": {
+      "case": null,
+      "template_type": "regulatory",
+      "rule_title": "关于{{ case.title }}的投诉书",
+      "rule_content": "尊敬的监管部门：\n\n投诉人：{{ case.title }}\n被投诉方：某电商平台商家\n\n一、投诉请求\n1. 责令被投诉方退还货款；\n2. 依法查处被投诉方拖延发货、拒绝退款的违约及欺诈行为；\n3. 督促平台履行监管责任，维护消费者合法权益。\n\n二、事实与理由\n本人于 {{ timeline_nodes[0].datetime.strftime('%Y-%m-%d') }} 在被投诉方店铺下单并支付货款，下单后被投诉方明确承诺按时发货。然而截至承诺期限届满，物流仍显示未揽收，已构成违约。本人申请退款后被投诉方以\"已发货\"为由拒绝，但物流记录显示包裹系在退款申请后才被揽收，构成恶意规避退款义务。\n\n三、事实经过（证据链）\n{% for node in timeline_nodes %}{{ node.datetime.strftime('%Y-%m-%d %H:%M') }} {{ node.event }}（证据：{{ node.related_evidence_codes }}）\n{% endfor %}\n四、关键证据信息\n{% for ef in extracted_fields %}- {{ ef.field_name }}：{{ ef.field_value }}（见 {{ ef.evidence_code }}）\n{% endfor %}\n五、法律依据\n依据《中华人民共和国消费者权益保护法》第五十三条及《中华人民共和国电子商务法》第四十九条，被投诉方已构成违约，恳请贵机关依法查处。\n\n此致\n监管部门\n\n投诉人（签名）：\n日期：\n"
+    }
+  },
+  {
+    "model": "api.complainttemplaterule",
+    "pk": 3,
+    "fields": {
+      "case": null,
+      "template_type": "arbitration",
+      "rule_title": "仲裁申请准备材料——{{ case.title }}",
+      "rule_content": "一、案件概述\n本案系网购合同纠纷，核心争议为商家超时未发货且拒绝退款。证据链完整、时间线清晰，诉求边界明确，具备仲裁申请条件。\n\n二、证据链梳理\n{% for ev in evidences %}- {{ ev.code }}（{{ ev.evidence_type }}）：{{ ev.description }}\n{% endfor %}\n三、时间线\n{% for node in timeline_nodes %}- {{ node.datetime.strftime('%Y-%m-%d %H:%M') }} {{ node.event }}（见 {{ node.related_evidence_codes }}）\n{% endfor %}\n四、关键信息\n{% for ef in extracted_fields %}- {{ ef.field_name }}：{{ ef.field_value }}（见 {{ ef.evidence_code }}）\n{% endfor %}\n五、诉求\n1. 请求裁决被申请人退还货款；\n2. 请求裁决被申请人承担本案仲裁费用；\n3. 视情况主张因违约造成的合理损失赔偿。\n\n备注：本材料用于仲裁申请准备，敏感信息在对外提交版本中应做打码处理。\n"
+    }
+  }
+]

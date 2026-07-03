@@ -1,0 +1,7 @@
+Django>=4.2
+djangorestframework>=3.14
+django-cors-headers>=4.0
+PyMySQL>=1.1
+pytesseract>=0.3.10
+Pillow>=10.0
+Jinja2>=3.1
