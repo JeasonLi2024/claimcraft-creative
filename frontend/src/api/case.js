@@ -69,3 +69,52 @@ export function regenerateComplaint(caseId, templateType) {
     template_type: templateType,
   })
 }
+
+// === T1: 案件列表 / 状态机 / 打码图片 / 导出 ===
+// 案件列表（支持 search / dispute_type / status 等查询参数）
+export function fetchCases(params = {}) {
+  return api.get('/cases/', { params })
+}
+
+// 新建案件
+export function createCase(data) {
+  return api.post('/cases/', data)
+}
+
+// 更新案件（管理接口）
+export function updateCase(id, data) {
+  return api.patch(`/cases/${id}/manage/`, data)
+}
+
+// 删除案件（管理接口）
+export function deleteCase(id) {
+  return api.delete(`/cases/${id}/manage/`)
+}
+
+// 状态流转
+export function transitionCaseStatus(id, data) {
+  return api.post(`/cases/${id}/status/transition/`, data)
+}
+
+// 状态变更日志
+export function fetchStatusLogs(id) {
+  return api.get(`/cases/${id}/status-logs/`)
+}
+
+// 一键打码所有图片
+export function maskImages(id) {
+  return api.post(`/cases/${id}/mask-images/`)
+}
+
+// 证据包导出（ZIP，二进制流）
+export function exportPackage(id) {
+  return api.get(`/cases/${id}/export/package/`, { responseType: 'blob' })
+}
+
+// PDF 文档导出（二进制流，template: platform/regulatory/arbitration）
+export function exportPDF(id, template) {
+  return api.get(`/cases/${id}/export/pdf/`, {
+    params: { template },
+    responseType: 'blob',
+  })
+}

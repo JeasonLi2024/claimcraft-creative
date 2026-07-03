@@ -12,20 +12,38 @@ ClaimCraft 维权材料工坊数据模型。
 """
 
 
+from django.db import models
+from django_fsm import FSMField, transition
+
+
 def evidence_image_path(instance, filename):
     """证据图片上传路径：evidences/<case_id>/<filename>。"""
     return f'evidences/{instance.case_id}/{filename}'
 
 
-from django.db import models
+def masked_image_path(instance, filename):
+    """打码后图片上传路径：evidences/<case_id>/masked/<filename>。"""
+    return f'evidences/{instance.case_id}/masked/{filename}'
 
 
 class Case(models.Model):
     """维权案件。"""
 
+    CASE_TYPES = [
+        ('shopping', '网购纠纷'),
+        ('service', '服务违约'),
+        ('secondhand', '二手交易'),
+        ('other', '其他'),
+    ]
+
     title = models.CharField('案件标题', max_length=200)
     description = models.TextField('案件描述', blank=True, default='')
+    case_type = models.CharField(
+        '纠纷类型', max_length=20, choices=CASE_TYPES, default='shopping'
+    )
+    status = FSMField('案件状态', default='draft', protected=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '案件'
@@ -34,6 +52,26 @@ class Case(models.Model):
 
     def __str__(self):
         return self.title
+
+    @transition(field=status, source='draft', target='processing')
+    def to_processing(self, by=None):
+        pass
+
+    @transition(field=status, source='draft', target='cancelled')
+    def cancel_from_draft(self, by=None):
+        pass
+
+    @transition(field=status, source='processing', target='submitted')
+    def to_submitted(self, by=None):
+        pass
+
+    @transition(field=status, source='processing', target='cancelled')
+    def cancel_from_processing(self, by=None):
+        pass
+
+    @transition(field=status, source='submitted', target='closed')
+    def to_closed(self, by=None):
+        pass
 
 
 class Evidence(models.Model):
@@ -62,6 +100,14 @@ class Evidence(models.Model):
     ocr_status = models.CharField(
         'OCR 状态', max_length=20, default='pending',
         help_text='pending/done/failed'
+    )
+    masked_image = models.ImageField(
+        '打码后图片', upload_to=masked_image_path,
+        blank=True, null=True
+    )
+    mask_status = models.CharField(
+        '打码状态', max_length=20, default='none',
+        help_text='none/pending/done'
     )
 
     class Meta:
@@ -188,3 +234,26 @@ class ComplaintTemplateRule(models.Model):
     def __str__(self):
         case_label = f'Case#{self.case_id}' if self.case_id else '全局'
         return f'[{case_label}][{self.get_template_type_display()}] 规则'
+
+
+class CaseStatusLog(models.Model):
+    """案件状态变更日志。"""
+
+    case = models.ForeignKey(
+        Case,
+        related_name='status_logs',
+        on_delete=models.CASCADE,
+        verbose_name='所属案件'
+    )
+    from_status = models.CharField('原状态', max_length=20, blank=True, default='')
+    to_status = models.CharField('目标状态', max_length=20)
+    remark = models.TextField('备注', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '案件状态日志'
+        verbose_name_plural = '案件状态日志'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.case_id} {self.from_status}->{self.to_status}'

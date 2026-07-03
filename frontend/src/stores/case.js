@@ -14,6 +14,15 @@ import {
   updateExtractedField as apiUpdateExtractedField,
   rebuildTimeline as apiRebuildTimeline,
   regenerateComplaint as apiRegenerateComplaint,
+  fetchCases as apiFetchCases,
+  createCase as apiCreateCase,
+  updateCase as apiUpdateCase,
+  deleteCase as apiDeleteCase,
+  transitionCaseStatus as apiTransitionCaseStatus,
+  fetchStatusLogs as apiFetchStatusLogs,
+  maskImages as apiMaskImages,
+  exportPackage as apiExportPackage,
+  exportPDF as apiExportPDF,
 } from '../api/case'
 
 // ClaimCraft 案件状态管理
@@ -30,6 +39,9 @@ export const useCaseStore = defineStore('case', {
     error: null,
     // 证据 id -> 抽取字段列表
     extractedFieldsMap: {},
+    // T1: 案件列表 + 状态变更日志
+    cases: [],
+    statusLogs: [],
   }),
   actions: {
     async fetchCaseDetail(id) {
@@ -226,6 +238,135 @@ export const useCaseStore = defineStore('case', {
         return updated
       } catch (e) {
         this.error = e.response?.data?.detail || e.message || '更新抽取字段失败'
+        throw e
+      }
+    },
+    // === T1: 案件列表 / 状态机 / 图片打码 / 包导出 ===
+    async fetchCases(params) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await apiFetchCases(params)
+        // 兼容分页结构 { results: [...] } 或直接数组
+        const list = Array.isArray(data) ? data : data.results || []
+        this.cases = list
+        return list
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '获取案件列表失败'
+        throw e
+      } finally {
+        this.loading = false
+      }
+    },
+    async createCase(data) {
+      this.error = null
+      try {
+        const { data: created } = await apiCreateCase(data)
+        this.cases = [created, ...this.cases]
+        return created
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '创建案件失败'
+        throw e
+      }
+    },
+    async updateCase(id, data) {
+      this.error = null
+      try {
+        const { data: updated } = await apiUpdateCase(id, data)
+        const idx = this.cases.findIndex((c) => c.id === id)
+        if (idx !== -1) {
+          this.cases[idx] = { ...this.cases[idx], ...updated }
+        }
+        if (this.currentCase && this.currentCase.id === id) {
+          this.currentCase = { ...this.currentCase, ...updated }
+        }
+        return updated
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '更新案件失败'
+        throw e
+      }
+    },
+    async deleteCase(id) {
+      this.error = null
+      try {
+        await apiDeleteCase(id)
+        this.cases = this.cases.filter((c) => c.id !== id)
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '删除案件失败'
+        throw e
+      }
+    },
+    async transitionCaseStatus(id, data) {
+      this.error = null
+      try {
+        const { data: updated } = await apiTransitionCaseStatus(id, data)
+        // 更新列表中对应项
+        const idx = this.cases.findIndex((c) => c.id === id)
+        if (idx !== -1) {
+          this.cases[idx] = { ...this.cases[idx], ...updated }
+        }
+        // 更新当前案件状态
+        if (this.currentCase && this.currentCase.id === id) {
+          this.currentCase = { ...this.currentCase, ...updated }
+        }
+        return updated
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '状态流转失败'
+        throw e
+      }
+    },
+    async fetchStatusLogs(id) {
+      this.error = null
+      try {
+        const { data } = await apiFetchStatusLogs(id)
+        const list = Array.isArray(data) ? data : data.results || []
+        this.statusLogs = list
+        return list
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '获取状态历史失败'
+        throw e
+      }
+    },
+    async maskImages(caseId) {
+      this.error = null
+      try {
+        const { data } = await apiMaskImages(caseId)
+        // 更新 evidences 中图片证据的 masked_image / mask_status
+        // 兼容后端返回 { results: [...] } 或数组
+        const items = Array.isArray(data) ? data : data.results || data.items || []
+        items.forEach((item) => {
+          const idx = this.evidences.findIndex((ev) => ev.id === item.id)
+          if (idx !== -1) {
+            this.evidences[idx] = {
+              ...this.evidences[idx],
+              masked_image: item.masked_image,
+              mask_status: item.masked_status || item.mask_status || 'done',
+            }
+          }
+        })
+        return items
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '图片打码失败'
+        throw e
+      }
+    },
+    async exportPackage(caseId) {
+      this.error = null
+      try {
+        const res = await apiExportPackage(caseId)
+        return res.data
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '导出证据包失败'
+        throw e
+      }
+    },
+    async exportPDF(caseId, template) {
+      this.error = null
+      try {
+        const res = await apiExportPDF(caseId, template)
+        return res.data
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '导出 PDF 失败'
         throw e
       }
     },

@@ -4,13 +4,14 @@ from rest_framework import serializers
 
 from api.models import (
     Case, Evidence, ExtractedField, TimelineNode,
-    ComplaintTemplate, ComplaintTemplateRule,
+    ComplaintTemplate, ComplaintTemplateRule, CaseStatusLog,
 )
 
 
 class CaseSerializer(serializers.ModelSerializer):
     """案件序列化器，含统计字段。"""
 
+    status = serializers.CharField(read_only=True)
     evidence_count = serializers.SerializerMethodField()
     timeline_count = serializers.SerializerMethodField()
     template_count = serializers.SerializerMethodField()
@@ -20,10 +21,12 @@ class CaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Case
         fields = [
-            'id', 'title', 'description', 'created_at',
+            'id', 'title', 'description', 'case_type', 'status',
+            'created_at', 'updated_at',
             'evidence_count', 'timeline_count', 'template_count',
             'image_evidence_count', 'extracted_field_count',
         ]
+        read_only_fields = ['status', 'created_at', 'updated_at']
 
     def get_evidence_count(self, obj):
         return obj.evidences.count()
@@ -44,16 +47,47 @@ class CaseSerializer(serializers.ModelSerializer):
         return count
 
 
+class CaseListSerializer(serializers.ModelSerializer):
+    """案件列表轻量序列化器。"""
+
+    evidence_count = serializers.SerializerMethodField()
+    image_evidence_count = serializers.SerializerMethodField()
+    extracted_field_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Case
+        fields = [
+            'id', 'title', 'description', 'case_type', 'status',
+            'created_at', 'updated_at',
+            'evidence_count', 'image_evidence_count',
+            'extracted_field_count',
+        ]
+        read_only_fields = ['status', 'created_at', 'updated_at']
+
+    def get_evidence_count(self, obj):
+        return obj.evidences.count()
+
+    def get_image_evidence_count(self, obj):
+        return obj.evidences.exclude(image='').count()
+
+    def get_extracted_field_count(self, obj):
+        count = 0
+        for ev in obj.evidences.all():
+            count += ev.extracted_fields.count()
+        return count
+
+
 class EvidenceSerializer(serializers.ModelSerializer):
     """证据序列化器。
 
     case 设为只读，由视图通过 save(case=case) 注入，
     避免新增时因 case 必填校验失败。
-    image 以完整 URL 返回。
+    image / masked_image 以完整 URL 返回。
     """
 
     case = serializers.PrimaryKeyRelatedField(read_only=True)
     image = serializers.SerializerMethodField()
+    masked_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Evidence
@@ -61,13 +95,24 @@ class EvidenceSerializer(serializers.ModelSerializer):
             'id', 'case', 'code', 'evidence_type', 'description',
             'source_time', 'has_sensitive_info', 'order',
             'image', 'extracted_text', 'ocr_status',
+            'masked_image', 'mask_status',
         ]
+        read_only_fields = ['mask_status']
 
     def get_image(self, obj):
         if not obj.image:
             return ''
         request = self.context.get('request')
         url = obj.image.url
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_masked_image(self, obj):
+        if not obj.masked_image:
+            return ''
+        request = self.context.get('request')
+        url = obj.masked_image.url
         if request is not None:
             return request.build_absolute_uri(url)
         return url
@@ -116,4 +161,15 @@ class ComplaintTemplateRuleSerializer(serializers.ModelSerializer):
         model = ComplaintTemplateRule
         fields = [
             'id', 'case', 'template_type', 'rule_title', 'rule_content',
+        ]
+
+
+class CaseStatusLogSerializer(serializers.ModelSerializer):
+    """案件状态日志序列化器。"""
+
+    class Meta:
+        model = CaseStatusLog
+        fields = [
+            'id', 'case', 'from_status', 'to_status',
+            'remark', 'created_at',
         ]

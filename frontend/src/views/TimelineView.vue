@@ -1,8 +1,11 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useCaseStore } from '../stores/case'
 
 const store = useCaseStore()
+const route = useRoute()
+const caseId = computed(() => route.params.caseId)
 
 // 本地编辑缓存：节点 id -> 当前输入框值
 const editing = ref({})
@@ -11,7 +14,9 @@ const editing = ref({})
 const rebuilding = ref(false)
 
 onMounted(() => {
-  store.fetchTimeline(1).catch(() => {})
+  if (caseId.value) {
+    store.fetchTimeline(caseId.value).catch(() => {})
+  }
 })
 
 // 格式化时间
@@ -57,7 +62,7 @@ async function handleRebuild() {
   if (rebuilding.value) return
   rebuilding.value = true
   try {
-    await store.rebuildTimeline(1)
+    await store.rebuildTimeline(caseId.value)
   } catch (e) {
     // 错误已写入 store.error
   } finally {

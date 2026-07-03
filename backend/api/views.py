@@ -1,14 +1,23 @@
 # -*- coding: utf-8 -*-
 """DRF 视图。"""
-from django.db.models import Max
+from django.db.models import Max, Q
+from django.http import HttpResponse
 from django.utils import timezone
+from django_fsm import can_proceed
 from rest_framework import status
+from rest_framework.generics import (
+    ListCreateAPIView,
+    RetrieveUpdateDestroyAPIView,
+    ListAPIView,
+)
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.models import Case, Evidence, ExtractedField, TimelineNode
+from api.models import Case, Evidence, ExtractedField, TimelineNode, CaseStatusLog
 from api.serializers import (
     CaseSerializer,
+    CaseListSerializer,
+    CaseStatusLogSerializer,
     EvidenceSerializer,
     ExtractedFieldSerializer,
     TimelineNodeSerializer,
@@ -21,6 +30,8 @@ from api.services import (
     export_service,
     ocr_service,
     extraction_service,
+    image_mask_service,
+    pdf_service,
 )
 
 # 允许的图片扩展名与最大文件大小（10MB）
@@ -355,3 +366,189 @@ class ExportView(APIView):
             'filename': filename,
             'content': content,
         })
+
+
+# ===== T1 新增视图 =====
+
+# to_status -> 转换方法名（cancelled 除外，需按当前状态二选一）
+_STATUS_TRANSITION_METHODS = {
+    'processing': 'to_processing',
+    'submitted': 'to_submitted',
+    'closed': 'to_closed',
+}
+
+
+class CaseListCreateView(ListCreateAPIView):
+    """案件列表与创建：GET/POST /cases/。
+
+    GET 支持 ?search=&status=&case_type=，返回 CaseListSerializer 列表。
+    POST 创建案件，status 由模型默认值决定为 draft。
+    """
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return CaseSerializer
+        return CaseListSerializer
+
+    def get_queryset(self):
+        qs = Case.objects.all()
+        params = self.request.query_params
+        search = params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search) | Q(description__icontains=search)
+            )
+        status_filter = params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        case_type = params.get('case_type')
+        if case_type:
+            qs = qs.filter(case_type=case_type)
+        return qs
+
+
+class CaseUpdateDeleteView(RetrieveUpdateDestroyAPIView):
+    """案件更新与删除：GET/PATCH/PUT/DELETE /cases/<id>/manage/。
+
+    PATCH 仅更新 title/description/case_type（status 为只读，
+    通过状态转换接口变更）。
+    """
+
+    queryset = Case.objects.all()
+    serializer_class = CaseSerializer
+
+
+class CaseStatusTransitionView(APIView):
+    """案件状态转换：POST /cases/<id>/status/transition/。
+
+    接收 {to_status, remark}，根据 FSM 校验并执行转换，
+    成功后写入 CaseStatusLog。
+    """
+
+    def post(self, request, pk):
+        try:
+            case = Case.objects.get(pk=pk)
+        except Case.DoesNotExist:
+            return Response(
+                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        to_status = request.data.get('to_status')
+        remark = request.data.get('remark', '')
+
+        if not to_status:
+            return Response(
+                {'detail': '缺少 to_status'}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # cancelled 需按当前状态选择对应取消方法
+        if to_status == 'cancelled':
+            if case.status == 'draft':
+                method_name = 'cancel_from_draft'
+            elif case.status == 'processing':
+                method_name = 'cancel_from_processing'
+            else:
+                return Response(
+                    {'detail': f'当前状态 {case.status} 不可取消'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            method_name = _STATUS_TRANSITION_METHODS.get(to_status)
+            if not method_name:
+                return Response(
+                    {'detail': f'非法的目标状态：{to_status}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        method = getattr(case, method_name)
+        if not can_proceed(method):
+            return Response(
+                {'detail': f'当前状态 {case.status} 不允许转换至 {to_status}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_status = case.status
+        method()
+        case.save()
+        CaseStatusLog.objects.create(
+            case=case,
+            from_status=old_status,
+            to_status=to_status,
+            remark=remark,
+        )
+        return Response({
+            'id': case.id,
+            'from_status': old_status,
+            'to_status': to_status,
+            'status': case.status,
+        })
+
+
+class CaseStatusLogView(ListAPIView):
+    """案件状态日志：GET /cases/<id>/status-logs/。"""
+
+    serializer_class = CaseStatusLogSerializer
+
+    def get_queryset(self):
+        return CaseStatusLog.objects.filter(case_id=self.kwargs['pk'])
+
+
+class MaskImageView(APIView):
+    """证据图片打码：POST /cases/<id>/mask-images/。
+
+    对该案件所有图片证据执行打码，返回打码后证据列表。
+    """
+
+    def post(self, request, pk):
+        try:
+            case = Case.objects.get(pk=pk)
+        except Case.DoesNotExist:
+            return Response(
+                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
+            )
+        results = image_mask_service.mask_case_images(case)
+        serializer = EvidenceSerializer(
+            results, many=True, context={'request': request}
+        )
+        return Response({
+            'case_id': case.id,
+            'count': len(results),
+            'items': serializer.data,
+        })
+
+
+class ExportPackageView(APIView):
+    """证据包导出：GET /cases/<id>/export/package/ 返回 ZIP 文件流。"""
+
+    def get(self, request, pk):
+        try:
+            case = Case.objects.get(pk=pk)
+        except Case.DoesNotExist:
+            return Response(
+                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
+            )
+        buf = export_service.export_evidence_package(case)
+        resp = HttpResponse(buf.read(), content_type='application/zip')
+        resp['Content-Disposition'] = (
+            f'attachment; filename="case_{case.id}_package.zip"'
+        )
+        return resp
+
+
+class ExportPDFView(APIView):
+    """PDF 投诉材料导出：GET /cases/<id>/export/pdf/?template=<type>。"""
+
+    def get(self, request, pk):
+        try:
+            case = Case.objects.get(pk=pk)
+        except Case.DoesNotExist:
+            return Response(
+                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
+            )
+        template_type = request.query_params.get('template', 'platform')
+        buf = pdf_service.generate_complaint_pdf(case, template_type=template_type)
+        resp = HttpResponse(buf.read(), content_type='application/pdf')
+        resp['Content-Disposition'] = (
+            f'attachment; filename="case_{case.id}_{template_type}.pdf"'
+        )
+        return resp

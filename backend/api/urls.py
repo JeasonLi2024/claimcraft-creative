@@ -4,6 +4,11 @@ from django.urls import path
 
 from api.views import (
     CaseDetailView,
+    CaseListCreateView,
+    CaseUpdateDeleteView,
+    CaseStatusTransitionView,
+    CaseStatusLogView,
+    MaskImageView,
     EvidenceListCreateView,
     EvidenceUploadView,
     EvidenceDeleteView,
@@ -16,9 +21,20 @@ from api.views import (
     ComplaintRegenerateView,
     MaskView,
     ExportView,
+    ExportPackageView,
+    ExportPDFView,
 )
 
 urlpatterns = [
+    # T1 新增路由
+    path('cases/', CaseListCreateView.as_view()),
+    path('cases/<int:pk>/manage/', CaseUpdateDeleteView.as_view()),
+    path('cases/<int:pk>/status/transition/', CaseStatusTransitionView.as_view()),
+    path('cases/<int:pk>/status-logs/', CaseStatusLogView.as_view()),
+    path('cases/<int:pk>/mask-images/', MaskImageView.as_view()),
+    path('cases/<int:pk>/export/package/', ExportPackageView.as_view()),
+    path('cases/<int:pk>/export/pdf/', ExportPDFView.as_view()),
+    # 既有路由
     path('cases/<int:pk>/', CaseDetailView.as_view()),
     path('cases/<int:case_id>/evidences/', EvidenceListCreateView.as_view()),
     path('cases/<int:case_id>/evidences/upload/', EvidenceUploadView.as_view()),

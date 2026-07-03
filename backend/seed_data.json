@@ -5,7 +5,10 @@
     "fields": {
       "title": "网购退款纠纷——商家超时未发货且拒绝退款",
       "description": "用户于 2025-06-10 在某电商平台下单购买商品，支付 699 元，商家承诺 48 小时内发货。截至 2025-06-13 物流仍未揽收，用户申请退款被商家以'已发货'为由拒绝，遂进入投诉维权流程。",
-      "created_at": "2025-06-10T09:30:00"
+      "case_type": "shopping",
+      "status": "draft",
+      "created_at": "2025-06-10T09:30:00",
+      "updated_at": "2025-06-10T09:30:00"
     }
   },
   {
@@ -21,8 +24,9 @@
       "order": 1,
       "image": "",
       "extracted_text": "订单号：202506101234\n下单时间：2025-06-10 09:20\n金额：699 元\n联系电话：13812345678\n收货地址：北京市朝阳区XX路1号",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -37,8 +41,9 @@
       "order": 2,
       "image": "",
       "extracted_text": "商家承诺：48 小时内发货",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -53,8 +58,9 @@
       "order": 3,
       "image": "",
       "extracted_text": "付款金额：699 元",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -69,8 +75,9 @@
       "order": 4,
       "image": "",
       "extracted_text": "查询时间：2025-06-13 11:05\n物流状态：未揽收",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -85,8 +92,9 @@
       "order": 5,
       "image": "",
       "extracted_text": "申请退款时间：2025-06-13 11:10",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -101,8 +109,9 @@
       "order": 6,
       "image": "",
       "extracted_text": "拒绝退款理由：已发货",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -117,8 +126,9 @@
       "order": 7,
       "image": "",
       "extracted_text": "揽收时间：2025-06-13 16:00",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.evidence",
@@ -133,8 +143,9 @@
       "order": 8,
       "image": "",
       "extracted_text": "联系电话：13812345678\n收货地址：北京市朝阳区XX路1号",
-      "ocr_status": "done"
-    }
+      "ocr_status": "done",
+      "mask_status": "none"
+  }
   },
   {
     "model": "api.timelinenode",

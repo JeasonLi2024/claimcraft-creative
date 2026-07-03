@@ -1,8 +1,11 @@
 <script setup>
-import { onMounted, ref, reactive } from 'vue'
+import { onMounted, ref, reactive, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useCaseStore } from '../stores/case'
 
 const store = useCaseStore()
+const route = useRoute()
+const caseId = computed(() => route.params.caseId)
 
 // 拖拽上传状态
 const isDragover = ref(false)
@@ -20,7 +23,9 @@ const fieldsLoading = reactive({})
 const fieldDraft = reactive({})
 
 onMounted(() => {
-  store.fetchEvidences(1).catch(() => {})
+  if (caseId.value) {
+    store.fetchEvidences(caseId.value).catch(() => {})
+  }
 })
 
 // 格式化时间为 YYYY-MM-DD HH:mm
@@ -42,7 +47,7 @@ function ocrStatusText(status) {
 // 添加示例证据
 async function handleAdd() {
   try {
-    await store.addEvidence(1, {
+    await store.addEvidence(caseId.value, {
       evidence_type: '补充材料',
       description: '用户补充上传的截图证据',
       source_time: new Date().toISOString(),
@@ -97,7 +102,7 @@ function onDrop(e) {
 async function doUpload(file) {
   uploading.value = true
   try {
-    await store.uploadEvidence(1, file)
+    await store.uploadEvidence(caseId.value, file)
   } catch (e) {
     // 错误已写入 store.error
   } finally {

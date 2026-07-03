@@ -1,8 +1,11 @@
 <script setup>
 import { onMounted, ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useCaseStore } from '../stores/case'
 
 const store = useCaseStore()
+const route = useRoute()
+const caseId = computed(() => route.params.caseId)
 
 const templates = [
   { type: 'platform', label: '平台客服版' },
@@ -15,13 +18,17 @@ const copied = ref(false)
 const regenerating = ref(false)
 
 onMounted(() => {
-  store.fetchComplaint(1, 'platform').catch(() => {})
+  if (caseId.value) {
+    store.fetchComplaint(caseId.value, 'platform').catch(() => {})
+  }
 })
 
 // 切换模板
 function switchTemplate(type) {
   if (type === store.currentTemplate) return
-  store.fetchComplaint(1, type).catch(() => {})
+  if (caseId.value) {
+    store.fetchComplaint(caseId.value, type).catch(() => {})
+  }
 }
 
 // 重新生成当前模板的投诉文本
@@ -29,7 +36,7 @@ async function handleRegenerate() {
   if (regenerating.value) return
   regenerating.value = true
   try {
-    await store.regenerateComplaint(1, store.currentTemplate)
+    await store.regenerateComplaint(caseId.value, store.currentTemplate)
   } catch (e) {
     // 错误已写入 store.error
   } finally {
