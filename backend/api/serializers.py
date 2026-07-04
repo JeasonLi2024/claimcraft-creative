@@ -1,17 +1,50 @@
 # -*- coding: utf-8 -*-
 """DRF 序列化器。"""
+from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from api.models import (
     Case, Evidence, ExtractedField, TimelineNode,
     ComplaintTemplate, ComplaintTemplateRule, CaseStatusLog,
+    CaseTypePreset,
 )
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """用户序列化器。"""
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email']
+
+
+class RegisterSerializer(serializers.ModelSerializer):
+    """注册序列化器。"""
+
+    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    password2 = serializers.CharField(write_only=True, required=True)
+
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'password', 'password2']
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password2']:
+            raise serializers.ValidationError({'password': '两次密码不一致'})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('password2')
+        user = User.objects.create_user(**validated_data)
+        return user
 
 
 class CaseSerializer(serializers.ModelSerializer):
     """案件序列化器，含统计字段。"""
 
     status = serializers.CharField(read_only=True)
+    owner = UserSerializer(read_only=True)
     evidence_count = serializers.SerializerMethodField()
     timeline_count = serializers.SerializerMethodField()
     template_count = serializers.SerializerMethodField()
@@ -22,11 +55,11 @@ class CaseSerializer(serializers.ModelSerializer):
         model = Case
         fields = [
             'id', 'title', 'description', 'case_type', 'status',
-            'created_at', 'updated_at',
+            'created_at', 'updated_at', 'owner',
             'evidence_count', 'timeline_count', 'template_count',
             'image_evidence_count', 'extracted_field_count',
         ]
-        read_only_fields = ['status', 'created_at', 'updated_at']
+        read_only_fields = ['status', 'created_at', 'updated_at', 'owner']
 
     def get_evidence_count(self, obj):
         return obj.evidences.count()
@@ -50,6 +83,7 @@ class CaseSerializer(serializers.ModelSerializer):
 class CaseListSerializer(serializers.ModelSerializer):
     """案件列表轻量序列化器。"""
 
+    owner = UserSerializer(read_only=True)
     evidence_count = serializers.SerializerMethodField()
     image_evidence_count = serializers.SerializerMethodField()
     extracted_field_count = serializers.SerializerMethodField()
@@ -58,11 +92,11 @@ class CaseListSerializer(serializers.ModelSerializer):
         model = Case
         fields = [
             'id', 'title', 'description', 'case_type', 'status',
-            'created_at', 'updated_at',
+            'created_at', 'updated_at', 'owner',
             'evidence_count', 'image_evidence_count',
             'extracted_field_count',
         ]
-        read_only_fields = ['status', 'created_at', 'updated_at']
+        read_only_fields = ['status', 'created_at', 'updated_at', 'owner']
 
     def get_evidence_count(self, obj):
         return obj.evidences.count()
@@ -173,3 +207,11 @@ class CaseStatusLogSerializer(serializers.ModelSerializer):
             'id', 'case', 'from_status', 'to_status',
             'remark', 'created_at',
         ]
+
+
+class CaseTypePresetSerializer(serializers.ModelSerializer):
+    """案件类型预设序列化器。"""
+
+    class Meta:
+        model = CaseTypePreset
+        fields = '__all__'

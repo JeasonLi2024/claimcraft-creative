@@ -1486,3 +1486,106 @@ p { margin: 0.6rem 0; }
   min-width: 200px;
 }
 
+/* === T26: 认证页面（登录 / 注册） === */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+.auth-card {
+  background: var(--bg2);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+}
+.auth-card h1 {
+  font-size: 24px;
+  margin: 0 0 24px;
+  color: var(--ink);
+}
+.auth-form { display: flex; flex-direction: column; gap: 16px; }
+.auth-form input {
+  padding: 12px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.auth-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.auth-form button {
+  padding: 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-form button:hover { opacity: 0.9; }
+.auth-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* === Dashboard 数据仪表盘 === */
+.dashboard-view { padding: 24px; max-width: var(--max, 1120px); margin: 0 auto; }
+.dashboard-view h1 { font-size: 24px; margin: 0 0 24px; color: var(--ink); }
+.stats-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: var(--bg2); border: 1px solid var(--rule); border-radius: 12px; padding: 20px; text-align: center; }
+.stat-value { font-size: 32px; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.chart-card { background: var(--bg2); border: 1px solid var(--rule); border-radius: 12px; padding: 20px; }
+.chart-card h3 { font-size: 15px; margin: 0 0 12px; color: var(--ink); }
+.chart-container { height: 280px; }
+@media (max-width: 768px) {
+  .stats-cards { grid-template-columns: repeat(2, 1fr); }
+  .chart-grid { grid-template-columns: 1fr; }
+}
+.auth-error {
+  color: #e53e3e;
+  font-size: 13px;
+  padding: 8px 12px;
+  background: #fef2f2;
+  border-radius: 8px;
+}
+.auth-link {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.auth-link a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.auth-link a:hover { text-decoration: underline; }
+
+/* === T26: 顶部栏认证态补充样式 === */
+.brand-link {
+  text-decoration: none;
+}
+.brand-link:hover {
+  text-decoration: none;
+}
+.topbar-actions .user-name {
+  color: var(--muted);
+  font-size: .92rem;
+  padding: .35rem .6rem;
+}
+.topbar-actions .logout-btn {
+  padding: .4rem .85rem;
+  font-size: .9rem;
+  border-radius: 10px;
+}
+/* 未登录时隐藏侧边栏，主内容占满宽度 */
+.app-shell.no-sidebar {
+  grid-template-columns: 1fr;
+}
+

@@ -8,13 +8,18 @@
 
 ## 功能特性
 
+- **用户体系**：JWT 鉴权、注册/登录、案件数据隔离
 - **证据图片上传**：拖拽上传截图，自动存储与预览（lightbox）
 - **OCR 文字识别**：Tesseract 优先（中文 + 英文），自动识别截图文字，异常时 Mock 回退保证流程不中断
 - **关键信息自动抽取**：正则识别订单号、金额、手机号、地址、时间、承诺话术，支持人工校正
 - **时间线自动重建**：从证据时间字段生成时间线节点，手动节点与自动节点共存，支持重新生成
 - **投诉文本动态生成**：Jinja2 模板渲染，三套模板切换（平台客服版 / 监管投诉版 / 仲裁准备版），自动插入证据编号引用
-- **隐私打码**：手机号 / 身份证 / 地址文本打码（图片打码与 ZIP 导出规划中）
-- **多格式导出**：文本包导出（PDF / 证据包 ZIP 规划中）
+- **多案件管理**：案件列表、搜索/筛选、新建/删除、状态流转（草稿→处理中→已提交→已结案）
+- **案件模板预设**：4 种纠纷类型预设骨架（证据类型+时间线+投诉模板），一键套用
+- **隐私打码**：文本打码 + 图片打码（pytesseract 定位敏感区域模糊），打码前后对比
+- **多格式导出**：文本包 + 证据包 ZIP（含打码图片） + PDF 投诉材料（含证据缩略图）
+- **数据仪表盘**：echarts 可视化（案件类型分布、状态分布、创建趋势、状态转换统计）
+- **Docker 部署**：docker-compose 一键启动（MySQL + 后端 + 前端 nginx）
 
 ---
 
@@ -22,11 +27,14 @@
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Django 5 + Django REST Framework + MySQL（PyMySQL） |
-| 前端 | Vue 3 + Vite + Pinia + Vue Router + Axios |
+| 后端 | Django 5 + Django REST Framework + MySQL（PyMySQL） + django-fsm（状态机） |
+| 前端 | Vue 3 + Vite + Pinia + Vue Router + Axios + ECharts |
+| 鉴权 | JWT（djangorestframework-simplejwt） |
 | OCR | Tesseract（pytesseract，chi_sim + eng） |
 | 模板引擎 | Jinja2 |
 | 图片处理 | Pillow |
+| PDF 生成 | reportlab |
+| 部署 | Docker + docker-compose + nginx + gunicorn |
 
 ---
 
@@ -133,6 +141,53 @@ npm run dev
 
 ---
 
+## Docker 部署（一键启动）
+
+### 前置条件
+
+- 已安装 Docker 和 Docker Compose
+
+### 启动
+
+```bash
+# 1. 复制环境变量配置
+cp .env.example .env
+# 按需修改 .env 中的 DB_PASSWORD 和 SECRET_KEY
+
+# 2. 一键启动（MySQL + 后端 + 前端 nginx）
+docker-compose up -d --build
+
+# 3. 查看日志
+docker-compose logs -f backend
+
+# 4. 停止
+docker-compose down
+```
+
+启动后访问 `http://localhost` 即可使用。
+
+### 架构
+
+- **mysql**：MySQL 8.0，数据持久化到 `mysql_data` volume
+- **backend**：Django + gunicorn，含 Tesseract OCR（中文+英文），数据持久化到 `media_data` volume
+- **frontend**：nginx 托管 Vue 构建产物 + `/api` 反代到后端 + `/media` 反代到后端
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DB_PASSWORD` | claimcraft_dev_2025 | MySQL root 密码 |
+| `SECRET_KEY` | claimcraft-prod-secret-change-me | Django 密钥 |
+| `DJANGO_DEBUG` | False | 调试模式 |
+| `DJANGO_ALLOWED_HOSTS` | * | 允许的主机 |
+
+### 默认账号
+
+- 用户名：`admin`
+- 密码：`admin123`
+
+---
+
 ## API 概览
 
 | 方法 | 路径 | 说明 |
@@ -155,8 +210,9 @@ npm run dev
 项目采用分阶段迭代：
 
 - **T0（已完成）**：补全创意核心能力——证据图片上传 + OCR + 信息抽取 + 时间线重建 + 动态投诉生成
-- **T1（规划中）**：产品闭环——多案件管理 + 状态流转 + 图片打码 + ZIP/PDF 导出
-- **T2（规划中）**：工程化——用户体系 + 案件模板预设 + 数据仪表盘 + 部署优化 + 浏览器插件
+- **T1（已完成）**：产品闭环——多案件管理 + 状态流转 + 图片打码 + ZIP/PDF 导出
+- **T2（已完成）**：工程化——用户体系（JWT） + 案件模板预设 + 数据仪表盘 + Docker 部署
+- **T3（规划中）**：浏览器插件入口 + 更多纠纷类型模板
 
 详见 [docs/plan.md](docs/plan.md)、[docs/T0_spec.md](docs/T0_spec.md)、[docs/T1_spec.md](docs/T1_spec.md)。
 

@@ -118,3 +118,14 @@ export function exportPDF(id, template) {
     responseType: 'blob',
   })
 }
+
+// === T27: 案件模板预设 ===
+// 获取指定纠纷类型的可用预设列表
+export function fetchCasePresets(caseType) {
+  return api.get('/case-presets/', { params: { case_type: caseType } })
+}
+
+// 对已创建的案件套用预设骨架
+export function applyPreset(caseId, presetId) {
+  return api.post(`/cases/${caseId}/apply-preset/`, { preset_id: presetId })
+}

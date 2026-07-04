@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, reactive, computed } from 'vue'
+import { onMounted, ref, reactive, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaseStore } from '../stores/case'
 
@@ -121,11 +121,60 @@ const createForm = reactive({
 const creating = ref(false)
 const createError = ref('')
 
+// === T27: 套用预设骨架 ===
+const applyPresetFlag = ref(false) // 是否勾选套用预设
+const selectedPresetId = ref('')   // 选中的预设 id
+// 预设列表来自 store.casePresets；加载中状态来自 store.presetLoading
+const presets = computed(() => store.casePresets)
+const presetLoading = computed(() => store.presetLoading)
+const selectedPreset = computed(() =>
+  presets.value.find((p) => String(p.id) === String(selectedPresetId.value))
+)
+
+// 拉取指定纠纷类型的预设列表
+async function loadPresets(caseType) {
+  if (!caseType) {
+    store.casePresets = []
+    return
+  }
+  try {
+    await store.fetchCasePresets(caseType)
+  } catch (e) {
+    // 错误已写入 store.error，列表会被清空
+  }
+}
+
+// 纠纷类型变化时：清空预设选择并重新加载
+watch(
+  () => createForm.dispute_type,
+  (val) => {
+    selectedPresetId.value = ''
+    // 若用户未勾选套用预设，则不必拉取
+    if (!applyPresetFlag.value) return
+    loadPresets(val)
+  }
+)
+
+// 勾选状态变化时：若首次勾选且列表为空，则拉取当前类型预设
+watch(applyPresetFlag, (checked) => {
+  if (checked && presets.value.length === 0 && !presetLoading.value) {
+    loadPresets(createForm.dispute_type)
+  }
+  if (!checked) {
+    // 取消勾选时清空选择
+    selectedPresetId.value = ''
+  }
+})
+
 function openCreate() {
   createForm.title = ''
   createForm.description = ''
   createForm.dispute_type = 'online_shopping'
   createError.value = ''
+  applyPresetFlag.value = false
+  selectedPresetId.value = ''
+  // 重置预设列表，避免上次内容残留
+  store.casePresets = []
   showCreate.value = true
 }
 function closeCreate() {
@@ -136,14 +185,29 @@ async function submitCreate() {
     createError.value = '请填写案件标题'
     return
   }
+  // 勾选套用预设时必须选择具体预设
+  if (applyPresetFlag.value && !selectedPresetId.value) {
+    createError.value = '请选择一个案件预设，或取消勾选"套用预设骨架"'
+    return
+  }
   creating.value = true
   createError.value = ''
+  let created = null
   try {
-    const created = await store.createCase({
+    created = await store.createCase({
       title: createForm.title.trim(),
       description: createForm.description.trim(),
       dispute_type: createForm.dispute_type,
     })
+    // 如勾选套用预设且选择了预设，则在新案件上调用 apply-preset
+    if (applyPresetFlag.value && selectedPresetId.value && created && created.id) {
+      try {
+        await store.applyPreset(created.id, selectedPresetId.value)
+      } catch (e) {
+        // 套用失败：案件已创建，提示但仍然进入工作台
+        createError.value = store.error || '案件已创建，但套用预设失败，请稍后在工作台重试'
+      }
+    }
     showCreate.value = false
     // 直接进入新案件工作台
     if (created && created.id) {
@@ -250,6 +314,48 @@ const cases = computed(() => store.cases)
               <option value="other">其他</option>
             </select>
           </div>
+
+          <!-- T27: 套用预设骨架 -->
+          <div class="check-row">
+            <input
+              id="apply-preset"
+              v-model="applyPresetFlag"
+              type="checkbox"
+            />
+            <label for="apply-preset" style="cursor: pointer; user-select: none;">
+              套用预设骨架
+              <span class="form-hint" style="display: inline; margin-left: .35rem;">
+                （自动填充证据项与时间线模板）
+              </span>
+            </label>
+          </div>
+
+          <div v-if="applyPresetFlag" class="form-group">
+            <label class="form-label">
+              案件预设<span v-if="presetLoading" class="form-hint" style="margin-left: .4rem;">加载中...</span>
+            </label>
+            <select
+              v-if="!presetLoading && presets.length > 0"
+              v-model="selectedPresetId"
+              class="form-select"
+            >
+              <option value="" disabled>请选择预设...</option>
+              <option v-for="p in presets" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
+            </select>
+            <div v-else-if="!presetLoading && presets.length === 0" class="form-hint">
+              该纠纷类型暂无可用预设
+            </div>
+            <div
+              v-if="selectedPreset && selectedPreset.description"
+              class="form-hint"
+              style="margin-top: .5rem; padding: .55rem .7rem; border-radius: 10px; background: #f5f9ff; border: 1px solid #d6e4ff; color: var(--ink); line-height: 1.6;"
+            >
+              {{ selectedPreset.description }}
+            </div>
+          </div>
+
           <div v-if="createError" class="form-error">{{ createError }}</div>
         </div>
         <div class="modal-foot">

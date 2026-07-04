@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """api 应用路由。"""
 from django.urls import path
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+    TokenVerifyView,
+)
 
 from api.views import (
+    RegisterView,
+    CurrentUserView,
     CaseDetailView,
     CaseListCreateView,
     CaseUpdateDeleteView,
@@ -23,9 +30,18 @@ from api.views import (
     ExportView,
     ExportPackageView,
     ExportPDFView,
+    CaseTypePresetListView,
+    ApplyPresetView,
+    StatsView,
 )
 
 urlpatterns = [
+    # 鉴权路由
+    path('auth/register/', RegisterView.as_view()),
+    path('auth/login/', TokenObtainPairView.as_view()),
+    path('auth/refresh/', TokenRefreshView.as_view()),
+    path('auth/verify/', TokenVerifyView.as_view()),
+    path('auth/me/', CurrentUserView.as_view()),
     # T1 新增路由
     path('cases/', CaseListCreateView.as_view()),
     path('cases/<int:pk>/manage/', CaseUpdateDeleteView.as_view()),
@@ -48,4 +64,9 @@ urlpatterns = [
     path('cases/<int:case_id>/complaints/regenerate/', ComplaintRegenerateView.as_view()),
     path('cases/<int:case_id>/mask/', MaskView.as_view()),
     path('cases/<int:case_id>/export/', ExportView.as_view()),
+    # Task 27：案件模板预设
+    path('case-presets/', CaseTypePresetListView.as_view()),
+    path('cases/<int:pk>/apply-preset/', ApplyPresetView.as_view()),
+    # Task 28：数据统计仪表盘
+    path('stats/', StatsView.as_view()),
 ]

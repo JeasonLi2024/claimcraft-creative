@@ -23,7 +23,10 @@ import {
   maskImages as apiMaskImages,
   exportPackage as apiExportPackage,
   exportPDF as apiExportPDF,
+  fetchCasePresets as apiFetchCasePresets,
+  applyPreset as apiApplyPreset,
 } from '../api/case'
+import { fetchStats as apiFetchStats } from '../api/stats'
 
 // ClaimCraft 案件状态管理
 export const useCaseStore = defineStore('case', {
@@ -42,6 +45,11 @@ export const useCaseStore = defineStore('case', {
     // T1: 案件列表 + 状态变更日志
     cases: [],
     statusLogs: [],
+    // Task 28: 数据仪表盘聚合统计
+    stats: null,
+    // T27: 案件模板预设
+    casePresets: [],
+    presetLoading: false,
   }),
   actions: {
     async fetchCaseDetail(id) {
@@ -367,6 +375,45 @@ export const useCaseStore = defineStore('case', {
         return res.data
       } catch (e) {
         this.error = e.response?.data?.detail || e.message || '导出 PDF 失败'
+        throw e
+      }
+    },
+    // Task 28: 获取仪表盘聚合统计
+    async fetchStats() {
+      try {
+        const res = await apiFetchStats()
+        this.stats = res.data
+      } catch (e) {
+        console.error('fetchStats error:', e)
+      }
+    },
+    // === T27: 案件模板预设 ===
+    // 拉取指定纠纷类型的可用预设列表
+    async fetchCasePresets(caseType) {
+      this.presetLoading = true
+      this.error = null
+      try {
+        const { data } = await apiFetchCasePresets(caseType)
+        // 兼容分页结构 { results: [...] } 或直接数组
+        const list = Array.isArray(data) ? data : data.results || []
+        this.casePresets = list
+        return list
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '获取案件预设失败'
+        this.casePresets = []
+        throw e
+      } finally {
+        this.presetLoading = false
+      }
+    },
+    // 对已创建的案件套用预设骨架
+    async applyPreset(caseId, presetId) {
+      this.error = null
+      try {
+        const { data } = await apiApplyPreset(caseId, presetId)
+        return data
+      } catch (e) {
+        this.error = e.response?.data?.detail || e.message || '套用预设失败'
         throw e
       }
     },

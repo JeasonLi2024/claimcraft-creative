@@ -14,6 +14,7 @@ ClaimCraft 维权材料工坊数据模型。
 
 from django.db import models
 from django_fsm import FSMField, transition
+from django.contrib.auth.models import User
 
 
 def evidence_image_path(instance, filename):
@@ -44,6 +45,10 @@ class Case(models.Model):
     status = FSMField('案件状态', default='draft', protected=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
+    owner = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='cases',
+        verbose_name='所属用户', null=True, blank=True
+    )
 
     class Meta:
         verbose_name = '案件'
@@ -151,7 +156,7 @@ class TimelineNode(models.Model):
         on_delete=models.CASCADE,
         verbose_name='所属案件'
     )
-    datetime = models.DateTimeField('发生时间')
+    datetime = models.DateTimeField('发生时间', null=True, blank=True)
     event = models.TextField('事件描述')
     related_evidence_codes = models.CharField(
         '关联证据编号', max_length=200, blank=True, default='',
@@ -257,3 +262,27 @@ class CaseStatusLog(models.Model):
 
     def __str__(self):
         return f'{self.case_id} {self.from_status}->{self.to_status}'
+
+
+class CaseTypePreset(models.Model):
+    """案件类型预设。
+
+    为不同纠纷类型预置证据类型、时间线骨架与投诉模板，
+    套用后可快速生成案件骨架结构。
+    """
+
+    case_type = models.CharField('纠纷类型', max_length=20, choices=Case.CASE_TYPES)
+    name = models.CharField('预设名称', max_length=100)
+    description = models.TextField('预设说明', blank=True, default='')
+    evidence_types = models.JSONField('证据类型建议', default=list, help_text='证据类型列表')
+    timeline_skeleton = models.JSONField('时间线骨架', default=list, help_text='时间线节点骨架')
+    complaint_template = models.TextField('投诉模板', blank=True, default='', help_text='Jinja2 模板')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['case_type', 'id']
+        verbose_name = '案件类型预设'
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f'{self.name} ({self.get_case_type_display()})'

@@ -1,19 +1,26 @@
 # -*- coding: utf-8 -*-
 """DRF 视图。"""
-from django.db.models import Max, Q
+from django.db.models import Count, Max, Q
+from django.db.models.functions import TruncDate
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_fsm import can_proceed
+from datetime import timedelta
 from rest_framework import status
 from rest_framework.generics import (
     ListCreateAPIView,
     RetrieveUpdateDestroyAPIView,
     ListAPIView,
 )
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.models import Case, Evidence, ExtractedField, TimelineNode, CaseStatusLog
+from api.models import (
+    Case, Evidence, ExtractedField, TimelineNode, CaseStatusLog,
+    CaseTypePreset, ComplaintTemplateRule,
+)
 from api.serializers import (
     CaseSerializer,
     CaseListSerializer,
@@ -21,6 +28,9 @@ from api.serializers import (
     EvidenceSerializer,
     ExtractedFieldSerializer,
     TimelineNodeSerializer,
+    UserSerializer,
+    RegisterSerializer,
+    CaseTypePresetSerializer,
 )
 from api.services import (
     evidence_service,
@@ -39,35 +49,96 @@ ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
 
+# ===== 鉴权视图 =====
+
+class RegisterView(APIView):
+    """用户注册：POST /auth/register/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
+
+class CurrentUserView(APIView):
+    """当前登录用户：GET /auth/me/。"""
+
+    def get(self, request):
+        return Response(UserSerializer(request.user).data)
+
+
+# ===== 案件视图 =====
+
 class CaseDetailView(APIView):
     """案件详情：GET /cases/<id>/ 返回案件详情含统计。"""
 
     def get(self, request, pk):
-        try:
-            case = Case.objects.get(pk=pk)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
         serializer = CaseSerializer(case)
         return Response(serializer.data)
 
+
+class CaseListCreateView(ListCreateAPIView):
+    """案件列表与创建：GET/POST /cases/。
+
+    GET 支持 ?search=&status=&case_type=，返回 CaseListSerializer 列表。
+    POST 创建案件，status 由模型默认值决定为 draft。
+    """
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return CaseSerializer
+        return CaseListSerializer
+
+    def get_queryset(self):
+        qs = Case.objects.filter(owner=self.request.user)
+        params = self.request.query_params
+        search = params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search) | Q(description__icontains=search)
+            )
+        status_filter = params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        case_type = params.get('case_type')
+        if case_type:
+            qs = qs.filter(case_type=case_type)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+
+class CaseUpdateDeleteView(RetrieveUpdateDestroyAPIView):
+    """案件更新与删除：GET/PATCH/PUT/DELETE /cases/<id>/manage/。
+
+    PATCH 仅更新 title/description/case_type（status 为只读，
+    通过状态转换接口变更）。
+    """
+
+    serializer_class = CaseSerializer
+
+    def get_queryset(self):
+        return Case.objects.filter(owner=self.request.user)
+
+
+# ===== 证据视图 =====
 
 class EvidenceListCreateView(APIView):
     """证据列表与新增：GET/POST /cases/<id>/evidences/。"""
 
     def get(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
         evidences = case.evidences.all().order_by('order', 'id')
         serializer = EvidenceSerializer(evidences, many=True, context={'request': request})
         return Response(serializer.data)
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
 
@@ -95,10 +166,7 @@ class EvidenceUploadView(APIView):
     """
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         image_file = request.FILES.get('image')
         if not image_file:
@@ -174,10 +242,9 @@ class EvidenceDeleteView(APIView):
     """
 
     def delete(self, request, pk):
-        try:
-            evidence = Evidence.objects.get(pk=pk)
-        except Evidence.DoesNotExist:
-            return Response({'detail': '证据不存在'}, status=status.HTTP_404_NOT_FOUND)
+        evidence = get_object_or_404(
+            Evidence, pk=pk, case__owner=request.user
+        )
 
         code = evidence.code
         case = evidence.case
@@ -200,14 +267,15 @@ class EvidenceDeleteView(APIView):
         return Response({'detail': '已删除'}, status=status.HTTP_204_NO_CONTENT)
 
 
+# ===== 抽取字段视图 =====
+
 class ExtractedFieldListView(APIView):
     """抽取字段列表：GET /evidences/<id>/extracted-fields/。"""
 
     def get(self, request, evidence_id):
-        try:
-            evidence = Evidence.objects.get(pk=evidence_id)
-        except Evidence.DoesNotExist:
-            return Response({'detail': '证据不存在'}, status=status.HTTP_404_NOT_FOUND)
+        evidence = get_object_or_404(
+            Evidence, pk=evidence_id, case__owner=request.user
+        )
         fields = evidence.extracted_fields.all()
         serializer = ExtractedFieldSerializer(fields, many=True)
         return Response(serializer.data)
@@ -217,10 +285,9 @@ class ExtractedFieldUpdateView(APIView):
     """抽取字段更新：PATCH /extracted-fields/<pk>/ 更新 field_value。"""
 
     def patch(self, request, pk):
-        try:
-            field = ExtractedField.objects.get(pk=pk)
-        except ExtractedField.DoesNotExist:
-            return Response({'detail': '抽取字段不存在'}, status=status.HTTP_404_NOT_FOUND)
+        field = get_object_or_404(
+            ExtractedField, pk=pk, evidence__case__owner=request.user
+        )
 
         data = request.data
         if 'field_value' in data:
@@ -237,14 +304,13 @@ class ExtractedFieldUpdateView(APIView):
         return self.patch(request, pk)
 
 
+# ===== 时间线视图 =====
+
 class TimelineListView(APIView):
     """时间线列表：GET /cases/<id>/timeline/ 返回排序后的时间线。"""
 
     def get(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
         nodes = timeline_service.get_sorted_timeline(case)
         serializer = TimelineNodeSerializer(nodes, many=True)
         return Response(serializer.data)
@@ -254,10 +320,7 @@ class TimelineRebuildView(APIView):
     """时间线重建：POST /cases/<id>/timeline/rebuild/。"""
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
         nodes = timeline_service.rebuild_timeline(case)
         serializer = TimelineNodeSerializer(nodes, many=True)
         return Response(serializer.data)
@@ -267,10 +330,9 @@ class TimelineNodeUpdateView(APIView):
     """时间线节点更新：PATCH /timeline-nodes/<id>/ 更新 event 字段。"""
 
     def patch(self, request, pk):
-        try:
-            node = TimelineNode.objects.get(pk=pk)
-        except TimelineNode.DoesNotExist:
-            return Response({'detail': '时间线节点不存在'}, status=status.HTTP_404_NOT_FOUND)
+        node = get_object_or_404(
+            TimelineNode, pk=pk, case__owner=request.user
+        )
 
         data = request.data
         if 'event' in data:
@@ -288,14 +350,13 @@ class TimelineNodeUpdateView(APIView):
         return self.patch(request, pk)
 
 
+# ===== 投诉视图 =====
+
 class ComplaintView(APIView):
     """投诉文本：GET /cases/<id>/complaints/?template=<type>。"""
 
     def get(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         template_type = request.query_params.get('template', 'platform')
         result = complaint_service.generate_complaint(case, template_type)
@@ -314,10 +375,7 @@ class ComplaintRegenerateView(APIView):
     """
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         template_type = request.data.get('template_type', 'platform')
         result = complaint_service.generate_complaint(case, template_type)
@@ -329,14 +387,13 @@ class ComplaintRegenerateView(APIView):
         return Response(result)
 
 
+# ===== 打码视图 =====
+
 class MaskView(APIView):
     """敏感信息打码：POST /cases/<id>/mask/。"""
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         result = mask_service.mask_case_sensitive_info(case)
         return Response({
@@ -346,14 +403,13 @@ class MaskView(APIView):
         })
 
 
+# ===== 导出视图 =====
+
 class ExportView(APIView):
     """导出文本：POST /cases/<id>/export/ 接收 {template_type, masked}。"""
 
     def post(self, request, case_id):
-        try:
-            case = Case.objects.get(pk=case_id)
-        except Case.DoesNotExist:
-            return Response({'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND)
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         template_type = request.data.get('template_type', 'platform')
         masked = bool(request.data.get('masked', False))
@@ -378,46 +434,6 @@ _STATUS_TRANSITION_METHODS = {
 }
 
 
-class CaseListCreateView(ListCreateAPIView):
-    """案件列表与创建：GET/POST /cases/。
-
-    GET 支持 ?search=&status=&case_type=，返回 CaseListSerializer 列表。
-    POST 创建案件，status 由模型默认值决定为 draft。
-    """
-
-    def get_serializer_class(self):
-        if self.request.method == 'POST':
-            return CaseSerializer
-        return CaseListSerializer
-
-    def get_queryset(self):
-        qs = Case.objects.all()
-        params = self.request.query_params
-        search = params.get('search')
-        if search:
-            qs = qs.filter(
-                Q(title__icontains=search) | Q(description__icontains=search)
-            )
-        status_filter = params.get('status')
-        if status_filter:
-            qs = qs.filter(status=status_filter)
-        case_type = params.get('case_type')
-        if case_type:
-            qs = qs.filter(case_type=case_type)
-        return qs
-
-
-class CaseUpdateDeleteView(RetrieveUpdateDestroyAPIView):
-    """案件更新与删除：GET/PATCH/PUT/DELETE /cases/<id>/manage/。
-
-    PATCH 仅更新 title/description/case_type（status 为只读，
-    通过状态转换接口变更）。
-    """
-
-    queryset = Case.objects.all()
-    serializer_class = CaseSerializer
-
-
 class CaseStatusTransitionView(APIView):
     """案件状态转换：POST /cases/<id>/status/transition/。
 
@@ -426,12 +442,7 @@ class CaseStatusTransitionView(APIView):
     """
 
     def post(self, request, pk):
-        try:
-            case = Case.objects.get(pk=pk)
-        except Case.DoesNotExist:
-            return Response(
-                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
-            )
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
 
         to_status = request.data.get('to_status')
         remark = request.data.get('remark', '')
@@ -490,7 +501,9 @@ class CaseStatusLogView(ListAPIView):
     serializer_class = CaseStatusLogSerializer
 
     def get_queryset(self):
-        return CaseStatusLog.objects.filter(case_id=self.kwargs['pk'])
+        return CaseStatusLog.objects.filter(
+            case_id=self.kwargs['pk'], case__owner=self.request.user
+        )
 
 
 class MaskImageView(APIView):
@@ -500,12 +513,7 @@ class MaskImageView(APIView):
     """
 
     def post(self, request, pk):
-        try:
-            case = Case.objects.get(pk=pk)
-        except Case.DoesNotExist:
-            return Response(
-                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
-            )
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
         results = image_mask_service.mask_case_images(case)
         serializer = EvidenceSerializer(
             results, many=True, context={'request': request}
@@ -521,12 +529,7 @@ class ExportPackageView(APIView):
     """证据包导出：GET /cases/<id>/export/package/ 返回 ZIP 文件流。"""
 
     def get(self, request, pk):
-        try:
-            case = Case.objects.get(pk=pk)
-        except Case.DoesNotExist:
-            return Response(
-                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
-            )
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
         buf = export_service.export_evidence_package(case)
         resp = HttpResponse(buf.read(), content_type='application/zip')
         resp['Content-Disposition'] = (
@@ -539,12 +542,7 @@ class ExportPDFView(APIView):
     """PDF 投诉材料导出：GET /cases/<id>/export/pdf/?template=<type>。"""
 
     def get(self, request, pk):
-        try:
-            case = Case.objects.get(pk=pk)
-        except Case.DoesNotExist:
-            return Response(
-                {'detail': '案件不存在'}, status=status.HTTP_404_NOT_FOUND
-            )
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
         template_type = request.query_params.get('template', 'platform')
         buf = pdf_service.generate_complaint_pdf(case, template_type=template_type)
         resp = HttpResponse(buf.read(), content_type='application/pdf')
@@ -552,3 +550,138 @@ class ExportPDFView(APIView):
             f'attachment; filename="case_{case.id}_{template_type}.pdf"'
         )
         return resp
+
+
+# ===== Task 27：案件模板预设 =====
+
+class CaseTypePresetListView(APIView):
+    """案件类型预设列表：GET /case-presets/?case_type=<type>。
+
+    返回所有预设，支持按 case_type 过滤。预设为全局共享，所有登录用户可见。
+    """
+
+    def get(self, request):
+        qs = CaseTypePreset.objects.all()
+        case_type = request.query_params.get('case_type')
+        if case_type:
+            qs = qs.filter(case_type=case_type)
+        serializer = CaseTypePresetSerializer(qs, many=True)
+        return Response(serializer.data)
+
+
+class ApplyPresetView(APIView):
+    """套用预设到案件：POST /cases/<id>/apply-preset/。
+
+    接收 {preset_id}，根据预设创建：
+    - 证据骨架（仅类型，无图片，描述占位"（待填写）"）
+    - 时间线骨架（datetime 可为空，待用户后续补充）
+    - 投诉模板规则（platform 类型，update_or_create）
+    """
+
+    def post(self, request, pk):
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        preset_id = request.data.get('preset_id')
+        preset = get_object_or_404(CaseTypePreset, pk=preset_id)
+
+        # 创建证据骨架（仅类型，无图片）
+        created_evidences = []
+        for i, ev_type in enumerate(preset.evidence_types):
+            code = evidence_service.generate_next_evidence_code(case)
+            ev = Evidence.objects.create(
+                case=case,
+                code=code,
+                evidence_type=ev_type,
+                description='（待填写）',
+                source_time=timezone.now(),
+                order=i,
+            )
+            created_evidences.append(ev)
+
+        # 创建时间线骨架（datetime 可为 None）
+        for i, node_data in enumerate(preset.timeline_skeleton):
+            TimelineNode.objects.create(
+                case=case,
+                datetime=node_data.get('datetime'),
+                event=node_data.get('event', ''),
+                related_evidence_codes=node_data.get('related_evidence_codes', ''),
+                order=i,
+                auto_generated=False,
+            )
+
+        # 创建/更新投诉模板规则（platform 类型）
+        if preset.complaint_template:
+            ComplaintTemplateRule.objects.update_or_create(
+                case=case,
+                template_type='platform',
+                defaults={
+                    'rule_title': preset.name,
+                    'rule_content': preset.complaint_template,
+                }
+            )
+
+        return Response({
+            'message': '预设套用成功',
+            'evidences_created': len(created_evidences),
+            'timeline_created': len(preset.timeline_skeleton),
+            'complaint_template': bool(preset.complaint_template),
+        })
+
+
+# ===== Task 28：数据统计仪表盘 =====
+
+class StatsView(APIView):
+    """聚合统计：GET /stats/ 按当前用户过滤。
+
+    返回：案件类型分布、状态分布、证据总数、抽取字段总数、
+    最近 30 天每日新建案件数、状态转换统计、案件总数。
+    """
+
+    def get(self, request):
+        user_cases = Case.objects.filter(owner=request.user)
+
+        # 案件类型分布
+        case_type_dist = list(
+            user_cases.values('case_type').annotate(count=Count('id')).order_by('case_type')
+        )
+
+        # 案件状态分布
+        status_dist = list(
+            user_cases.values('status').annotate(count=Count('id')).order_by('status')
+        )
+
+        # 证据总数
+        evidence_total = Evidence.objects.filter(case__in=user_cases).count()
+
+        # 抽取字段总数
+        extracted_field_total = ExtractedField.objects.filter(
+            evidence__case__in=user_cases
+        ).count()
+
+        # 最近 30 天每日新建案件数（TruncDate 跨数据库兼容）
+        now = timezone.now()
+        thirty_days_ago = now - timedelta(days=30)
+        recent_cases = list(
+            user_cases.filter(created_at__gte=thirty_days_ago)
+            .annotate(day=TruncDate('created_at'))
+            .values('day')
+            .annotate(count=Count('id'))
+            .order_by('day')
+        )
+
+        # 状态转换统计（从 CaseStatusLog 聚合）
+        status_transitions = list(
+            CaseStatusLog.objects.filter(case__in=user_cases)
+            .values('to_status')
+            .annotate(count=Count('id'))
+            .order_by('to_status')
+        )
+
+        return Response({
+            'case_type_distribution': case_type_dist,
+            'status_distribution': status_dist,
+            'evidence_total': evidence_total,
+            'extracted_field_total': extracted_field_total,
+            'cases_recent_30days': recent_cases,
+            'status_transitions': status_transitions,
+            'case_total': user_cases.count(),
+        })

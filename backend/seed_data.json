@@ -7,6 +7,7 @@
       "description": "用户于 2025-06-10 在某电商平台下单购买商品，支付 699 元，商家承诺 48 小时内发货。截至 2025-06-13 物流仍未揽收，用户申请退款被商家以'已发货'为由拒绝，遂进入投诉维权流程。",
       "case_type": "shopping",
       "status": "draft",
+      "owner": 1,
       "created_at": "2025-06-10T09:30:00",
       "updated_at": "2025-06-10T09:30:00"
     }
@@ -409,6 +410,82 @@
       "template_type": "arbitration",
       "rule_title": "仲裁申请准备材料——{{ case.title }}",
       "rule_content": "一、案件概述\n本案系网购合同纠纷，核心争议为商家超时未发货且拒绝退款。证据链完整、时间线清晰，诉求边界明确，具备仲裁申请条件。\n\n二、证据链梳理\n{% for ev in evidences %}- {{ ev.code }}（{{ ev.evidence_type }}）：{{ ev.description }}\n{% endfor %}\n三、时间线\n{% for node in timeline_nodes %}- {{ node.datetime.strftime('%Y-%m-%d %H:%M') }} {{ node.event }}（见 {{ node.related_evidence_codes }}）\n{% endfor %}\n四、关键信息\n{% for ef in extracted_fields %}- {{ ef.field_name }}：{{ ef.field_value }}（见 {{ ef.evidence_code }}）\n{% endfor %}\n五、诉求\n1. 请求裁决被申请人退还货款；\n2. 请求裁决被申请人承担本案仲裁费用；\n3. 视情况主张因违约造成的合理损失赔偿。\n\n备注：本材料用于仲裁申请准备，敏感信息在对外提交版本中应做打码处理。\n"
+    }
+  },
+  {
+    "model": "api.casetypepreset",
+    "pk": 1,
+    "fields": {
+      "case_type": "shopping",
+      "name": "网购退款纠纷标准模板",
+      "description": "包含订单截图、聊天记录、商品照片、物流信息等证据类型，以及标准时间线骨架和投诉模板",
+      "evidence_types": ["订单截图", "聊天记录", "商品照片", "物流信息", "退款拒绝截图"],
+      "timeline_skeleton": [
+        {"event": "下单购买商品", "related_evidence_codes": "E1"},
+        {"event": "完成付款", "related_evidence_codes": "E1"},
+        {"event": "商家发货/承诺发货", "related_evidence_codes": ""},
+        {"event": "收到商品/发现问题", "related_evidence_codes": "E3"},
+        {"event": "与商家沟通退款", "related_evidence_codes": "E2"},
+        {"event": "商家拒绝退款/超时未处理", "related_evidence_codes": "E5"}
+      ],
+      "complaint_template": "本人{% if timeline_nodes and timeline_nodes[0].datetime %}于{{ timeline_nodes[0].datetime.strftime('%Y-%m-%d') }}{% endif %}在电商平台购买商品{% for ef in extracted_fields if ef.field_name == '订单号' %}（订单号：{{ ef.field_value }}）{% endfor %}{% for ef in extracted_fields if ef.field_name == '金额' %}，支付{{ ef.field_value }}元{% endfor %}。{% if timeline_nodes and timeline_nodes|length > 3 %}{{ timeline_nodes[3].event }}，{% endif %}本人与商家沟通要求退款，但商家{% if timeline_nodes and timeline_nodes|length > 5 %}{{ timeline_nodes[5].event }}{% else %}拒绝退款{% endif %}。根据《消费者权益保护法》第五十三条及《电子商务法》第四十九条，本人要求全额退款。",
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.casetypepreset",
+    "pk": 2,
+    "fields": {
+      "case_type": "service",
+      "name": "服务违约纠纷标准模板",
+      "description": "包含合同、聊天记录、付款凭证、服务结果等证据类型，以及服务违约时间线骨架和投诉模板",
+      "evidence_types": ["合同", "聊天记录", "付款凭证", "服务结果"],
+      "timeline_skeleton": [
+        {"event": "签订服务合同", "related_evidence_codes": "E1"},
+        {"event": "支付服务费用", "related_evidence_codes": "E3"},
+        {"event": "服务方未按约定履行服务", "related_evidence_codes": "E4"},
+        {"event": "与服务方沟通要求整改", "related_evidence_codes": "E2"},
+        {"event": "服务方拒绝整改/退款", "related_evidence_codes": "E2"}
+      ],
+      "complaint_template": "本人与服务方签订服务合同{% for ef in extracted_fields if ef.field_name == '金额' %}，支付服务费用{{ ef.field_value }}元{% endfor %}。服务方未按约定履行服务义务{% if timeline_nodes and timeline_nodes|length > 2 %}，{{ timeline_nodes[2].event }}{% endif %}。本人与服务方沟通要求整改或退款，但服务方{% if timeline_nodes and timeline_nodes|length > 4 %}{{ timeline_nodes[4].event }}{% else %}拒绝处理{% endif %}。根据《中华人民共和国合同法》相关规定，本人要求服务方退还服务费用并承担违约责任。",
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.casetypepreset",
+    "pk": 3,
+    "fields": {
+      "case_type": "secondhand",
+      "name": "二手交易纠纷标准模板",
+      "description": "包含商品描述截图、聊天记录、付款凭证、收货照片等证据类型，以及二手交易时间线骨架和投诉模板",
+      "evidence_types": ["商品描述截图", "聊天记录", "付款凭证", "收货照片"],
+      "timeline_skeleton": [
+        {"event": "看到商品发布并下单", "related_evidence_codes": "E1"},
+        {"event": "与卖家沟通确认商品状况", "related_evidence_codes": "E2"},
+        {"event": "完成付款", "related_evidence_codes": "E3"},
+        {"event": "收到商品/发现与描述不符", "related_evidence_codes": "E4"},
+        {"event": "与卖家沟通退货", "related_evidence_codes": "E2"},
+        {"event": "卖家拒绝退货", "related_evidence_codes": "E2"}
+      ],
+      "complaint_template": "本人在二手交易平台购买商品{% for ef in extracted_fields if ef.field_name == '金额' %}，支付{{ ef.field_value }}元{% endfor %}。收到商品后发现与卖家描述不符{% if timeline_nodes and timeline_nodes|length > 3 %}，{{ timeline_nodes[3].event }}{% endif %}。本人与卖家沟通要求退货退款，但卖家{% if timeline_nodes and timeline_nodes|length > 5 %}{{ timeline_nodes[5].event }}{% else %}拒绝退货{% endif %}。根据《消费者权益保护法》相关规定，本人要求退货并全额退款。",
+      "created_at": "2025-06-10T09:30:00"
+    }
+  },
+  {
+    "model": "api.casetypepreset",
+    "pk": 4,
+    "fields": {
+      "case_type": "other",
+      "name": "通用纠纷模板",
+      "description": "适用于其他类型纠纷，包含聊天记录、付款凭证、其他证据等证据类型，以及通用时间线骨架和投诉模板",
+      "evidence_types": ["聊天记录", "付款凭证", "其他证据"],
+      "timeline_skeleton": [
+        {"event": "发生纠纷", "related_evidence_codes": "E1"},
+        {"event": "与对方沟通协商", "related_evidence_codes": "E1"},
+        {"event": "对方拒绝处理", "related_evidence_codes": ""}
+      ],
+      "complaint_template": "本人就相关纠纷事宜进行投诉。{% if timeline_nodes %}{% for node in timeline_nodes %}{{ node.event }}；{% endfor %}{% endif %}{% if extracted_fields %}关键信息：{% for ef in extracted_fields %}{{ ef.field_name }}：{{ ef.field_value }}；{% endfor %}{% endif %}本人要求对方妥善处理相关事宜，维护本人合法权益。",
+      "created_at": "2025-06-10T09:30:00"
     }
   }
 ]
