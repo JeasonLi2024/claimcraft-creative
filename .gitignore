@@ -115,6 +115,16 @@ coverage.xml
 .paddlex_cache/
 
 # ========================
+# LangGraph dev server runtime
+# ========================
+.langgraph_api/
+
+# ========================
+# Playwright / test screenshots output
+# ========================
+frontend/output/
+
+# ========================
 # Misc
 # ========================
 *.bak

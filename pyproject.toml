@@ -1,0 +1,15 @@
+[project]
+name = "claimcraft-creative-dev"
+version = "0.1.0"
+description = "LangGraph dev server entry for ClaimCraft Creative (lightweight, no Django)"
+requires-python = ">=3.10"
+dependencies = [
+    "langgraph>=1.2,<2.0",
+    "langgraph-cli[inmem]",
+    "langchain-core>=1.0,<2.0",
+    "python-dotenv>=1.0",
+]
+
+[tool.langgraph]
+# 标记此 pyproject.toml 仅服务于 langgraph dev，避免与 backend/requirements.txt 混淆
+dev_only = true

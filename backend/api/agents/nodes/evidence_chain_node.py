@@ -82,7 +82,8 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     try:
         llm = llm_service.get_scenario_llm("text")
-        structured_llm = llm.with_structured_output(EvidenceChainResult)
+        # DashScope 不兼容 json_schema 模式，改用 function_calling 模式
+        structured_llm = llm.with_structured_output(EvidenceChainResult, method="function_calling")
         prompt = EVIDENCE_CHAIN_PROMPT.format(
             case_description=case.description or "",
             evidences_json=evidences_json,
@@ -145,7 +146,7 @@ async def _build_fallback_chain(case) -> list[dict]:
 
     timeline_nodes = await sync_to_async(list)(
         TimelineNode.objects.filter(
-            case=case, is_auto_generated=True
+            case=case, auto_generated=True
         ).order_by("datetime")
     )
 

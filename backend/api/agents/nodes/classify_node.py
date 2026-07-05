@@ -95,7 +95,8 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     try:
         llm = llm_service.get_scenario_llm("text")
-        structured_llm = llm.with_structured_output(ClassifyBatchResult)
+        # DashScope 不兼容 json_schema 模式，改用 function_calling 模式
+        structured_llm = llm.with_structured_output(ClassifyBatchResult, method="function_calling")
         result = await structured_llm.ainvoke(prompt)
 
         classify_results = []

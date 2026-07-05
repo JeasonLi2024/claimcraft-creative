@@ -174,6 +174,9 @@ claimcraft-creative/
 ├── nginx.conf                          # SPA + /api + /media 反代
 ├── .env.example                        # DB_PASSWORD + SECRET_KEY
 ├── .dockerignore / .gitignore
+├── langgraph.json                      # LangGraph dev 配置（graphs + dependencies + env）
+├── pyproject.toml                      # langgraph dev 依赖声明（轻量，不含 Django）
+├── dev_graph.py                        # langgraph dev 入口（mock 节点，复刻工作流拓扑）
 ├── claimcraft-creative.html            # 项目展示页
 └── README.md
 ```
@@ -416,6 +419,30 @@ npm run dev
 - 使用默认账号登录 → 跳转到案件列表
 - 选择示例案件 → 进入工作台 → 验证 OCR / 时间线 / 投诉文本 / 导出流程
 
+### 6. LangGraph Dev 开发测试（可选）
+
+用于本地快速调试 LangGraph 工作流拓扑，无需 Docker / Django / MySQL / PostgreSQL 环境，参考 [LangSmith Local Dev Testing](https://docs.langchain.com/langsmith/local-dev-testing)。
+
+```bash
+# 前置：已安装 langgraph-cli[inmem]
+pip install 'langgraph-cli[inmem]'
+
+# 启动 dev server（in-memory checkpointer，热重载）
+langgraph dev --port 2024 --no-browser
+```
+
+启动后访问：
+
+- **API**：`http://127.0.0.1:2024`
+- **Swagger 文档**：`http://127.0.0.1:2024/docs`
+- **Studio UI**：`https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024`
+
+设计说明：
+
+- 入口文件 [dev_graph.py](dev_graph.py) 复刻真实业务工作流拓扑 `START → ocr → classify → extract → [review?] → evidence_chain → complaint → END`，节点用 mock 实现，独立于 [backend/api/agents/graph.py](backend/api/agents/graph.py)（后者受 Django 环境托管，依赖 Case/Evidence ORM）。
+- 配置文件 [langgraph.json](langgraph.json) 声明 `graphs.claimcraft_dev = "./dev_graph.py:graph"`，依赖 [pyproject.toml](pyproject.toml)（仅含 langgraph 核心，不含 Django）。
+- 启动验证：threadless run 跑通 6 节点（ocr → classify → extract → evidence_chain → complaint），`errors` 为空。
+
 ---
 
 ## 种子数据
@@ -461,6 +488,7 @@ npm run dev
 | PDF 字体 | 三级回退（simsun.ttc → STSong-Light → Helvetica） | 兼容不同环境下的中文字体可用性 |
 | OCR 回退 | Tesseract 不可用时 Mock | 保证流程不中断，便于本地开发 |
 | 部署 | docker-compose 三服务 | 一键启动，环境隔离 |
+| LangGraph 开发测试 | 轻量级独立 graph 入口（`dev_graph.py`） | 隔离 Django/MySQL/PG 环境，最快验证 langgraph dev 工作流；真实业务 graph 仍在 `backend/api/agents/graph.py` 受 Django 托管 |
 
 ---
 

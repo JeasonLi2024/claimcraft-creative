@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&display=swap');
 
 @custom-variant dark (&:is(.dark *));
 
@@ -44,35 +43,35 @@
 }
 
 :root {
-  --radius: 2rem;
+  --radius: 0.75rem;
 
-  --background: #fbfaf9;
-  --foreground: #3b352b;
-  --card: #fbfaf9;
-  --card-foreground: #3b352b;
-  --popover: #fbfaf9;
-  --popover-foreground: #3b352b;
+  --background: #f8f8f5;
+  --foreground: #181b1a;
+  --card: #ffffff;
+  --card-foreground: #181b1a;
+  --popover: #ffffff;
+  --popover-foreground: #181b1a;
 
-  --primary: #3b352b;
-  --primary-foreground: #fbfaf9;
+  --primary: #181b1a;
+  --primary-foreground: #f8f8f5;
 
-  --secondary: #9b965f;
-  --secondary-foreground: #fbfaf9;
+  --secondary: #3f6b57;
+  --secondary-foreground: #f8f8f5;
 
-  --muted: #eae6db;
-  --muted-foreground: #978365;
+  --muted: #ebece7;
+  --muted-foreground: #6c706b;
 
-  --accent: #cbc0aa;
-  --accent-foreground: #574d42;
+  --accent: #e7eee9;
+  --accent-foreground: #2f5947;
 
-  --accent2: #9b965f;
-  --accent2-foreground: #fbfaf9;
+  --accent2: #3f6b57;
+  --accent2-foreground: #f8f8f5;
 
   --destructive: #ef4444;
 
-  --border: #e1dccf;
-  --input: #eae6db;
-  --ring: #3b352b;
+  --border: #d9ddd5;
+  --input: #ebece7;
+  --ring: #3f6b57;
 }
 
 .dark {
@@ -106,13 +105,64 @@
 }
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+    text-rendering: geometricPrecision;
+  }
+
   * {
     @apply border-border;
   }
+
   body {
     @apply bg-background text-foreground;
-    font-family: "Fraunces", ui-serif, "PingFang SC", "Noto Serif CJK SC", "STSong", Georgia, serif;
-    line-height: 1.7;
-    min-height: 100vh;
+    min-height: 100dvh;
+    font-family:
+      "Geist Sans",
+      "SF Pro Display",
+      "Segoe UI",
+      "PingFang SC",
+      "Microsoft YaHei",
+      ui-sans-serif,
+      system-ui,
+      sans-serif;
+    line-height: 1.6;
+    font-synthesis-weight: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background: #dfe7e1;
+    color: #181b1a;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  img,
+  svg,
+  video,
+  canvas {
+    display: block;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

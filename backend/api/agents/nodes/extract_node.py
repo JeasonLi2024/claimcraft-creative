@@ -278,7 +278,8 @@ async def _extract_with_structured_output(
 
     try:
         llm = llm_service.get_scenario_llm("text")
-        structured_llm = llm.with_structured_output(ExtractResult)
+        # DashScope 不兼容 json_schema 模式，改用 function_calling 模式
+        structured_llm = llm.with_structured_output(ExtractResult, method="function_calling")
         case_type = CATEGORY_TO_CASE_TYPE.get(category, "其他")
         prompt = EXTRACT_FIELDS_PROMPT.format(text=text, case_type=case_type)
         result = await structured_llm.ainvoke(prompt)

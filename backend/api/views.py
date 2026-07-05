@@ -754,8 +754,9 @@ class CaseWorkflowView(APIView):
                 case_type=case.case_type,
                 has_sensitive=has_sensitive,
             ):
+                # async 节点必须用 ainvoke；checkpointer 已包装支持 async 接口
                 if resume_value is not None:
-                    # HITL 恢复（async 桥接：节点为 async def，需用 ainvoke + async_to_sync）
+                    # HITL 恢复
                     result = async_to_sync(workflow.ainvoke)(Command(resume=resume_value), config)
                 else:
                     # 首次启动

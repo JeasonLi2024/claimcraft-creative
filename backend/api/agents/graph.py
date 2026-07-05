@@ -38,7 +38,9 @@ import logging
 import os
 from typing import Literal
 
+from asgiref.sync import async_to_sync, sync_to_async
 from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import StateGraph, START, END
@@ -64,17 +66,24 @@ logger = logging.getLogger(__name__)
 def _make_error_handler(node_name: str):
     """节点错误处理器工厂：返回错误到 state.errors 累积列表（Saga 降级）。
 
+    LangGraph 1.2+ error_handler 签名要求：
+    - 第一个位置参数是 input（节点失败时的 state）
+    - error: NodeError 必须是 kwarg（类型注解 NodeError），LangGraph 从
+      config[CONFIG_KEY_NODE_ERROR] 注入
+
     Args:
         node_name: 节点中文名（用于错误消息，如 "OCR" / "字段抽取"）
 
     Returns:
-        error_handler 函数，接收 NodeError，返回 {"errors": [msg]}
+        error_handler 函数，接收 (input, *, error: NodeError)，返回 {"errors": [msg]}
     """
-    def handler(error: NodeError) -> dict:
+    def handler(input: dict, *, error: NodeError) -> dict:
         if isinstance(error, NodeTimeoutError):
             msg = f"[{node_name}] 节点超时（>{getattr(error, 'timeout', '?')}s），已降级"
         else:
-            msg = f"[{node_name}] 节点异常: {type(error).__name__}: {str(error)[:200]}"
+            # NodeError 包含原始异常（error.error 是 BaseException）
+            inner = getattr(error, 'error', error)
+            msg = f"[{node_name}] 节点异常: {type(inner).__name__}: {str(inner)[:200]}"
         logger.error(msg, exc_info=False)
         return {"errors": [msg]}  # 利用 state.errors 的 Annotated[list, add] 累积
     return handler
@@ -165,13 +174,68 @@ def _get_checkpointer() -> PostgresSaver:
         pool = _get_connection_pool()
         # PostgresSaver 的 conn 参数同时接受 Connection 或 ConnectionPool
         # 传入 ConnectionPool 时，内部自动借还连接
-        _checkpointer = PostgresSaver(conn=pool)
+        sync_saver = PostgresSaver(conn=pool)
         # 首次使用时建表（idempotent，已存在则跳过）
-        _checkpointer.setup()
+        sync_saver.setup()
+        # 包装成支持 async 接口的 checkpointer
+        # sync PostgresSaver 不实现 aget_tuple/aput（基类抛 NotImplementedError），
+        # 本 wrapper 用 sync_to_async 桥接 sync 方法，使 ainvoke 可用（async 节点必须用 ainvoke）
+        _checkpointer = _AsyncCompatibleSyncCheckpointer(sync_saver)
         # 初始化时打印一次连接池状态，便于运维定位
         _check_pool_health()
-        logger.info("PostgresSaver 已初始化并完成 setup()")
+        logger.info("PostgresSaver 已初始化（含 async 包装）并完成 setup()")
     return _checkpointer
+
+
+class _AsyncCompatibleSyncCheckpointer(BaseCheckpointSaver):
+    """把 sync PostgresSaver 包装成支持 async 接口的 checkpointer。
+
+    LangGraph 1.2+ 的 async 节点（async def）必须用 ainvoke 执行；
+    但 sync PostgresSaver 不实现 aget_tuple/aput（基类抛 NotImplementedError）。
+    本 wrapper 继承 BaseCheckpointSaver，用 sync_to_async 桥接 sync 方法，使 ainvoke 可用。
+
+    保留 sync 方法（get_tuple/put/put_writes）供 sync invoke 兼容路径使用。
+    """
+
+    def __init__(self, sync_saver):
+        super().__init__()
+        self._sync = sync_saver
+
+    # === async 接口（ainvoke 调用） ===
+    async def aget_tuple(self, config):
+        return await sync_to_async(self._sync.get_tuple)(config)
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        return await sync_to_async(self._sync.put)(
+            config, checkpoint, metadata, new_versions
+        )
+
+    async def aput_writes(self, config, writes, task_id):
+        return await sync_to_async(self._sync.put_writes)(config, writes, task_id)
+
+    async def asetup(self):
+        return await sync_to_async(self._sync.setup)()
+
+    # === sync 接口（invoke 调用） ===
+    def get_tuple(self, config):
+        return self._sync.get_tuple(config)
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        return self._sync.put(config, checkpoint, metadata, new_versions)
+
+    def put_writes(self, config, writes, task_id):
+        return self._sync.put_writes(config, writes, task_id)
+
+    def setup(self):
+        return self._sync.setup()
+
+    # === 通用属性透传 ===
+    @property
+    def config_specs(self):
+        return self._sync.config_specs
+
+    def get_next_version(self, current, channel):
+        return self._sync.get_next_version(current, channel)
 
 
 def _get_store() -> PostgresStore:
@@ -225,8 +289,9 @@ def build_case_workflow():
 
     g = StateGraph(CaseWorkflowState)
 
-    # 添加节点（v1.2.0 节点级 timeout + error_handler，Saga 降级）
-    # timeout 仅 async 节点生效（v4 Phase E1 已将 6 节点改为 async def）
+    # 添加节点（节点级 timeout + error_handler，Saga 降级）
+    # timeout 仅 async invoke（ainvoke）模式下对 async 节点生效；
+    # checkpointer 已用 _AsyncCompatibleSyncCheckpointer 包装支持 async 接口
     g.add_node("ocr", ocr_node, timeout=180, error_handler=_make_error_handler("OCR"))
     g.add_node("classify", classify_node, timeout=60, error_handler=_make_error_handler("分类"))
     g.add_node("extract", extract_node, timeout=300, error_handler=_make_error_handler("字段抽取"))
