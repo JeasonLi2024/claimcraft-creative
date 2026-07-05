@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react"
 import { Routes, Route, Navigate, Outlet } from "react-router"
 import { useAuthStore } from "@/stores/auth-store"
 
+const HomePage = lazy(() => import("@/pages/HomePage"))
 const LoginPage = lazy(() => import("@/pages/LoginPage"))
 const RegisterPage = lazy(() => import("@/pages/RegisterPage"))
 const AppLayout = lazy(() => import("@/layouts/AppLayout"))
@@ -42,13 +43,15 @@ export default function App() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
+        {/* 公开落地页 */}
+        <Route path="/home" element={<HomePage />} />
         <Route element={<PublicOnly />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
         </Route>
         <Route element={<AuthGuard />}>
           <Route element={<AppLayout />}>
-            <Route path="/" element={<Navigate to="/cases" replace />} />
+            <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/cases" element={<CaseListPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/cases/:caseId/workspace" element={<WorkspacePage />} />
@@ -59,7 +62,7 @@ export default function App() {
             <Route path="/cases/:caseId/export" element={<ExportPage />} />
           </Route>
         </Route>
-        <Route path="*" element={<h1 className="p-8 text-center text-2xl text-muted-foreground">404 页面不存在</h1>} />
+        <Route path="*" element={<Navigate to="/home" replace />} />
       </Routes>
     </Suspense>
   )

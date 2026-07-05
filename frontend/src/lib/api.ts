@@ -28,13 +28,13 @@ export const casesApi = {
   create: (data: CaseCreateDTO) =>
     apiClient.post<Case>("/cases/", data).then((r) => r.data),
   update: (id: number, data: Partial<CaseCreateDTO>) =>
-    apiClient.patch<Case>(`/cases/${id}/`, data).then((r) => r.data),
+    apiClient.patch<Case>(`/cases/${id}/manage/`, data).then((r) => r.data),
   delete: (id: number) =>
-    apiClient.delete(`/cases/${id}/`).then((r) => r.data),
+    apiClient.delete(`/cases/${id}/manage/`).then((r) => r.data),
   transitionStatus: (id: number, data: { to_status: string; remark?: string }) =>
-    apiClient.patch<Case>(`/cases/${id}/transition_status/`, data).then((r) => r.data),
+    apiClient.post<Case>(`/cases/${id}/status/transition/`, data).then((r) => r.data),
   statusLogs: (id: number) =>
-    apiClient.get<StatusLog[] | { results: StatusLog[] }>(`/cases/${id}/status_logs/`).then((r) => {
+    apiClient.get<StatusLog[] | { results: StatusLog[] }>(`/cases/${id}/status-logs/`).then((r) => {
       const data = r.data as StatusLog[] | { results: StatusLog[] }
       return Array.isArray(data) ? data : data.results || []
     }),
@@ -44,7 +44,7 @@ export const casesApi = {
       return Array.isArray(data) ? data : data.results || []
     }),
   applyPreset: (caseId: number, presetId: string) =>
-    apiClient.post(`/cases/${caseId}/apply_preset/`, { preset_id: presetId }).then((r) => r.data),
+    apiClient.post(`/cases/${caseId}/apply-preset/`, { preset_id: presetId }).then((r) => r.data),
 }
 
 // Evidence
@@ -57,13 +57,13 @@ export const evidenceApi = {
     apiClient.delete(`/evidences/${id}/`).then((r) => r.data),
   upload: (caseId: number, file: File) => {
     const formData = new FormData()
-    formData.append("file", file)
+    formData.append("image", file)
     return apiClient.post<Evidence>(`/cases/${caseId}/evidences/upload/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }).then((r) => r.data)
   },
   getFields: (evidenceId: number) =>
-    apiClient.get<ExtractedField[]>(`/evidences/${evidenceId}/fields/`).then((r) => r.data),
+    apiClient.get<ExtractedField[]>(`/evidences/${evidenceId}/extracted-fields/`).then((r) => r.data),
   updateField: (id: number, data: { field_value: string }) =>
     apiClient.patch<ExtractedField>(`/extracted-fields/${id}/`, data).then((r) => r.data),
 }
@@ -81,9 +81,9 @@ export const timelineApi = {
 // Complaint
 export const complaintApi = {
   get: (caseId: number, templateType: string) =>
-    apiClient.get<ComplaintData>(`/cases/${caseId}/complaint/`, { params: { template_type: templateType } }).then((r) => r.data),
+    apiClient.get<ComplaintData>(`/cases/${caseId}/complaints/`, { params: { template_type: templateType } }).then((r) => r.data),
   regenerate: (caseId: number, templateType: string) =>
-    apiClient.post<ComplaintData>(`/cases/${caseId}/complaint/regenerate/`, { template_type: templateType }).then((r) => r.data),
+    apiClient.post<ComplaintData>(`/cases/${caseId}/complaints/regenerate/`, { template_type: templateType }).then((r) => r.data),
 }
 
 // Mask
@@ -91,7 +91,7 @@ export const maskApi = {
   getResults: (caseId: number) =>
     apiClient.get<{ items: MaskResult[] }>(`/cases/${caseId}/mask/`).then((r) => r.data.items || []),
   maskImages: (caseId: number) =>
-    apiClient.post(`/cases/${caseId}/mask/images/`).then((r) => r.data),
+    apiClient.post(`/cases/${caseId}/mask-images/`).then((r) => r.data),
 }
 
 // Export
