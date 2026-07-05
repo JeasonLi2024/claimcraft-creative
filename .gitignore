@@ -104,9 +104,15 @@ coverage.xml
 # ========================
 # Trae / Spec working files
 # ========================
-# 保留 .trae/specs/ 下的 spec 文档（团队协作需要），但忽略缓存
+# 保留 .trae/specs/ 下的 spec 文档（团队协作需要），但忽略内部规划文档与缓存
 .trae/cache/
 .trae/tmp/
+.trae/documents/
+
+# ========================
+# PaddleOCR cache
+# ========================
+.paddlex_cache/
 
 # ========================
 # Misc

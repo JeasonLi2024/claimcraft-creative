@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """证据图片打码服务：基于 Tesseract OCR 定位敏感文字区域并高斯模糊。"""
 import os
+import shutil
 import logging
 import re
 import io
@@ -9,7 +10,23 @@ from PIL import Image, ImageFilter
 import pytesseract
 
 logger = logging.getLogger(__name__)
-TESSERACT_CMD = r'D:\tesseract\tesseract.exe'
+
+
+def _resolve_tesseract_cmd():
+    """跨平台解析 Tesseract 可执行文件路径（与 ocr_service 一致）。"""
+    env_path = os.environ.get('TESSERACT_CMD')
+    if env_path and os.path.exists(env_path):
+        return env_path
+    which_path = shutil.which('tesseract')
+    if which_path:
+        return which_path
+    win_default = r'D:\tesseract\tesseract.exe'
+    if os.path.exists(win_default):
+        return win_default
+    return None
+
+
+TESSERACT_CMD = _resolve_tesseract_cmd()
 
 # 敏感信息正则
 SENSITIVE_PATTERNS = [
@@ -20,7 +37,11 @@ SENSITIVE_PATTERNS = [
 
 
 def mask_evidence_image(evidence):
-    """对证据图片执行打码，返回打码后图片路径。"""
+    """对证据图片执行打码，返回打码后图片路径。
+
+    C3 改造：文字定位使用 OCRPipeline 中的 Tesseract 策略（保持 image_to_data 行为）。
+    若 Tesseract 不可用，回退底部 1/3 模糊。
+    """
     if not evidence.image:
         return None
     image_path = evidence.image.path
@@ -28,8 +49,9 @@ def mask_evidence_image(evidence):
     width, height = img.size
     mask_regions = []
     # 1. 尝试用 pytesseract image_to_data 获取文字坐标
+    #    （仅 Tesseract 策略支持坐标输出，其他策略仅返回文本）
     try:
-        if os.path.exists(TESSERACT_CMD):
+        if TESSERACT_CMD:
             pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
         data = pytesseract.image_to_data(
             img, lang='chi_sim+eng', output_type=pytesseract.Output.DICT

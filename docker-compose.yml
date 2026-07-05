@@ -29,8 +29,73 @@ services:
       - DB_NAME=claimcraft
       - DB_USER=root
       - DB_PASSWORD=${DB_PASSWORD:-claimcraft_dev_2025}
+      # 文本 LLM 配置
+      - LLM_PROVIDER=${LLM_PROVIDER:-siliconflow}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.3}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-3}
+      # OCR 视觉 LLM 配置（独立于文本 LLM，不填则回退到 LLM_*）
+      - LLM_OCR_PROVIDER=${LLM_OCR_PROVIDER:-siliconflow}
+      - LLM_OCR_API_KEY=${LLM_OCR_API_KEY:-}
+      - LLM_OCR_API_KEY_PP=${LLM_OCR_API_KEY_PP:-}
+      - LLM_OCR_BASE_URL=${LLM_OCR_BASE_URL:-}
+      - LLM_OCR_MODEL=${LLM_OCR_MODEL:-deepseek-ai/DeepSeek-OCR}
+      - LLM_OCR_TEMPERATURE=${LLM_OCR_TEMPERATURE:-0.1}
+      - LLM_OCR_TIMEOUT=${LLM_OCR_TIMEOUT:-60}
+      - LLM_OCR_MAX_RETRIES=${LLM_OCR_MAX_RETRIES:-3}
+      - LLM_OCR_PROMPT=${LLM_OCR_PROMPT:-}
+      - LLM_OCR_MAX_IMAGE_MB=${LLM_OCR_MAX_IMAGE_MB:-10}
+      # PaddleOCR-VL 云端 OCR 配置（aistudio 高精度文档识别）
+      - PADDLEOCR_VL_TOKEN=${PADDLEOCR_VL_TOKEN:-}
+      - PADDLEOCR_VL_BASE_URL=${PADDLEOCR_VL_BASE_URL:-}
+      - PADDLEOCR_VL_MODEL=${PADDLEOCR_VL_MODEL:-PaddleOCR-VL-1.6}
+      - PADDLEOCR_VL_USE_DOC_ORIENTATION=${PADDLEOCR_VL_USE_DOC_ORIENTATION:-false}
+      - PADDLEOCR_VL_USE_DOC_UNWARPING=${PADDLEOCR_VL_USE_DOC_UNWARPING:-false}
+      - PADDLEOCR_VL_USE_CHART_RECOGNITION=${PADDLEOCR_VL_USE_CHART_RECOGNITION:-false}
+      - PADDLEOCR_VL_POLL_INTERVAL=${PADDLEOCR_VL_POLL_INTERVAL:-3}
+      - PADDLEOCR_VL_POLL_TIMEOUT=${PADDLEOCR_VL_POLL_TIMEOUT:-300}
+      - PADDLEOCR_VL_REQUEST_TIMEOUT=${PADDLEOCR_VL_REQUEST_TIMEOUT:-30}
+      # LangExtract（基于 Qwen3 的信息抽取，字段抽取首选）
+      - LANGEXTRACT_API_KEY=${LANGEXTRACT_API_KEY:-}
+      - LANGEXTRACT_BASE_URL=${LANGEXTRACT_BASE_URL:-https://api.siliconflow.cn/v1}
+      - LANGEXTRACT_PROVIDER=${LANGEXTRACT_PROVIDER:-openai}
+      - LANGEXTRACT_MODEL=${LANGEXTRACT_MODEL:-Qwen/Qwen3-32B}
+      - LANGEXTRACT_PASSES=${LANGEXTRACT_PASSES:-1}
+      - LANGEXTRACT_PROMPT=${LANGEXTRACT_PROMPT:-}
+      # LLM 通用调用参数（跨场景共享的重试/超时配置）
+      - LLM_COMMON_RETRY_MAX_ATTEMPTS=${LLM_COMMON_RETRY_MAX_ATTEMPTS:-3}
+      - LLM_COMMON_RETRY_WAIT_MIN=${LLM_COMMON_RETRY_WAIT_MIN:-2}
+      - LLM_COMMON_RETRY_WAIT_MAX=${LLM_COMMON_RETRY_WAIT_MAX:-10}
+      # OCR 引擎配置
+      - OCR_STRATEGIES=${OCR_STRATEGIES:-paddleocr_vl,llm_vision,paddleocr,mock}
+      - OCR_PADDLEOCR_ENABLED=${OCR_PADDLEOCR_ENABLED:-true}
+      - OCR_RETRY_MAX_ATTEMPTS=${OCR_RETRY_MAX_ATTEMPTS:-3}
+      - OCR_RETRY_WAIT_MIN=${OCR_RETRY_WAIT_MIN:-1}
+      - OCR_RETRY_WAIT_MAX=${OCR_RETRY_WAIT_MAX:-8}
+      - TESSERACT_CMD=${TESSERACT_CMD:-}
+      # LangGraph Checkpointer 持久化（PostgreSQL，独立于业务 MySQL）
+      - CHECKPOINTER_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
+      - CHECKPOINTER_POOL_SIZE=${CHECKPOINTER_POOL_SIZE:-20}
+      # v3 新增：连接池调优参数
+      - CHECKPOINTER_POOL_MIN_SIZE=${CHECKPOINTER_POOL_MIN_SIZE:-5}
+      - CHECKPOINTER_POOL_TIMEOUT=${CHECKPOINTER_POOL_TIMEOUT:-5}
+      - CHECKPOINTER_POOL_MAX_IDLE=${CHECKPOINTER_POOL_MAX_IDLE:-300}
+      # LangSmith 观察配置（全链路 trace 追踪）
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-claimcraft-creative}
+      - LANGSMITH_SAMPLING_RATE=${LANGSMITH_SAMPLING_RATE:-1}
+      # v3 新增：LangSmith 区域与 Workspace
+      - LANGSMITH_REGION=${LANGSMITH_REGION:-}
+      - LANGSMITH_WORKSPACE_ID=${LANGSMITH_WORKSPACE_ID:-}
     depends_on:
       mysql:
+        condition: service_healthy
+      postgres-checkpointer:
         condition: service_healthy
     command: >
       sh -c "python manage.py migrate &&
@@ -39,6 +104,23 @@ services:
              gunicorn claimcraft.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
     volumes:
       - media_data:/app/media
+    restart: unless-stopped
+
+  postgres-checkpointer:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: claimcraft_checkpoints
+      POSTGRES_USER: claimcraft
+      POSTGRES_PASSWORD: ${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}
+    volumes:
+      - pg_checkpoints_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimcraft -d claimcraft_checkpoints"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   frontend:
@@ -54,3 +136,4 @@ services:
 volumes:
   mysql_data:
   media_data:
+  pg_checkpoints_data:

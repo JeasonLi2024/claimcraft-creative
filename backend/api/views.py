@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """DRF 视图。"""
+import logging
+import time
+
 from django.db.models import Count, Max, Q
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
@@ -43,6 +46,8 @@ from api.services import (
     image_mask_service,
     pdf_service,
 )
+
+logger = logging.getLogger(__name__)
 
 # 允许的图片扩展名与最大文件大小（10MB）
 ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
@@ -353,12 +358,12 @@ class TimelineNodeUpdateView(APIView):
 # ===== 投诉视图 =====
 
 class ComplaintView(APIView):
-    """投诉文本：GET /cases/<id>/complaints/?template=<type>。"""
+    """投诉文本：GET /cases/<id>/complaints/?template_type=<type>。"""
 
     def get(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
-        template_type = request.query_params.get('template', 'platform')
+        template_type = request.query_params.get('template_type', 'platform')
         result = complaint_service.generate_complaint(case, template_type)
         if result is None:
             return Response(
@@ -390,7 +395,20 @@ class ComplaintRegenerateView(APIView):
 # ===== 打码视图 =====
 
 class MaskView(APIView):
-    """敏感信息打码：POST /cases/<id>/mask/。"""
+    """敏感信息打码：GET/POST /cases/<id>/mask/。
+
+    GET：获取当前打码结果（实时计算，不修改数据库）。
+    POST：同 GET，保持兼容。
+    """
+
+    def get(self, request, case_id):
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+        result = mask_service.mask_case_sensitive_info(case)
+        return Response({
+            'case_id': case.id,
+            'count': len(result),
+            'items': result,
+        })
 
     def post(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
@@ -539,11 +557,11 @@ class ExportPackageView(APIView):
 
 
 class ExportPDFView(APIView):
-    """PDF 投诉材料导出：GET /cases/<id>/export/pdf/?template=<type>。"""
+    """PDF 投诉材料导出：GET /cases/<id>/export/pdf/?template_type=<type>。"""
 
     def get(self, request, pk):
         case = get_object_or_404(Case, pk=pk, owner=request.user)
-        template_type = request.query_params.get('template', 'platform')
+        template_type = request.query_params.get('template_type', 'platform')
         buf = pdf_service.generate_complaint_pdf(case, template_type=template_type)
         resp = HttpResponse(buf.read(), content_type='application/pdf')
         resp['Content-Disposition'] = (
@@ -630,7 +648,7 @@ class ApplyPresetView(APIView):
 # ===== Task 28：数据统计仪表盘 =====
 
 class StatsView(APIView):
-    """聚合统计：GET /stats/ 按当前用户过滤。
+    """聚合统计：GET /stats/dashboard/ 按当前用户过滤。
 
     返回：案件类型分布、状态分布、证据总数、抽取字段总数、
     最近 30 天每日新建案件数、状态转换统计、案件总数。
@@ -684,4 +702,148 @@ class StatsView(APIView):
             'cases_recent_30days': recent_cases,
             'status_transitions': status_transitions,
             'case_total': user_cases.count(),
+        })
+
+
+# ===== B10：案件工作流（LangGraph 智能体）=====
+
+class CaseWorkflowView(APIView):
+    """案件工作流：POST /api/cases/<id>/run-workflow/
+
+    基于 LangGraph StateGraph 构建 6 节点工作流（多证据聚合版）：
+    OCR → 证据分类 → 字段抽取 → (HITL 校正?) → 证据链构造 → 投诉生成
+
+    Body:
+        evidence_ids: list[int] (可选，指定多个证据；不传则处理案件全部有图证据)
+        resume: dict (可选，HITL 恢复时传入人工校正结果)
+
+    响应：
+        - 首次启动 + 无低置信度字段：status="completed"，含 complaint_draft
+        - 首次启动 + 有低置信度字段：status="interrupted"，含 interrupt_data
+        - HITL 恢复：status="completed"，含 complaint_draft
+    """
+
+    def post(self, request, pk):
+        from asgiref.sync import async_to_sync
+        from langgraph.types import Command
+        from api.agents import build_case_workflow
+        from api.services.langsmith_service import trace_for_case
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        evidence_ids = request.data.get('evidence_ids', [])
+        resume_value = request.data.get('resume')
+
+        # 1. 获取或生成 thread_id（持久化到 Case 模型）
+        if not case.thread_id:
+            case.thread_id = f"case-{case.id}-{int(time.time())}"
+            case.save(update_fields=['thread_id'])
+        thread_id = case.thread_id
+
+        # 2. 单例 workflow（不再每次重新编译）
+        workflow = build_case_workflow()
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # 3. 探测敏感证据（LangSmith 条件追踪：敏感证据 enabled=False 零数据保留）
+        has_sensitive = case.evidences.filter(has_sensitive_info=True).exists()
+
+        try:
+            # 按 case 注入 LangSmith 追踪上下文（metadata + tags + project 路由）
+            with trace_for_case(
+                case_id=case.id,
+                owner_id=request.user.id,
+                case_type=case.case_type,
+                has_sensitive=has_sensitive,
+            ):
+                if resume_value is not None:
+                    # HITL 恢复（async 桥接：节点为 async def，需用 ainvoke + async_to_sync）
+                    result = async_to_sync(workflow.ainvoke)(Command(resume=resume_value), config)
+                else:
+                    # 首次启动
+                    initial_state = {
+                        "case_id": case.id,
+                        "evidence_ids": evidence_ids,
+                        "evidence_ocr_results": [],
+                        "evidence_classify_results": [],
+                        "evidence_extract_results": [],
+                        "needs_human_review": False,
+                        "evidence_chain": [],
+                        "complaint_draft": None,
+                        "review_decision": None,
+                        "errors": [],
+                    }
+                    result = async_to_sync(workflow.ainvoke)(initial_state, config)
+        except Exception as e:
+            logger.error(f"案件 {case.id} 工作流执行失败: {e}", exc_info=True)
+            return Response(
+                {
+                    "status": "error",
+                    "case_id": case.id,
+                    "thread_id": thread_id,
+                    "error": f"工作流执行失败: {e}",
+                    "errors": [str(e)],
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # 检查是否在 interrupt 处暂停
+        interrupted = "__interrupt__" in result
+
+        # 序列化 interrupt_data（Interrupt 对象不可直接 JSON 序列化）
+        interrupt_data = None
+        if interrupted:
+            try:
+                interrupts = result.get("__interrupt__", [])
+                if interrupts:
+                    interrupt_data = [
+                        {"id": getattr(i, "id", None), "value": getattr(i, "value", str(i))}
+                        for i in interrupts
+                    ]
+            except Exception as e:
+                logger.warning(f"序列化 interrupt 失败: {e}", exc_info=True)
+                interrupt_data = [{"error": f"序列化 interrupt 失败: {e}"}]
+
+        return Response({
+            "status": "interrupted" if interrupted else "completed",
+            "case_id": case.id,
+            "thread_id": thread_id,
+            "interrupt_data": interrupt_data,
+            "complaint_draft": result.get("complaint_draft"),
+            "errors": result.get("errors", []),
+        })
+
+
+class CaseWorkflowHistoryView(APIView):
+    """工作流状态历史：GET /api/cases/<id>/workflow/history/
+
+    返回 checkpoint 列表摘要（时间、当前节点、错误数、是否含 complaint_draft），
+    用于调试与审计。基于 langgraph `graph.get_state_history(config)`。
+
+    安全：仅返回摘要（不暴露完整 state，避免敏感字段泄漏）；owner 校验同其他视图。
+    """
+    def get(self, request, pk):
+        from api.agents import build_case_workflow
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        if not case.thread_id:
+            return Response(
+                {'detail': '案件尚未启动工作流'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        workflow = build_case_workflow()
+        config = {"configurable": {"thread_id": case.thread_id}}
+        history = []
+        for state in workflow.get_state_history(config):
+            values = state.values or {}
+            history.append({
+                'checkpoint_id': state.config.get('configurable', {}).get('checkpoint_id'),
+                'created_at': state.created_at.isoformat() if state.created_at else None,
+                'next': list(state.next) if state.next else [],
+                'error_count': len(values.get('errors', [])),
+                'has_complaint': bool(values.get('complaint_draft')),
+                'evidence_processed': len(values.get('evidence_ocr_results', [])),
+            })
+        return Response({
+            'case_id': case.id,
+            'thread_id': case.thread_id,
+            'history': history,
         })

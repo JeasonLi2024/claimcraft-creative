@@ -20,16 +20,46 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib import colors
 
 logger = logging.getLogger(__name__)
-SIMSUN_PATH = r'C:\Windows\Fonts\simsun.ttc'
+
+
+def _resolve_chinese_font_path():
+    """跨平台解析中文字体文件路径（A3 修复）。
+
+    优先级：
+    1. 环境变量 SIMSUN_PATH
+    2. Windows 默认 C:\\Windows\\Fonts\\simsun.ttc
+    3. Linux 常见路径：/usr/share/fonts/truetype/wqy/wqy-microhei.ttc
+                      /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+    4. None（交给 _register_font 走 CID 字体回退）
+    """
+    env_path = os.environ.get('SIMSUN_PATH')
+    if env_path and os.path.exists(env_path):
+        return env_path
+    candidates = [
+        r'C:\Windows\Fonts\simsun.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/arphic/uming.ttc',
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+SIMSUN_PATH = _resolve_chinese_font_path()
 
 
 def _register_font():
     """注册中文字体，三级回退。"""
-    try:
-        pdfmetrics.registerFont(TTFont('SimSun', SIMSUN_PATH))
-        return 'SimSun'
-    except Exception as e:
-        logger.warning(f"simsun.ttc 注册失败: {e}")
+    if SIMSUN_PATH:
+        try:
+            pdfmetrics.registerFont(TTFont('SimSun', SIMSUN_PATH))
+            return 'SimSun'
+        except Exception as e:
+            logger.warning(f"中文字体注册失败 (path={SIMSUN_PATH}): {e}")
+    else:
+        logger.info("未找到本地中文字体文件，直接尝试 CID 字体")
     try:
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))

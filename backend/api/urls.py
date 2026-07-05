@@ -15,6 +15,8 @@ from api.views import (
     CaseUpdateDeleteView,
     CaseStatusTransitionView,
     CaseStatusLogView,
+    CaseWorkflowView,
+    CaseWorkflowHistoryView,
     MaskImageView,
     EvidenceListCreateView,
     EvidenceUploadView,
@@ -50,6 +52,8 @@ urlpatterns = [
     path('cases/<int:pk>/mask-images/', MaskImageView.as_view()),
     path('cases/<int:pk>/export/package/', ExportPackageView.as_view()),
     path('cases/<int:pk>/export/pdf/', ExportPDFView.as_view()),
+    path('cases/<int:pk>/run-workflow/', CaseWorkflowView.as_view()),
+    path('cases/<int:pk>/workflow/history/', CaseWorkflowHistoryView.as_view()),
     # 既有路由
     path('cases/<int:pk>/', CaseDetailView.as_view()),
     path('cases/<int:case_id>/evidences/', EvidenceListCreateView.as_view()),
@@ -68,5 +72,5 @@ urlpatterns = [
     path('case-presets/', CaseTypePresetListView.as_view()),
     path('cases/<int:pk>/apply-preset/', ApplyPresetView.as_view()),
     # Task 28：数据统计仪表盘
-    path('stats/', StatsView.as_view()),
+    path('stats/dashboard/', StatsView.as_view()),
 ]

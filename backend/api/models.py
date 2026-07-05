@@ -49,6 +49,10 @@ class Case(models.Model):
         User, on_delete=models.CASCADE, related_name='cases',
         verbose_name='所属用户', null=True, blank=True
     )
+    thread_id = models.CharField(
+        'LangGraph Thread ID', max_length=100, blank=True, default='',
+        help_text='LangGraph checkpointer 的 thread_id，用于 HITL 状态恢复'
+    )
 
     class Meta:
         verbose_name = '案件'
@@ -161,6 +165,10 @@ class TimelineNode(models.Model):
     related_evidence_codes = models.CharField(
         '关联证据编号', max_length=200, blank=True, default='',
         help_text='逗号分隔，如 E1,E2'
+    )
+    category = models.CharField(
+        '事件类别', max_length=16, blank=True, default='',
+        help_text='下单/付款/发货/沟通/退款/承诺/违约/其他'
     )
     order = models.IntegerField('排序', default=0)
     auto_generated = models.BooleanField('是否自动生成', default=False)
