@@ -1,0 +1,240 @@
+<h2>EvidencePage 实时进度面板布局</h2>
+<p class="subtitle">工作流运行时，进度与产物如何在证据页上呈现？三个布局方案，点击选择。</p>
+
+<div class="cards" data-multiselect>
+
+  <!-- 方案 A -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#f8fafc;">
+      <div style="display:flex;height:280px;font-family:system-ui;font-size:11px;">
+        <!-- 主区：证据网格 -->
+        <div style="flex:1;padding:12px;border-right:1px solid #e2e8f0;overflow:hidden;">
+          <div style="font-weight:600;margin-bottom:8px;color:#475569;">证据网格（保持不变）</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:4px;height:50px;padding:4px;">
+              <div style="background:#cbd5e1;height:24px;border-radius:2px;"></div>
+              <div style="font-size:9px;color:#16a34a;margin-top:2px;">✓ 已分类 · 发票</div>
+            </div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:4px;height:50px;padding:4px;">
+              <div style="background:#cbd5e1;height:24px;border-radius:2px;"></div>
+              <div style="font-size:9px;color:#0284c7;margin-top:2px;">⟳ OCR 中...</div>
+            </div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:4px;height:50px;padding:4px;">
+              <div style="background:#cbd5e1;height:24px;border-radius:2px;"></div>
+              <div style="font-size:9px;color:#94a3b8;margin-top:2px;">○ 待处理</div>
+            </div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:4px;height:50px;padding:4px;">
+              <div style="background:#cbd5e1;height:24px;border-radius:2px;"></div>
+              <div style="font-size:9px;color:#94a3b8;margin-top:2px;">○ 待处理</div>
+            </div>
+          </div>
+          <div style="margin-top:10px;font-size:9px;color:#64748b;">字段表 / 时间线 / 投诉书 在下方滚动区</div>
+        </div>
+        <!-- 右栏：垂直步进器 -->
+        <div style="width:130px;padding:10px;background:#1e293b;color:#e2e8f0;overflow:hidden;">
+          <div style="font-weight:600;margin-bottom:8px;font-size:10px;">工作流进度</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;align-items:center;gap:4px;"><span style="color:#22c55e;">●</span><span style="font-size:9px;">预分类</span></div>
+            <div style="display:flex;align-items:center;gap:4px;"><span style="color:#22c55e;">●</span><span style="font-size:9px;">OCR</span></div>
+            <div style="display:flex;align-items:center;gap:4px;"><span style="color:#3b82f6;">◐</span><span style="font-size:9px;font-weight:600;">分类</span></div>
+            <div style="display:flex;align-items:center;gap:4px;opacity:0.4;"><span>○</span><span style="font-size:9px;">抽取</span></div>
+            <div style="display:flex;align-items:center;gap:4px;opacity:0.4;"><span>○</span><span style="font-size:9px;">审核</span></div>
+            <div style="display:flex;align-items:center;gap:4px;opacity:0.4;"><span>○</span><span style="font-size:9px;">证据链</span></div>
+            <div style="display:flex;align-items:center;gap:4px;opacity:0.4;"><span>○</span><span style="font-size:9px;">投诉书</span></div>
+          </div>
+          <div style="margin-top:10px;padding:6px;background:#0f172a;border-radius:3px;font-size:8px;">
+            <div style="color:#94a3b8;margin-bottom:2px;">当前节点</div>
+            <div style="color:#60a5fa;">分类中...</div>
+            <div style="color:#64748b;margin-top:2px;">3/5 证据已分类</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 右栏垂直步进器</h3>
+      <p>主区证据网格保持不变，右侧 320px 固定栏显示 7 节点垂直步进器 + 当前节点状态。步进器完成后可折叠。</p>
+    </div>
+  </div>
+
+  <!-- 方案 B -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#f8fafc;">
+      <div style="height:280px;font-family:system-ui;font-size:11px;display:flex;flex-direction:column;">
+        <!-- 顶部水平进度条 -->
+        <div style="padding:8px 12px;background:#1e293b;color:#e2e8f0;">
+          <div style="display:flex;align-items:center;gap:4px;font-size:9px;">
+            <span style="background:#22c55e;color:#fff;padding:2px 6px;border-radius:8px;">✓ 预分类</span>
+            <span style="color:#475569;">→</span>
+            <span style="background:#22c55e;color:#fff;padding:2px 6px;border-radius:8px;">✓ OCR</span>
+            <span style="color:#475569;">→</span>
+            <span style="background:#3b82f6;color:#fff;padding:2px 6px;border-radius:8px;">⟳ 分类</span>
+            <span style="color:#475569;">→</span>
+            <span style="color:#64748b;padding:2px 6px;">○ 抽取</span>
+            <span style="color:#475569;">→</span>
+            <span style="color:#64748b;padding:2px 6px;">○ 审核</span>
+            <span style="color:#475569;">→</span>
+            <span style="color:#64748b;padding:2px 6px;">○ 证据链</span>
+            <span style="color:#475569;">→</span>
+            <span style="color:#64748b;padding:2px 6px;">○ 投诉书</span>
+          </div>
+        </div>
+        <!-- 主区分屏 -->
+        <div style="flex:1;display:flex;overflow:hidden;">
+          <div style="flex:1;padding:10px;border-right:1px solid #e2e8f0;">
+            <div style="font-weight:600;margin-bottom:6px;color:#475569;font-size:10px;">证据列表</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:3px;height:36px;padding:3px;font-size:8px;">
+                <div style="background:#cbd5e1;height:18px;border-radius:2px;"></div>
+                <div style="color:#16a34a;">✓ 发票</div>
+              </div>
+              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:3px;height:36px;padding:3px;font-size:8px;">
+                <div style="background:#cbd5e1;height:18px;border-radius:2px;"></div>
+                <div style="color:#0284c7;">⟳ OCR</div>
+              </div>
+            </div>
+          </div>
+          <div style="width:150px;padding:10px;background:#fef3c7;overflow:hidden;">
+            <div style="font-weight:600;margin-bottom:6px;color:#92400e;font-size:10px;">当前节点产物</div>
+            <div style="background:#fff;border-radius:3px;padding:5px;font-size:8px;color:#374151;">
+              <div style="font-weight:600;">证据 #3</div>
+              <div style="color:#16a34a;">类别: 发票</div>
+              <div style="color:#64748b;">置信度: 0.92</div>
+            </div>
+            <div style="background:#fff;border-radius:3px;padding:5px;font-size:8px;color:#374151;margin-top:4px;">
+              <div style="font-weight:600;">证据 #4</div>
+              <div style="color:#16a34a;">类别: 收据</div>
+              <div style="color:#64748b;">置信度: 0.88</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 顶部水平进度条 + 分屏主区</h3>
+      <p>顶部 7 步水平进度条（带状态徽章），主区左=证据列表，右=当前节点实时产物详情（黄色高亮区）。产物随节点完成累积到主区。</p>
+    </div>
+  </div>
+
+  <!-- 方案 C -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#f8fafc;">
+      <div style="display:flex;height:280px;font-family:system-ui;font-size:11px;">
+        <!-- 左侧步进轨道 -->
+        <div style="width:120px;padding:10px;background:#0f172a;color:#e2e8f0;overflow:hidden;">
+          <div style="font-weight:600;margin-bottom:8px;font-size:10px;">节点轨道</div>
+          <div style="position:relative;padding-left:14px;">
+            <div style="position:absolute;left:4px;top:4px;bottom:4px;width:2px;background:#334155;"></div>
+            <div style="margin-bottom:8px;position:relative;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#22c55e;border-radius:50%;"></div>
+              <div style="font-size:9px;">预分类</div>
+              <div style="font-size:7px;color:#64748b;">2 项</div>
+            </div>
+            <div style="margin-bottom:8px;position:relative;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#22c55e;border-radius:50%;"></div>
+              <div style="font-size:9px;">OCR</div>
+              <div style="font-size:7px;color:#64748b;">2 项</div>
+            </div>
+            <div style="margin-bottom:8px;position:relative;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#3b82f6;border-radius:50%;box-shadow:0 0 6px #3b82f6;"></div>
+              <div style="font-size:9px;font-weight:600;">分类</div>
+              <div style="font-size:7px;color:#60a5fa;">运行中</div>
+            </div>
+            <div style="margin-bottom:8px;position:relative;opacity:0.4;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#334155;border-radius:50%;border:1px solid #475569;"></div>
+              <div style="font-size:9px;">抽取</div>
+            </div>
+            <div style="margin-bottom:8px;position:relative;opacity:0.4;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#334155;border-radius:50%;border:1px solid #475569;"></div>
+              <div style="font-size:9px;">证据链</div>
+            </div>
+            <div style="position:relative;opacity:0.4;">
+              <div style="position:absolute;left:-14px;top:0;width:10px;height:10px;background:#334155;border-radius:50%;border:1px solid #475569;"></div>
+              <div style="font-size:9px;">投诉书</div>
+            </div>
+          </div>
+        </div>
+        <!-- 主区：产物流 -->
+        <div style="flex:1;padding:10px;overflow:hidden;">
+          <div style="font-weight:600;margin-bottom:6px;color:#475569;font-size:10px;">产物流（按完成顺序插入）</div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <div style="background:#dcfce7;border-left:3px solid #22c55e;padding:4px 6px;border-radius:2px;font-size:8px;">
+              <div style="font-weight:600;color:#15803d;">预分类完成</div>
+              <div style="color:#374151;">2 张证据 → 发票/收据</div>
+            </div>
+            <div style="background:#dcfce7;border-left:3px solid #22c55e;padding:4px 6px;border-radius:2px;font-size:8px;">
+              <div style="font-weight:600;color:#15803d;">OCR 完成</div>
+              <div style="color:#374151;">2 段文本已提取（点击展开）</div>
+            </div>
+            <div style="background:#dbeafe;border-left:3px solid #3b82f6;padding:4px 6px;border-radius:2px;font-size:8px;">
+              <div style="font-weight:600;color:#1e40af;">分类中...</div>
+              <div style="color:#374151;">1/2 已分类</div>
+            </div>
+            <div style="background:#f1f5f9;border:1px dashed #cbd5e1;padding:4px 6px;border-radius:2px;font-size:8px;color:#94a3b8;">
+              待抽取...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 左侧步进轨道 + 主区产物流</h3>
+      <p>左侧 120px 垂直节点轨道（带连接线 + 状态点），主区随节点完成逐个插入产物区块（绿=完成，蓝=运行中，虚线=待处理）。产物按时间顺序流入。</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>三个方案的差异总结</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>方案 A 优势</h4>
+      <ul>
+        <li>证据网格不动，改动最小</li>
+        <li>步进器常驻可视，状态清晰</li>
+        <li>移动端步进器可折叠到顶部</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>方案 A 劣势</h4>
+      <ul>
+        <li>右栏占空间，小屏挤压证据网格</li>
+        <li>产物预览区狭小，投诉书长文本难展示</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>方案 B 优势</h4>
+      <ul>
+        <li>水平进度条符合主流 AI 工具心智</li>
+        <li>当前节点产物有专属高亮区</li>
+        <li>主区宽度充足</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>方案 B 劣势</h4>
+      <ul>
+        <li>顶部进度条节点多时拥挤</li>
+        <li>产物区与下方产物表可能重复</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>方案 C 优势</h4>
+      <ul>
+        <li>产物按时间流入，叙事感强</li>
+        <li>左侧轨道紧凑，主区最大化</li>
+        <li>每个产物区块可独立展开详情</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>方案 C 劣势</h4>
+      <ul>
+        <li>产物流可能很长，需折叠策略</li>
+        <li>与现有证据网格布局融合需调整</li>
+      </ul>
+    </div>
+  </div>
+</div>

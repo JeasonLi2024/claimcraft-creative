@@ -116,8 +116,16 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             )
 
             # v10 新增：Tools 工具集启用判断
-            from api.agents.tools.law_tools import is_tools_enabled, get_all_law_tools, _get_max_iterations
+            from api.agents.tools.law_tools import (
+                is_tools_enabled, get_all_law_tools, _get_max_iterations,
+                invoke_llm_with_tools, pre_retrieve_law_articles,
+            )
             tools_enabled = is_tools_enabled()
+
+            # v10 新增：主动预检索法条（强制首次，失败降级）
+            case_keywords = _extract_complaint_keywords(case, all_fields)
+            law_articles = await pre_retrieve_law_articles(case_keywords, top_k=5)
+            law_articles_section = _format_complaint_law_section(law_articles)
 
             if tools_enabled:
                 tools_section = TOOLS_ENABLED_SECTION
@@ -130,12 +138,21 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
                 facts_json=facts_json,
                 timeline_json=timeline_json,
                 tools_section=tools_section,
+                law_articles_section=law_articles_section,
             )
 
             if tools_enabled:
-                # v10 新增：绑定 Tools 让 LLM 主动调用查询法律条款
-                rewritten = await _rewrite_with_tools(
-                    prompt, tone, errors
+                # v10：绑定 7 个工具 + 多轮工具调用循环（使用通用函数）
+                tools = get_all_law_tools()
+                rewritten, tool_call_log = await invoke_llm_with_tools(
+                    prompt=prompt,
+                    tools=tools,
+                    max_iterations=_get_max_iterations(),
+                    errors=errors,
+                    node_name="投诉生成",
+                )
+                logger.info(
+                    f"[投诉生成] 工具调用完成，共 {len(tool_call_log)} 次"
                 )
             else:
                 # 原逻辑：单次 LLM 重写
@@ -197,98 +214,67 @@ def _select_tone(extracted_fields: list[dict]) -> str:
     return "restrained"
 
 
-async def _rewrite_with_tools(prompt: str, tone: str, errors: list[str]) -> str:
-    """v10 新增：用绑定 Tools 的 LLM 重写投诉正文（多轮工具调用）。
+def _extract_complaint_keywords(case, all_fields: list[dict]) -> list[str]:
+    """从案件描述和抽取字段提取用于 RAG 检索的关键词。"""
+    keywords = []
+    description = case.description if case else ""
 
-    流程：
-    1. 绑定 Tools 到 LLM（llm.bind_tools）
-    2. 发送 prompt，LLM 返回 content + tool_calls
-    3. 执行 tool_calls（asyncio.gather 并行）
-    4. 将 tool_results 追加到消息历史，再次调用 LLM
-    5. 循环直到 LLM 不再调用工具或达到最大轮数
-    6. 返回最终 content（投诉正文）
+    if description:
+        keywords.append(description[:200])
 
-    Args:
-        prompt: 初始重写 prompt
-        tone: 语气
-        errors: 错误累积列表
-
-    Returns:
-        重写后的投诉正文
-    """
-    from api.agents.tools.law_tools import get_all_law_tools, _get_max_iterations
-    from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-
-    llm = llm_service.get_scenario_llm("text")
-    tools = get_all_law_tools()
-    llm_with_tools = llm.bind_tools(tools)
-
-    # 构建 tool_name → tool 映射（便于执行 tool_calls）
-    tool_map = {t.name: t for t in tools}
-
-    messages = [HumanMessage(content=prompt)]
-    max_iterations = _get_max_iterations()
-
-    for iteration in range(max_iterations):
-        try:
-            response = await llm_with_tools.ainvoke(messages)
-        except Exception as e:
-            logger.warning(f"LLM 工具调用失败 (iteration {iteration}): {e}")
-            errors.append(f"LLM 工具调用失败: {e}")
-            break
-
-        # 若无 tool_calls，返回最终 content
-        if not response.tool_calls:
-            logger.info(f"[投诉生成] Tools 调用完成（{iteration} 轮），返回最终正文")
-            return response.content if hasattr(response, 'content') else str(response)
-
-        # 追加 AI 消息（含 tool_calls）
-        messages.append(response)
-
-        # 执行所有 tool_calls（asyncio.gather 并行）
-        import asyncio
-        async def _exec_tool(tool_call):
-            tool_name = tool_call['name']
-            tool_args = tool_call['args']
-            tool = tool_map.get(tool_name)
-            if not tool:
-                return ToolMessage(
-                    content=f"工具 {tool_name} 不存在",
-                    tool_call_id=tool_call['id']
-                )
+    # 从字段值提取关键词
+    for f in all_fields:
+        field_name = f.get("field_name", "")
+        field_value = f.get("field_value", "")
+        if field_name == "金额":
             try:
-                logger.info(
-                    f"[投诉生成] 调用工具 {tool_name} (args={tool_args})"
-                )
-                result = await tool.ainvoke(tool_args)
-                return ToolMessage(
-                    content=result if isinstance(result, str) else str(result),
-                    tool_call_id=tool_call['id']
-                )
-            except Exception as e:
-                logger.error(f"工具 {tool_name} 执行失败: {e}", exc_info=True)
-                return ToolMessage(
-                    content=f"工具执行失败: {e}",
-                    tool_call_id=tool_call['id']
-                )
+                amount = float(field_value)
+                if amount > 1000:
+                    keywords.append("欺诈")
+                    keywords.append("退一赔三")
+            except (ValueError, TypeError):
+                pass
+        elif field_name in ("商品名", "商品名称"):
+            keywords.append(field_value)
 
-        tool_messages = await asyncio.gather(*[
-            _exec_tool(tc) for tc in response.tool_calls
-        ])
-        messages.extend(tool_messages)
+    # 案件类型相关关键词
+    case_type = case.case_type if case else ""
+    type_keywords_map = {
+        "shopping": ["网购", "商品", "退换货"],
+        "service": ["服务", "违约"],
+        "secondhand": ["二手", "交易"],
+    }
+    keywords.extend(type_keywords_map.get(case_type, []))
 
-        logger.info(
-            f"[投诉生成] iteration {iteration + 1}: 执行 {len(response.tool_calls)} 个工具"
-        )
+    return keywords
 
-    # 达到最大轮数，强制获取最终 content
-    logger.warning(
-        f"[投诉生成] 达到最大工具调用轮数 {max_iterations}，强制结束"
+
+def _format_complaint_law_section(law_articles: list[dict]) -> str:
+    """格式化法条注入投诉重写 prompt 的片段。"""
+    from api.agents.prompts.templates import (
+        COMPLAINT_LAW_ARTICLES_SECTION_TEMPLATE,
+        COMPLAINT_LAW_ARTICLES_EMPTY_SECTION,
     )
+
+    if not law_articles:
+        return COMPLAINT_LAW_ARTICLES_EMPTY_SECTION
+
     try:
-        final_response = await llm.ainvoke(messages)
-        return final_response.content if hasattr(final_response, 'content') else str(final_response)
+        law_articles_json = json.dumps(
+            [
+                {
+                    "law_name": a["law_name"],
+                    "article_number": a["article_number"],
+                    "summary": a["summary"],
+                    "content": a["content"][:200],
+                }
+                for a in law_articles
+            ],
+            ensure_ascii=False, indent=2
+        )
+        return COMPLAINT_LAW_ARTICLES_SECTION_TEMPLATE.format(
+            law_articles_json=law_articles_json
+        )
     except Exception as e:
-        logger.error(f"最终 LLM 调用失败: {e}")
-        errors.append(f"最终 LLM 调用失败: {e}")
-        return ""
+        logger.warning(f"[投诉生成] 法条片段格式化失败: {e}")
+        return COMPLAINT_LAW_ARTICLES_EMPTY_SECTION

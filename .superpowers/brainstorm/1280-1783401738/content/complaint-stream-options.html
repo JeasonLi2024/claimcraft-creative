@@ -1,0 +1,173 @@
+<h2>complaint_node 投诉书 token 流式展示</h2>
+<p class="subtitle">complaint_node 是最后一个节点，会逐 token 生成投诉书长文本。token 流如何在前端呈现？</p>
+
+<div class="cards" data-multiselect>
+
+  <!-- 方案 A：产物流区块内联流式 -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#f8fafc;">
+      <div style="height:260px;font-family:system-ui;font-size:11px;display:flex;">
+        <!-- 左侧轨道 -->
+        <div style="width:100px;padding:8px;background:#0f172a;color:#e2e8f0;">
+          <div style="font-weight:600;margin-bottom:6px;font-size:9px;">节点轨道</div>
+          <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 预分类 ✓</div>
+          <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● OCR ✓</div>
+          <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 分类 ✓</div>
+          <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 抽取 ✓</div>
+          <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 证据链 ✓</div>
+          <div style="font-size:8px;color:#3b82f6;font-weight:600;">◉ 投诉书 ⟳</div>
+        </div>
+        <!-- 主区：产物流，投诉书区块内联 -->
+        <div style="flex:1;padding:10px;overflow:hidden;">
+          <div style="background:#f1f5f9;padding:4px 6px;border-radius:2px;font-size:8px;color:#94a3b8;margin-bottom:4px;">▸ OCR 完成 · 2 项</div>
+          <div style="background:#f1f5f9;padding:4px 6px;border-radius:2px;font-size:8px;color:#94a3b8;margin-bottom:4px;">▸ 分类完成 · 2 项</div>
+          <div style="background:#f1f5f9;padding:4px 6px;border-radius:2px;font-size:8px;color:#94a3b8;margin-bottom:4px;">▸ 证据链完成 · 5 节点</div>
+          <div style="background:#dbeafe;border-left:3px solid #3b82f6;padding:8px;border-radius:2px;">
+            <div style="font-weight:600;color:#1e40af;font-size:9px;margin-bottom:4px;">投诉书生成中...</div>
+            <div style="background:#fff;padding:8px;border-radius:2px;font-size:9px;color:#374151;line-height:1.5;font-family:'Noto Sans SC',sans-serif;min-height:80px;">
+              <div style="font-weight:600;text-align:center;margin-bottom:6px;">投诉书</div>
+              <div>尊敬的监管部门：</div>
+              <div style="margin-top:4px;">本人就<span style="background:#fef3c7;">____</span>平台销售<span style="background:#fef08a;">的</span><span style="color:#3b82f6;animation:blink 1s infinite;">|</span></div>
+              <style>@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}</style>
+            </div>
+            <div style="font-size:7px;color:#64748b;margin-top:4px;">● ● ● 流式输出中（124/≈800 字）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 产物流区块内联流式</h3>
+      <p>投诉书作为产物流最后一个区块，token 实时追加到区块内的文档预览区，带光标闪烁。完成后区块转为可折叠。与其他节点产物在同一列，叙事连贯。</p>
+    </div>
+  </div>
+
+  <!-- 方案 B：底部抽屉式全宽编辑器 -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#f8fafc;">
+      <div style="height:260px;font-family:system-ui;font-size:11px;display:flex;flex-direction:column;">
+        <!-- 上半：产物流 -->
+        <div style="flex:1;display:flex;overflow:hidden;">
+          <div style="width:100px;padding:8px;background:#0f172a;color:#e2e8f0;">
+            <div style="font-weight:600;margin-bottom:6px;font-size:9px;">节点轨道</div>
+            <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 预分类 ✓</div>
+            <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● OCR ✓</div>
+            <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 分类 ✓</div>
+            <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 抽取 ✓</div>
+            <div style="font-size:8px;margin-bottom:4px;color:#22c55e;">● 证据链 ✓</div>
+            <div style="font-size:8px;color:#3b82f6;font-weight:600;">◉ 投诉书 ⟳</div>
+          </div>
+          <div style="flex:1;padding:8px;overflow:hidden;">
+            <div style="background:#f1f5f9;padding:3px 6px;border-radius:2px;font-size:8px;color:#94a3b8;margin-bottom:3px;">▸ OCR 完成 · 2 项</div>
+            <div style="background:#f1f5f9;padding:3px 6px;border-radius:2px;font-size:8px;color:#94a3b8;margin-bottom:3px;">▸ 分类完成 · 2 项</div>
+            <div style="background:#f1f5f9;padding:3px 6px;border-radius:2px;font-size:8px;color:#94a3b8;">▸ 证据链完成 · 5 节点</div>
+          </div>
+        </div>
+        <!-- 下半：抽屉式投诉书编辑器 -->
+        <div style="height:100px;border-top:2px solid #3b82f6;background:#fff;padding:8px;display:flex;flex-direction:column;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <div style="font-weight:600;color:#1e40af;font-size:9px;">📝 投诉书（流式生成中）</div>
+            <div style="font-size:7px;color:#64748b;">124/≈800 字 · 自动滚动</div>
+          </div>
+          <div style="flex:1;background:#f8fafc;border:1px solid #e2e8f0;border-radius:2px;padding:6px;font-size:9px;color:#374151;line-height:1.5;font-family:'Noto Sans SC',sans-serif;overflow:hidden;">
+            <div style="font-weight:600;text-align:center;margin-bottom:4px;">投诉书</div>
+            <div>尊敬的监管部门：本人就____平台销售<span style="color:#3b82f6;animation:blink2 1s infinite;">|</span></div>
+            <style>@keyframes blink2{0%,100%{opacity:1}50%{opacity:0}}</style>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 底部抽屉式全宽编辑器</h3>
+      <p>产物流保持紧凑，投诉书生成时从底部弹出全宽抽屉式编辑器，token 流式填充。空间充足，适合长文本。完成后抽屉可固定为可编辑区，直接衔接后续人工修订。</p>
+    </div>
+  </div>
+
+  <!-- 方案 C：模态全屏专注模式 -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:0;background:#1e293b;">
+      <div style="height:260px;font-family:system-ui;font-size:11px;padding:16px;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <div style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:14px;width:90%;max-width:380px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="font-weight:600;color:#60a5fa;font-size:10px;">📝 投诉书生成中</div>
+            <div style="font-size:7px;color:#64748b;">全屏专注模式</div>
+          </div>
+          <div style="background:#1e293b;border-radius:3px;padding:10px;font-size:9px;color:#cbd5e1;line-height:1.6;font-family:'Noto Sans SC',sans-serif;min-height:120px;">
+            <div style="font-weight:600;text-align:center;margin-bottom:6px;color:#e2e8f0;">投 诉 书</div>
+            <div>尊敬的监管部门：</div>
+            <div style="margin-top:4px;">本人就____平台销售的商品质量问题，依法向贵局提出投诉。</div>
+            <div style="margin-top:4px;">投诉事由：消费者在<span style="background:#374151;">____</span>年<span style="background:#374151;">__</span>月<span style="color:#60a5fa;animation:blink3 1s infinite;">|</span></div>
+            <style>@keyframes blink3{0%,100%{opacity:1}50%{opacity:0}}</style>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:7px;color:#64748b;">
+            <span>● ● ● 流式输出中</span>
+            <span>187/≈800 字</span>
+          </div>
+          <div style="margin-top:6px;text-align:center;">
+            <span style="background:#334155;color:#94a3b8;padding:3px 8px;border-radius:3px;font-size:7px;">完成后点击关闭返回</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 模态全屏专注模式</h3>
+      <p>complaint_node 启动时弹出全屏暗色模态，token 流式填充中央文档区，屏蔽其他干扰。沉浸感最强，类似 ChatGPT 全屏写作。完成后关闭模态，投诉书落到产物流区块。</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:20px;">
+  <h3>差异总结</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>A 内联流式 优势</h4>
+      <ul>
+        <li>叙事连贯，产物按顺序流入</li>
+        <li>无需切换视图，单列滚动</li>
+        <li>实现最简单</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>A 劣势</h4>
+      <ul>
+        <li>区块宽度有限，长文本阅读吃力</li>
+        <li>无法直接编辑（需完成后跳转 ComplaintPage）</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>B 底部抽屉 优势</h4>
+      <ul>
+        <li>全宽展示，长文本可读性好</li>
+        <li>可衔接人工修订，无需跳页</li>
+        <li>产物流仍可见，上下文不丢</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>B 劣势</h4>
+      <ul>
+        <li>抽屉挤压产物流空间</li>
+        <li>需管理抽屉开合状态</li>
+      </ul>
+    </div>
+  </div>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>C 模态全屏 优势</h4>
+      <ul>
+        <li>沉浸感最强，专注生成</li>
+        <li>文档区最大，排版最好</li>
+        <li>暗色背景突出文本</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>C 劣势</h4>
+      <ul>
+        <li>切断产物流叙事，需关闭返回</li>
+        <li>无法同时查看证据/字段</li>
+        <li>与现有浅色主题切换突兀</li>
+      </ul>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,182 @@
+[
+  {
+    "filename": "cat0_消费者权益保护法.txt",
+    "law_name": "中华人民共和国消费者权益保护法",
+    "category": "consumer_protection",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_0a323e046fba43f0b6e9e977f1e8d5fc.html",
+    "effective_date": "2014年3月15日",
+    "expected_count": 63,
+    "actual_count": 63
+  },
+  {
+    "filename": "cat0_电子商务法.txt",
+    "law_name": "中华人民共和国电子商务法",
+    "category": "e-commerce",
+    "source_url": "http://www.npc.gov.cn/npc/c1773/c1848/c21114/c31834/c31841/201905/t20190521_266893.html",
+    "effective_date": "2019年1月1日",
+    "expected_count": 89,
+    "actual_count": 89
+  },
+  {
+    "filename": "cat0_民法典合同编.txt",
+    "law_name": "中华人民共和国民法典（合同编）",
+    "category": "contract",
+    "source_url": "https://www.spp.gov.cn/spp/ssmfdyflvdtpgz/202008/t20200831_478413.shtml",
+    "effective_date": "2021年1月1日",
+    "expected_count": 526,
+    "actual_count": 526
+  },
+  {
+    "filename": "cat0_食品安全法.txt",
+    "law_name": "中华人民共和国食品安全法",
+    "category": "safety",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_6bff4ef87291497fa72949e1fc88efb5.html",
+    "effective_date": "2015年10月1日",
+    "expected_count": 154,
+    "actual_count": 154
+  },
+  {
+    "filename": "cat0_产品质量法.txt",
+    "law_name": "中华人民共和国产品质量法",
+    "category": "quality",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_cc0398e33f8d4e4fb591940fde346cea.html",
+    "effective_date": "1993年9月1日",
+    "expected_count": 74,
+    "actual_count": 74
+  },
+  {
+    "filename": "cat1_反不正当竞争法.txt",
+    "law_name": "中华人民共和国反不正当竞争法",
+    "category": "other",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_3737890d856a4e44a8ea07c50c90c116.html",
+    "effective_date": "2025年10月15日",
+    "expected_count": 41,
+    "actual_count": 41
+  },
+  {
+    "filename": "cat1_价格法.txt",
+    "law_name": "中华人民共和国价格法",
+    "category": "other",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/jls/art/2023/art_3da9131ab041449d9af2af886ee33766.html",
+    "effective_date": "1998年5月1日",
+    "expected_count": 48,
+    "actual_count": 48
+  },
+  {
+    "filename": "cat1_广告法.txt",
+    "law_name": "中华人民共和国广告法",
+    "category": "other",
+    "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_5474cf75173c45d6a0379730fb4e8d97.html",
+    "effective_date": "2015年9月1日（2015年修订后施行日期，2021年第二次修正）",
+    "expected_count": 74,
+    "actual_count": 74
+  },
+  {
+    "filename": "cat2_民法典侵权责任编.txt",
+    "law_name": "中华人民共和国民法典（侵权责任编）",
+    "category": "contract",
+    "source_url": "https://www.ccdi.gov.cn/special/2020qglh/yw_2020qglh/202006/t20200602_219302.html",
+    "effective_date": "2021年1月1日",
+    "expected_count": 95,
+    "actual_count": 95
+  },
+  {
+    "filename": "cat2_合同行政监督管理办法.txt",
+    "law_name": "合同行政监督管理办法",
+    "category": "contract",
+    "source_url": "https://www.samr.gov.cn:7280/wljys/gzzd/art/2023/art_1e31c29abafa4294aff17dae09a07a4d.html",
+    "effective_date": "2023年7月1日",
+    "expected_count": 23,
+    "actual_count": 23
+  },
+  {
+    "filename": "cat3_个人信息保护法.txt",
+    "law_name": "中华人民共和国个人信息保护法",
+    "category": "privacy",
+    "source_url": "http://www.npc.gov.cn/npc/c2/c30834/202108/t20210820_313088.html",
+    "effective_date": "2021年11月1日",
+    "expected_count": 74,
+    "actual_count": 74
+  },
+  {
+    "filename": "cat3_药品管理法.txt",
+    "law_name": "中华人民共和国药品管理法",
+    "category": "safety",
+    "source_url": "http://www.12371.cn/2019/08/27/ARTI1566870822390375.shtml",
+    "effective_date": "2019年12月1日",
+    "expected_count": 155,
+    "actual_count": 155
+  },
+  {
+    "filename": "cat3_农产品质量安全法.txt",
+    "law_name": "中华人民共和国农产品质量安全法",
+    "category": "safety",
+    "source_url": "https://www.dysjcy.gov.cn/news/show-4097.html",
+    "effective_date": "2023年1月1日",
+    "expected_count": 81,
+    "actual_count": 81
+  },
+  {
+    "filename": "cat3_反食品浪费法.txt",
+    "law_name": "中华人民共和国反食品浪费法",
+    "category": "safety",
+    "source_url": "https://m.thepaper.cn/baijiahao_12496785（来源：中国人大网）",
+    "effective_date": "2021年4月29日（自公布之日起施行）",
+    "expected_count": 32,
+    "actual_count": 32
+  },
+  {
+    "filename": "cat4_网络交易监督管理办法.txt",
+    "law_name": "网络交易监督管理办法",
+    "category": "platform_rule",
+    "source_url": "https://www.samr.gov.cn/wljys/gzzd/art/2023/art_09c394cce74f424a8d82dbc4811a11ec.html",
+    "effective_date": "2021年5月1日",
+    "expected_count": 56,
+    "actual_count": 56
+  },
+  {
+    "filename": "cat4_网络购买商品七日无理由退货暂行办法.txt",
+    "law_name": "网络购买商品七日无理由退货暂行办法",
+    "category": "platform_rule",
+    "source_url": "https://www.gov.cn/zhengce/2020-11/03/content_5723721.htm",
+    "effective_date": "2017年3月15日",
+    "expected_count": 38,
+    "actual_count": 38
+  },
+  {
+    "filename": "cat4_网络零售第三方平台交易规则制定程序规定.txt",
+    "law_name": "网络零售第三方平台交易规则制定程序规定（试行）",
+    "category": "platform_rule",
+    "source_url": "https://www.gov.cn/zhengce/2014-12/29/content_5712385.htm",
+    "effective_date": "2015年4月1日",
+    "expected_count": 23,
+    "actual_count": 23
+  },
+  {
+    "filename": "cat4_京东规则1.txt",
+    "platform": "京东",
+    "rule_name": "京东开放平台交易纠纷处理总则",
+    "source_url": "https://learn-jdm.jd.com/knowledge/rule/detail?ruleId=2392",
+    "effective_date": "2025-07-04",
+    "expected_count": 57,
+    "actual_count": 57
+  },
+  {
+    "filename": "cat4_京东规则2.txt",
+    "platform": "京东",
+    "rule_name": "京东开放平台商品类问题纠纷处理标准",
+    "source_url": "https://learn-jdm.jd.com/knowledge/rule/detail?ruleId=818448469109903360",
+    "effective_date": "2026-06-15",
+    "expected_count": 31,
+    "actual_count": 31
+  },
+  {
+    "filename": "cat4_淘宝规则.txt",
+    "platform": "淘宝",
+    "rule_name": "淘宝平台争议处理规则",
+    "source_url": "https://rulechannel.taobao.com/?type=detail&ruleId=99&cId=1154#/rule/detail?ruleId=99&cId=1154",
+    "effective_date": "2025-08-15",
+    "expected_count": 94,
+    "actual_count": 94
+  }
+]

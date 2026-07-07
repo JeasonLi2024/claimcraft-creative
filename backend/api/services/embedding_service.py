@@ -48,6 +48,11 @@ def get_embedding_llm():
 
     Raises:
         RuntimeError: API Key 未配置
+
+    说明：
+        SiliconFlow 的 Qwen3-VL-Embedding-8B 不支持 dimensions 参数（付费限制），
+        故不传 dimensions，使用模型原生维度 4096。
+        如需切换为支持 dimensions 的模型，请在 .env 中修改 EMBEDDING_MODEL。
     """
     cfg = _get_embedding_config()
     if not cfg['api_key']:
@@ -58,12 +63,15 @@ def get_embedding_llm():
 
     from langchain_openai import OpenAIEmbeddings
 
-    return OpenAIEmbeddings(
-        model=cfg['model'],
-        api_key=cfg['api_key'],
-        base_url=cfg['base_url'],
-        dimensions=cfg['dimensions'],
-    )
+    kwargs = {
+        'model': cfg['model'],
+        'api_key': cfg['api_key'],
+        'base_url': cfg['base_url'],
+    }
+    # 仅当 dimensions 配置为非 0 时才传参（部分模型不支持 dimensions 参数）
+    if cfg['dimensions'] > 0:
+        kwargs['dimensions'] = cfg['dimensions']
+    return OpenAIEmbeddings(**kwargs)
 
 
 def embed_query_sync(text: str) -> list[float]:

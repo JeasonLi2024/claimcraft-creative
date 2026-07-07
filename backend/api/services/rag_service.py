@@ -51,13 +51,17 @@ class LawVectorStore:
     表结构：
         law_name VARCHAR(100)
         article_number VARCHAR(20)
-        embedding vector(1024)
+        embedding vector(VECTOR_DIM)
         category VARCHAR(30)
         created_at TIMESTAMPTZ
         PRIMARY KEY (law_name, article_number)
     索引：
         HNSW 索引（embedding 字段，cosine distance）
         category + law_name 复合索引（预过滤）
+
+    维度说明：
+        Qwen3-VL-Embedding-8B 原生维度 4096（SiliconFlow 免费版不支持降维）。
+        如切换模型，请同步修改 .env 中 EMBEDDING_VECTOR_DIM。
     """
 
     TABLE_NAME = 'law_article_vectors'
@@ -70,12 +74,23 @@ class LawVectorStore:
                 '请在 .env 中设置 PostgreSQL 连接串。'
             )
 
+    @staticmethod
+    def _get_vector_dim() -> int:
+        """获取向量维度（从 .env 读取，默认 4096）。"""
+        return int(os.environ.get('EMBEDDING_VECTOR_DIM', '4096'))
+
     async def ensure_table(self):
         """确保表和索引存在（幂等，首次导入时自动创建）。
 
         安全说明：CREATE INDEX CONCURRENTLY 不能在事务中执行，
         故使用 autocommit 模式。若已存在则跳过（IF NOT EXISTS）。
+
+        索引策略：
+        - 维度 ≤ 2000：创建 HNSW 索引（近似最近邻，查询快）
+        - 维度 > 2000：跳过 HNSW（pgvector 限制），改用顺序扫描
+          （万级以下法条量级，顺序扫描耗时仅几毫秒，完全可接受）
         """
+        dim = self._get_vector_dim()
         statements = [
             # 1. 启用 pgvector 扩展（首次需要超级用户权限，已存在则跳过）
             'CREATE EXTENSION IF NOT EXISTS vector;',
@@ -84,7 +99,7 @@ class LawVectorStore:
             CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
                 law_name VARCHAR(100) NOT NULL,
                 article_number VARCHAR(20) NOT NULL,
-                embedding vector(1024) NOT NULL,
+                embedding vector({dim}) NOT NULL,
                 category VARCHAR(30) NOT NULL DEFAULT 'other',
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (law_name, article_number)
@@ -93,12 +108,20 @@ class LawVectorStore:
             # 3. category + law_name 复合索引（预过滤）
             f'CREATE INDEX IF NOT EXISTS idx_law_vectors_category '
             f'ON {self.TABLE_NAME} (category, law_name);',
-            # 4. HNSW 向量索引（余弦距离）
-            # 注：HNSW 索引创建较慢，但查询性能优于 IVFFlat
-            f'CREATE INDEX IF NOT EXISTS idx_law_vectors_hnsw '
-            f'ON {self.TABLE_NAME} USING hnsw (embedding vector_cosine_ops) '
-            f'WITH (m = 16, ef_construction = 64);',
         ]
+
+        # 4. HNSW 向量索引（仅维度 ≤ 2000 时创建，pgvector 限制）
+        if dim <= 2000:
+            statements.append(
+                f'CREATE INDEX IF NOT EXISTS idx_law_vectors_hnsw '
+                f'ON {self.TABLE_NAME} USING hnsw (embedding vector_cosine_ops) '
+                f'WITH (m = 16, ef_construction = 64);'
+            )
+        else:
+            logger.info(
+                f'向量维度 {dim} > 2000，跳过 HNSW 索引创建（pgvector 限制），'
+                f'改用顺序扫描（万级以下法条量级性能可接受）'
+            )
 
         # autocommit 模式（CONCURRENTLY 不支持事务）
         async with await psycopg.AsyncConnection.connect(self._db_url, autocommit=True) as conn:
@@ -127,7 +150,7 @@ class LawVectorStore:
         Args:
             law_name: 法律名称
             article_number: 条文编号
-            embedding: 1024 维向量
+            embedding: 向量（维度需与表定义一致）
             category: 法律分类（用于预过滤）
         """
         async with await psycopg.AsyncConnection.connect(self._db_url) as conn:
@@ -151,7 +174,7 @@ class LawVectorStore:
         """向量相似度检索（余弦距离）。
 
         Args:
-            query_embedding: 查询向量（1024 维）
+            query_embedding: 查询向量（维度需与表定义一致）
             category: 法律分类过滤（空字符串=不过滤）
             top_k: 返回 top-k 条结果
             score_threshold: 相似度阈值（余弦相似度，低于此值丢弃）
