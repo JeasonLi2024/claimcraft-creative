@@ -5,6 +5,7 @@ import { useFormat } from "@/composables/useFormat"
 import { useStatus } from "@/composables/useStatus"
 import PillTag from "@/components/PillTag"
 import EmptyState from "@/components/EmptyState"
+import { WorkflowStreamPanel } from "@/components/workflow/WorkflowStreamPanel"
 import { cn } from "@/lib/utils"
 import type { ExtractedField } from "@/types/case"
 import {
@@ -336,6 +337,9 @@ export default function EvidencePage() {
           )
         })}
       </div>
+
+      {/* Workflow Stream Panel */}
+      {caseId && <WorkflowStreamPanel caseId={Number(caseId)} />}
 
       {/* Lightbox */}
       {lightboxSrc && (

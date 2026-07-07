@@ -9,6 +9,8 @@ django-fsm>=2.8
 reportlab>=4.0
 djangorestframework-simplejwt>=5.3
 gunicorn>=21.2
+# ===== ASGI 服务器（SSE 流式端点必需，2026-07-07 新增）=====
+uvicorn[standard]>=0.30
 whitenoise>=6.6
 # ===== LangChain + LangGraph（A6 新增）=====
 langchain>=1.0,<2.0

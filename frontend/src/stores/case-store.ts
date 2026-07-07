@@ -1,10 +1,24 @@
 import { create } from "zustand"
 import * as api from "@/lib/api"
+import { WorkflowSSEClient } from "@/lib/sse-client"
+import {
+  buildProductBlock,
+  type SSEEvent,
+  type NodeStatus,
+  type ProductBlock,
+  type ReviewInterruptData,
+  type Correction,
+  type WorkflowError,
+  type ConnectionState,
+} from "@/lib/workflow-events"
 import type {
   Case, CaseCreateDTO, Evidence, TimelineNode,
   ComplaintData, MaskResult, StatusLog,
   ExtractedField, CasePreset, DashboardStats,
 } from "@/types"
+
+// SSE 客户端实例存储在模块变量中（不放 state，避免被序列化/响应式追踪）
+let workflowSSEClient: WorkflowSSEClient | null = null
 
 interface CaseState {
   currentCase: Case | null
@@ -57,6 +71,23 @@ interface CaseState {
   applyPreset: (caseId: number, presetId: string) => Promise<void>
 
   clearError: () => void
+
+  // ---------- Workflow Slice ----------
+  isRunning: boolean
+  threadId: string | null
+  currentNode: string | null
+  nodeStates: Record<string, NodeStatus>
+  productBlocks: ProductBlock[]
+  complaintDraft: { title: string; content: string; tone: string } | null
+  reviewInterrupt: ReviewInterruptData | null
+  errors: WorkflowError[]
+  connectionState: ConnectionState
+  reconnectAttempt: number
+
+  startWorkflow: (caseId: number, evidenceIds: number[]) => Promise<void>
+  submitReviewCorrections: (caseId: number, corrections: Correction[]) => Promise<void>
+  clearWorkflow: () => void
+  applySSEEvent: (event: SSEEvent) => void
 }
 
 export const useCaseStore = create<CaseState>()((set, get) => ({
@@ -75,6 +106,18 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
   extractedFieldsMap: {},
   loading: false,
   error: null,
+
+  // Workflow slice initial state
+  isRunning: false,
+  threadId: null,
+  currentNode: null,
+  nodeStates: {},
+  productBlocks: [],
+  complaintDraft: null,
+  reviewInterrupt: null,
+  errors: [],
+  connectionState: "idle",
+  reconnectAttempt: 0,
 
   clearError: () => set({ error: null }),
 
@@ -409,6 +452,223 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
     } catch (e: any) {
       set({ error: e.response?.data?.detail || e.message || "套用预设失败" })
       throw e
+    }
+  },
+
+  // ---------- Workflow Slice 实现 ----------
+
+  startWorkflow: async (caseId, evidenceIds) => {
+    set({
+      error: null,
+      connectionState: "connecting",
+      isRunning: true,
+      productBlocks: [],
+      nodeStates: {},
+      complaintDraft: null,
+      reviewInterrupt: null,
+      errors: [],
+      currentNode: null,
+      reconnectAttempt: 0,
+    })
+    try {
+      const { thread_id } = await api.workflowApi.start(caseId, evidenceIds)
+      set({ threadId: thread_id, connectionState: "connected" })
+
+      // 关闭旧连接（如有）
+      workflowSSEClient?.close()
+
+      const streamUrl = api.workflowApi.streamUrl(caseId, thread_id)
+      workflowSSEClient = new WorkflowSSEClient(streamUrl, {
+        onEvent: (event) => get().applySSEEvent(event),
+        onConnect: () => set({ connectionState: "connected", reconnectAttempt: 0 }),
+        onReconnect: (attempt) =>
+          set({ connectionState: "reconnecting", reconnectAttempt: attempt }),
+        onFatalError: (message) =>
+          set((s) => ({
+            connectionState: "error",
+            isRunning: false,
+            errors: [...s.errors, { message, recoverable: false }],
+          })),
+      })
+      workflowSSEClient.connect()
+    } catch (e: any) {
+      set({
+        connectionState: "error",
+        isRunning: false,
+        error: e.response?.data?.detail || e.message || "启动工作流失败",
+      })
+      throw e
+    }
+  },
+
+  submitReviewCorrections: async (caseId, corrections) => {
+    set({ error: null })
+    try {
+      await api.workflowApi.resume(caseId, corrections)
+      // resume 成功后关闭校正面板，等待 review.resumed 事件
+      set({ reviewInterrupt: null })
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "提交校正失败" })
+      throw e
+    }
+  },
+
+  clearWorkflow: () => {
+    workflowSSEClient?.close()
+    workflowSSEClient = null
+    set({
+      isRunning: false,
+      threadId: null,
+      currentNode: null,
+      nodeStates: {},
+      productBlocks: [],
+      complaintDraft: null,
+      reviewInterrupt: null,
+      errors: [],
+      connectionState: "idle",
+      reconnectAttempt: 0,
+    })
+  },
+
+  applySSEEvent: (event) => {
+    const eventType = event.event_type
+    switch (eventType) {
+      case "workflow.start": {
+        set({
+          isRunning: true,
+          threadId: (event.thread_id as string) || get().threadId,
+          connectionState: "connected",
+        })
+        break
+      }
+      case "workflow.resumed": {
+        set({ connectionState: "connected", isRunning: true })
+        break
+      }
+      case "node.start": {
+        const node = event.node as string
+        set((s) => ({
+          currentNode: node,
+          nodeStates: {
+            ...s.nodeStates,
+            [node]: { status: "running", startedAt: event.ts as string },
+          },
+        }))
+        break
+      }
+      case "node.progress": {
+        // progress 事件主要用于日志，目前不改变状态
+        break
+      }
+      case "node.complete": {
+        const node = event.node as string
+        const products = (event.products as Record<string, unknown>) || {}
+        const productBlock = buildProductBlock(node, products)
+        set((s) => ({
+          currentNode: null,
+          nodeStates: {
+            ...s.nodeStates,
+            [node]: {
+              status: "completed",
+              completedAt: event.ts as string,
+              durationMs: event.duration_ms as number,
+              products,
+            },
+          },
+          productBlocks: [
+            ...s.productBlocks.map((b, i) =>
+              i === s.productBlocks.length - 1 ? { ...b, collapsed: true } : b,
+            ),
+            { ...productBlock, collapsed: false },
+          ],
+        }))
+        break
+      }
+      case "node.error": {
+        const node = event.node as string
+        set((s) => ({
+          nodeStates: {
+            ...s.nodeStates,
+            [node]: {
+              ...s.nodeStates[node],
+              status: "error",
+              error: event.message as string,
+            },
+          },
+          errors: [
+            ...s.errors,
+            {
+              message: event.message as string,
+              node,
+              recoverable: event.recoverable as boolean,
+            },
+          ],
+        }))
+        break
+      }
+      case "complaint.token": {
+        const delta = (event.delta as string) || ""
+        set((s) => ({
+          complaintDraft: {
+            title: s.complaintDraft?.title || "",
+            content: (s.complaintDraft?.content || "") + delta,
+            tone: s.complaintDraft?.tone || "",
+          },
+        }))
+        break
+      }
+      case "complaint.done": {
+        set({
+          complaintDraft: {
+            title: (event.title as string) || "",
+            content: (event.final_content as string) || "",
+            tone: (event.tone as string) || "",
+          },
+        })
+        break
+      }
+      case "review.interrupt": {
+        set({ reviewInterrupt: event as unknown as ReviewInterruptData })
+        break
+      }
+      case "review.resumed": {
+        set({ reviewInterrupt: null })
+        break
+      }
+      case "review.skipped": {
+        const nodeStates = { ...get().nodeStates }
+        nodeStates["review"] = { status: "skipped" }
+        set({ nodeStates })
+        break
+      }
+      case "workflow.complete": {
+        set({ isRunning: false, currentNode: null, connectionState: "idle" })
+        break
+      }
+      case "workflow.error": {
+        set((s) => ({
+          isRunning: false,
+          currentNode: null,
+          connectionState: "error",
+          errors: [
+            ...s.errors,
+            {
+              message: (event.message as string) || "工作流错误",
+              node: event.node as string | undefined,
+              recoverable: (event.recoverable as boolean) ?? false,
+            },
+          ],
+        }))
+        break
+      }
+      case "workflow.heartbeat": {
+        // 心跳事件，无需状态变更
+        break
+      }
+      default: {
+        // 未知事件类型，忽略
+        break
+      }
     }
   },
 }))

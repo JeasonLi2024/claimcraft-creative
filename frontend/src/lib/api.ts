@@ -5,6 +5,7 @@ import type {
   ComplaintData, MaskResult, StatusLog,
   ExtractedField, CasePreset, DashboardStats,
 } from "@/types"
+import type { Correction } from "@/lib/workflow-events"
 
 // Auth
 export const authApi = {
@@ -108,4 +109,26 @@ export const exportApi = {
 export const statsApi = {
   getDashboard: () =>
     apiClient.get<DashboardStats>("/stats/dashboard/").then((r) => r.data),
+}
+
+// Workflow (SSE 工作流流式改造)
+export const workflowApi = {
+  start: (caseId: number, evidenceIds: number[]) =>
+    apiClient
+      .post<{ thread_id: string; stream_url: string }>(
+        `/cases/${caseId}/workflow/start/`,
+        { evidence_ids: evidenceIds },
+      )
+      .then((r) => r.data),
+
+  streamUrl: (caseId: number, threadId: string) =>
+    `/api/cases/${caseId}/workflow/stream/?thread_id=${threadId}`,
+
+  resume: (caseId: number, corrections: Correction[]) =>
+    apiClient
+      .post<{ status: string; thread_id: string }>(
+        `/cases/${caseId}/workflow/resume/`,
+        { corrections },
+      )
+      .then((r) => r.data),
 }

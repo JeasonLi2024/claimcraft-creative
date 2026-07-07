@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """DRF 视图。"""
+import asyncio
+import json
 import logging
+import threading
 import time
 
 from django.db.models import Count, Max, Q
 from django.db.models.functions import TruncDate
-from django.http import HttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_fsm import can_proceed
@@ -710,6 +713,12 @@ class StatsView(APIView):
 class CaseWorkflowView(APIView):
     """案件工作流：POST /api/cases/<id>/run-workflow/
 
+    @deprecated（2026-07-07 SSE 改造）：本端点同步阻塞 ainvoke 返回全部产物，
+    保留 1 个版本便于回滚。新前端请改用：
+        - POST /api/cases/<id>/workflow/start/   （启动后台任务）
+        - GET  /api/cases/<id>/workflow/stream/  （SSE 流式推送）
+        - POST /api/cases/<id>/workflow/resume/  （HITL 校正提交）
+
     基于 LangGraph StateGraph 构建 6 节点工作流（多证据聚合版）：
     OCR → 证据分类 → 字段抽取 → (HITL 校正?) → 证据链构造 → 投诉生成
 
@@ -848,4 +857,252 @@ class CaseWorkflowHistoryView(APIView):
             'case_id': case.id,
             'thread_id': case.thread_id,
             'history': history,
+        })
+
+
+# ===== SSE 工作流流式改造（2026-07-07）=====
+
+
+def _format_sse_event(evt: dict) -> str:
+    """格式化 SSE 事件字符串。
+
+    格式：event: {type}\nid: {event_id}\ndata: {json}\n\n
+
+    Args:
+        evt: EventDepot 返回的事件 dict（含 event_id / event_type / payload / created_at）
+
+    Returns:
+        SSE 协议格式的字符串
+    """
+    event_type = evt.get('event_type', 'message')
+    event_id = evt.get('event_id')
+    payload = evt.get('payload', {}) or {}
+
+    # data 字段包含 event_id + event_type + ts + payload 展开
+    data = {
+        'event_id': event_id,
+        'event_type': event_type,
+        'ts': evt.get('created_at'),
+    }
+    if isinstance(payload, dict):
+        data.update(payload)
+    elif payload is not None:
+        data['payload'] = payload
+
+    return (
+        f"event: {event_type}\n"
+        f"id: {event_id}\n"
+        f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+    )
+
+
+class CaseWorkflowStartView(APIView):
+    """启动工作流：POST /api/cases/<id>/workflow/start/
+
+    创建后台 WorkflowRunner 任务，返回 thread_id + stream_url。
+    前端收到响应后建立 SSE 连接消费事件。
+
+    Body:
+        evidence_ids: list[int] (可选，指定处理的证据；不传则处理案件全部有图证据)
+
+    Response:
+        {
+            "status": "started",
+            "case_id": int,
+            "thread_id": str,
+            "stream_url": "/api/cases/<id>/workflow/stream/?thread_id=<thread_id>"
+        }
+    """
+
+    def post(self, request, pk):
+        from api.agents import WorkflowRunner
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        evidence_ids = request.data.get('evidence_ids', [])
+
+        # 生成或复用 thread_id（持久化到 Case 模型）
+        if not case.thread_id:
+            case.thread_id = f"case-{case.id}-{int(time.time())}"
+            case.save(update_fields=['thread_id'])
+        thread_id = case.thread_id
+
+        # 构建初始状态（与 CaseWorkflowView 保持一致）
+        initial_state = {
+            "case_id": case.id,
+            "evidence_ids": evidence_ids,
+            "evidence_preclassify_results": [],
+            "evidence_ocr_results": [],
+            "evidence_classify_results": [],
+            "evidence_extract_results": [],
+            "needs_human_review": False,
+            "evidence_chain": [],
+            "complaint_draft": None,
+            "review_decision": None,
+            "errors": [],
+        }
+
+        # 启动后台任务（asyncio.create_task，不阻塞响应）
+        runner = WorkflowRunner()
+        runner.start_in_background(
+            case_id=case.id, thread_id=thread_id, initial_state=initial_state
+        )
+
+        return Response({
+            "status": "started",
+            "case_id": case.id,
+            "thread_id": thread_id,
+            "stream_url": f"/api/cases/{case.id}/workflow/stream/?thread_id={thread_id}",
+        })
+
+
+class CaseWorkflowStreamView(APIView):
+    """SSE 流式端点：GET /api/cases/<id>/workflow/stream/
+
+    从 EventDepot 读取事件推送给前端，支持断连续传。
+    流程：
+        1. 读取 Last-Event-ID header 或 ?last_event_id= query 参数
+        2. 从 EventDepot 批量回放漏掉的事件（event_id > last）
+        3. 订阅 NotifyEmitter(thread_id) 获取新事件通知
+        4. 收到通知 → 拉取新事件 → SSE 推送
+        5. 每 15s 心跳保活
+
+    需要 ASGI 部署（uvicorn），Django 4.2+ 支持异步生成器。
+    """
+
+    async def get(self, request, pk):
+        from asgiref.sync import sync_to_async
+        from api.agents import EventDepot, NotifyEmitter
+
+        case = await sync_to_async(get_object_or_404)(Case, pk=pk, owner=request.user)
+        thread_id = request.query_params.get('thread_id') or case.thread_id
+        if not thread_id:
+            return Response(
+                {'detail': '案件尚未启动工作流'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 读取 last_event_id（兼容 Last-Event-ID header 和 ?last_event_id= query）
+        last_event_id_str = (
+            request.headers.get('Last-Event-ID')
+            or request.query_params.get('last_event_id', '0')
+        )
+        try:
+            last_event_id = int(last_event_id_str)
+        except (TypeError, ValueError):
+            last_event_id = 0
+
+        async def event_stream():
+            """SSE 异步生成器：回放 + 订阅 + 心跳。"""
+            depot = EventDepot()
+            emitter = NotifyEmitter()
+
+            # 1. 回放漏掉的事件（断连续传）
+            missed = await depot.get_events_after(thread_id, last_event_id)
+            for evt in missed:
+                yield _format_sse_event(evt)
+                if evt['event_type'] in ('workflow.complete', 'workflow.error'):
+                    return
+
+            # 2. 检查工作流是否已结束
+            if await depot.is_workflow_completed(thread_id):
+                return
+
+            # 3. 订阅 NOTIFY（通过线程桥接到 asyncio.Queue）
+            loop = asyncio.get_running_loop()
+            notify_queue: asyncio.Queue = asyncio.Queue()
+            stop_event = threading.Event()
+
+            def on_notify(pid, channel, payload):
+                """NOTIFY 回调（在线程中执行），通过 call_soon_threadsafe 投递到事件循环。"""
+                try:
+                    event_id = int(payload)
+                    loop.call_soon_threadsafe(notify_queue.put_nowait, event_id)
+                except (TypeError, ValueError):
+                    pass
+
+            subscribe_task = asyncio.create_task(
+                emitter.subscribe(thread_id, on_notify, stop_event)
+            )
+
+            # 4. 心跳 + 新事件推送循环
+            current_last = missed[-1]['event_id'] if missed else last_event_id
+            try:
+                while True:
+                    try:
+                        # 等待通知，15s 超时则发心跳
+                        await asyncio.wait_for(notify_queue.get(), timeout=15)
+                        # 收到通知，拉取新事件
+                        new_events = await depot.get_events_after(
+                            thread_id, current_last
+                        )
+                        for evt in new_events:
+                            yield _format_sse_event(evt)
+                            current_last = evt['event_id']
+                            if evt['event_type'] in (
+                                'workflow.complete', 'workflow.error'
+                            ):
+                                return
+                    except asyncio.TimeoutError:
+                        # 心跳保活（SSE 注释行，不触发前端事件）
+                        yield ': heartbeat\n\n'
+            finally:
+                # 清理：通知订阅线程退出 + 取消任务
+                stop_event.set()
+                subscribe_task.cancel()
+                try:
+                    await subscribe_task
+                except asyncio.CancelledError:
+                    pass
+
+        response = StreamingHttpResponse(
+            event_stream(), content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        response['Connection'] = 'keep-alive'
+        return response
+
+
+class CaseWorkflowResumeView(APIView):
+    """HITL 校正提交：POST /api/cases/<id>/workflow/resume/
+
+    接收人工校正数据，启动新的后台 WorkflowRunner 任务恢复工作流。
+    复用同一 thread_id，LangGraph 从 checkpointer 恢复中断前状态。
+
+    Body:
+        corrections: list[{evidence_id, field_name, corrected_value}]
+
+    Response:
+        {"status": "resumed", "case_id": int, "thread_id": str}
+    """
+
+    def post(self, request, pk):
+        from api.agents import WorkflowRunner
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        if not case.thread_id:
+            return Response(
+                {'detail': '案件尚未启动工作流'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        corrections = request.data.get('corrections', [])
+        if not corrections:
+            return Response(
+                {'detail': 'corrections 不能为空'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        thread_id = case.thread_id
+        runner = WorkflowRunner()
+        runner.start_in_background(
+            case_id=case.id,
+            thread_id=thread_id,
+            resume={'corrections': corrections},
+        )
+
+        return Response({
+            "status": "resumed",
+            "case_id": case.id,
+            "thread_id": thread_id,
         })
