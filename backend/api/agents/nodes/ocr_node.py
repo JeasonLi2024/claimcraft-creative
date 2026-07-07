@@ -55,6 +55,12 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     case_id = state["case_id"]
     evidence_ids = state.get("evidence_ids", [])
+    # 复用预分类节点的 evidence_category（按 evidence_id 索引）
+    # 用途：透传给 LLMVisionStrategy 选 OCR prompt（按类型精细处理）
+    preclassify_map = {
+        r["evidence_id"]: r.get("evidence_category", "")
+        for r in state.get("evidence_preclassify_results", [])
+    }
     errors = []
 
     # 1. 确定待处理证据列表
@@ -88,10 +94,16 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
         case_description = ""
 
     # 3. 多证据并发 OCR + 同款模型纠错（策略内部自管）
+    # 注：ocr_image_with_strategy 已改为 async，直接 await 即可
     async def _process_one(evidence):
         """处理单条证据的 OCR + 同款模型纠错 + 持久化。"""
         image_path = evidence.image.path
-        logger.info(f"开始 OCR 证据 {evidence.code} (id={evidence.id})")
+        # 从预分类结果读取 evidence_category，透传给 LLMVisionStrategy 选 prompt
+        evidence_category = preclassify_map.get(evidence.id, "")
+        logger.info(
+            f"开始 OCR 证据 {evidence.code} (id={evidence.id}, "
+            f"category={evidence_category or 'unknown'})"
+        )
 
         # 注入 evidence_id metadata 到当前 LangSmith Run（UI 可按证据筛选）
         if ls is not None:
@@ -100,15 +112,18 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
                 if rt:
                     rt.metadata["evidence_id"] = evidence.id
                     rt.metadata["evidence_code"] = evidence.code
+                    if evidence_category:
+                        rt.metadata["evidence_category"] = evidence_category
                     rt.tags.extend([f"evidence-{evidence.code}"])
             except Exception as e:
                 logger.debug(f"注入 evidence_id metadata 失败（忽略）: {e}")
 
         # 3.1 OCR 识别 + 同款模型纠错（pipeline 内部完成）
+        # 注：ocr_image_with_strategy 已 async，直接 await
         try:
-            raw_text, corrected_text, strategy_used = await sync_to_async(
-                ocr_image_with_strategy
-            )(image_path, case_description)
+            raw_text, corrected_text, strategy_used = await ocr_image_with_strategy(
+                image_path, case_description, evidence_category
+            )
         except Exception as e:
             logger.error(f"证据 {evidence.code} OCR 失败: {e}", exc_info=True)
             errors.append(f"[OCR] 证据 {evidence.code} 识别失败: {e}")
@@ -122,6 +137,7 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
                 "ocr_corrected_text": "",
                 "ocr_strategy_used": "failed",
                 "ocr_status": "failed",
+                "evidence_category": evidence_category,
                 "errors": [str(e)],
             }
 
@@ -147,6 +163,7 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
             "ocr_corrected_text": corrected_text,
             "ocr_strategy_used": strategy_used,
             "ocr_status": "done",
+            "evidence_category": evidence_category,
             "errors": [],
         }
 

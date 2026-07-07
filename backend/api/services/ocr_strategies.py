@@ -58,16 +58,63 @@ def _build_ocr_retry():
 _ocr_retry = _build_ocr_retry()
 
 
+async def _encode_and_compress_image(image_path: str, max_mb: int) -> tuple[str, str]:
+    """读取图片并按大小上限压缩，返回 base64 编码 + MIME 类型。
+
+    安全最佳实践（DJANGO-UPLOAD-001）：
+    - 设置 Image.MAX_IMAGE_PIXELS 防止解压炸弹 DoS
+    - 按质量递降压缩至阈值以下
+    - 统一转 JPEG 格式（兼容性最佳）
+
+    Args:
+        image_path: 图片本地路径（Django storage 管理，非用户直接输入）
+        max_mb: 最大图片大小（MB）
+
+    Returns:
+        (base64_data, mime_type)
+    """
+    from asgiref.sync import sync_to_async
+    from PIL import Image
+    import io
+
+    # 安全：限制 PIL 解压炸弹（2 亿像素上限，约 14000x14000）
+    Image.MAX_IMAGE_PIXELS = 200_000_000
+
+    def _compress():
+        img = Image.open(image_path)
+        # 转换色彩模式（RGBA/P 转 RGB）
+        if img.mode in ('RGBA', 'P', 'LA'):
+            img = img.convert('RGB')
+
+        quality = 85
+        while quality >= 30:
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=quality)
+            size_mb = buf.tell() / 1024 / 1024
+            if size_mb <= max_mb:
+                break
+            quality -= 10
+
+        return base64.b64encode(buf.getvalue()).decode('utf-8'), 'jpeg'
+
+    return await sync_to_async(_compress)()
+
+
 class OCRStrategy(ABC):
-    """OCR 策略抽象基类。"""
+    """OCR 策略抽象基类（v9 异步化）。"""
     name: str = "base"
 
     @abstractmethod
-    def recognize(self, image_path: str) -> str:
-        """识别图片文本，返回纯文本。失败抛异常。"""
+    async def recognize(self, image_path: str, category: str = "") -> str:
+        """识别图片文本，返回纯文本。失败抛异常。
+
+        Args:
+            image_path: 图片本地路径
+            category: 证据类别（用于按类型选 prompt，仅 LLMVisionStrategy 生效）
+        """
         ...
 
-    def correct_text(self, raw_text: str, case_description: str = "") -> str:
+    async def correct_text(self, raw_text: str, case_description: str = "") -> str:
         """文本纠错（默认不纠错，子类按需重写）。
 
         约定：与 recognize() 用同一模型纠错，确保「识别用啥纠错用啥」。
@@ -93,12 +140,15 @@ class TesseractStrategy(OCRStrategy):
             raise RuntimeError("Tesseract 未在 PATH 中且 TESSERACT_CMD 未配置")
         self.tesseract_cmd = TESSERACT_CMD
 
-    def recognize(self, image_path: str) -> str:
+    async def recognize(self, image_path: str, category: str = "") -> str:
+        from asgiref.sync import sync_to_async
         import pytesseract
         from PIL import Image
         pytesseract.pytesseract.tesseract_cmd = self.tesseract_cmd
-        img = Image.open(image_path)
-        text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+        # 安全：限制 PIL 解压炸弹（DoS 防护）
+        Image.MAX_IMAGE_PIXELS = 200_000_000
+        img = await sync_to_async(Image.open)(image_path)
+        text = await sync_to_async(pytesseract.image_to_string)(img, lang='chi_sim+eng')
         logger.info(f"Tesseract OCR 成功 (cmd={self.tesseract_cmd})")
         return text.strip()
 
@@ -142,14 +192,15 @@ class PaddleOCRStrategy(OCRStrategy):
         return self._ocr_instance
 
     @_ocr_retry
-    def recognize(self, image_path: str) -> str:
+    async def recognize(self, image_path: str, category: str = "") -> str:
+        from asgiref.sync import sync_to_async
         ocr = self._get_instance()
         try:
             # PaddleOCR 3.x 保留 ocr() 方法作为兼容入口
-            result = ocr.ocr(image_path, cls=True)
+            result = await sync_to_async(ocr.ocr)(image_path, cls=True)
         except TypeError:
             # 3.x 某些版本 ocr() 不接受 cls 参数
-            result = ocr.ocr(image_path)
+            result = await sync_to_async(ocr.ocr)(image_path)
         except Exception as e:
             logger.warning(f"PaddleOCR 调用失败: {type(e).__name__}: {e}")
             raise
@@ -190,33 +241,28 @@ class LLMVisionStrategy(OCRStrategy):
         self._llm = get_scenario_llm('ocr')
 
     @_ocr_retry
-    def recognize(self, image_path: str) -> str:
+    async def recognize(self, image_path: str, category: str = "") -> str:
         from api.services.llm_service import get_scenario_config
-        from api.services.ocr_config import get_llm_ocr_prompt
+        from api.services.ocr_config import get_llm_ocr_prompt_by_category, get_llm_ocr_max_image_mb
         from langchain_core.messages import HumanMessage
 
         cfg = get_scenario_config('ocr')
-        prompt = get_llm_ocr_prompt()
+        prompt = get_llm_ocr_prompt_by_category(category)
         logger.info(
             f"LLM Vision OCR 调用 (provider={cfg['provider']}, model={cfg['model']}, "
-            f"base_url={cfg['base_url']}, temp={cfg['temperature']}, timeout={cfg['timeout']})"
+            f"base_url={cfg['base_url']}, temp={cfg['temperature']}, timeout={cfg['timeout']}, "
+            f"category={category or 'default'})"
         )
 
-        # 读取图片并 base64 编码
-        with open(image_path, 'rb') as f:
-            image_data = base64.b64encode(f.read()).decode('utf-8')
-
-        # 推断 MIME 类型
-        ext = os.path.splitext(image_path)[1].lower()
-        mime_map = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.webp': 'webp'}
-        mime = mime_map.get(ext, 'jpeg')
+        # 安全：读取图片并按大小上限压缩（防 DoS + 降延迟）
+        image_data, mime = await _encode_and_compress_image(image_path, get_llm_ocr_max_image_mb())
 
         message = HumanMessage(content=[
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{image_data}"}},
         ])
         try:
-            response = self._llm.invoke([message])
+            response = await self._llm.ainvoke([message])
         except Exception as e:
             logger.warning(f"LLM Vision OCR 调用失败 (model={cfg['model']}): {type(e).__name__}: {e}")
             raise
@@ -227,7 +273,7 @@ class LLMVisionStrategy(OCRStrategy):
             logger.info(f"LLM Vision OCR 成功 (model={cfg['model']}, len={len(text)})")
         return text.strip()
 
-    def correct_text(self, raw_text: str, case_description: str = "") -> str:
+    async def correct_text(self, raw_text: str, case_description: str = "") -> str:
         """LLM 纠错：用同款 LLM（self._llm）修错别字（如「兀」→「元」）。
 
         约定：与 recognize() 用同一 LLM 实例，确保「识别用啥纠错用啥」。
@@ -253,7 +299,7 @@ class LLMVisionStrategy(OCRStrategy):
         )
 
         try:
-            response = self._llm.invoke([{"role": "user", "content": prompt}])
+            response = await self._llm.ainvoke([{"role": "user", "content": prompt}])
             text = response.content if hasattr(response, 'content') else str(response)
             if text and text.strip():
                 logger.info(
@@ -440,13 +486,14 @@ class PaddleOCRCloudStrategy(OCRStrategy):
         return "\n\n".join(all_texts).strip()
 
     @_ocr_retry
-    def recognize(self, image_path: str) -> str:
+    async def recognize(self, image_path: str, category: str = "") -> str:
+        from asgiref.sync import sync_to_async
         logger.info(
             f"PaddleOCR 云端 OCR 调用 (model={self._model})"
         )
         try:
-            job_id = self._submit_job(image_path)
-            text = self._poll_result(job_id)
+            job_id = await sync_to_async(self._submit_job)(image_path)
+            text = await sync_to_async(self._poll_result)(job_id)
         except Exception as e:
             logger.warning(
                 f"PaddleOCR 云端 OCR 失败: {type(e).__name__}: {e}"
@@ -468,14 +515,14 @@ class MockStrategy(OCRStrategy):
     """Mock 兜底策略，返回预置文本。"""
     name = "mock"
 
-    def recognize(self, image_path: str) -> str:
+    async def recognize(self, image_path: str, category: str = "") -> str:
         from api.services.ocr_service import MOCK_OCR_TEXT
         logger.info("使用 Mock OCR 兜底")
         return MOCK_OCR_TEXT
 
 
 class OCRPipeline:
-    """多策略级联 Pipeline。
+    """多策略级联 Pipeline（v9 异步化）。
 
     按策略顺序尝试，首个成功即返回。全部失败则用 MockStrategy 兜底。
     """
@@ -483,12 +530,15 @@ class OCRPipeline:
     def __init__(self, strategies: list[OCRStrategy]):
         self.strategies = strategies
 
-    def recognize(self, image_path: str, case_description: str = "") -> tuple[str, str, str]:
-        """识别图片文本。
+    async def recognize(
+        self, image_path: str, case_description: str = "", evidence_category: str = ""
+    ) -> tuple[str, str, str]:
+        """识别图片文本（异步）。
 
         Args:
             image_path: 图片本地路径
             case_description: 案件描述（可选，透传给策略的 correct_text 用于纠错上下文）
+            evidence_category: 证据类别（透传给 LLMVisionStrategy 选 prompt）
 
         Returns:
             (raw_text, corrected_text, strategy_name) 三元组
@@ -499,10 +549,10 @@ class OCRPipeline:
         failures: list[tuple[str, str]] = []
         for s in self.strategies:
             try:
-                text = s.recognize(image_path)
+                text = await s.recognize(image_path, evidence_category)
                 if text and text.strip():
                     # 用同款模型纠错（策略内部自管）
-                    corrected = s.correct_text(text, case_description)
+                    corrected = await s.correct_text(text, case_description)
                     if failures:
                         logger.info(
                             f"OCR 降级链路：{' → '.join(n for n, _ in failures)} → {s.name}（成功）"
@@ -522,8 +572,8 @@ class OCRPipeline:
         logger.warning(
             f"OCR 全部策略失败，降级到 Mock。失败链路：{failures}"
         )
-        text = mock.recognize(image_path)
-        return text, mock.correct_text(text), mock.name
+        text = await mock.recognize(image_path)
+        return text, await mock.correct_text(text), mock.name
 
 
 def get_default_pipeline() -> OCRPipeline:

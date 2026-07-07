@@ -48,6 +48,14 @@ services:
       - LLM_OCR_MAX_RETRIES=${LLM_OCR_MAX_RETRIES:-3}
       - LLM_OCR_PROMPT=${LLM_OCR_PROMPT:-}
       - LLM_OCR_MAX_IMAGE_MB=${LLM_OCR_MAX_IMAGE_MB:-10}
+      # 视觉预分类+摘要 (Qwen3-Omni Captioner)
+      - LLM_CAPTIONER_PROVIDER=${LLM_CAPTIONER_PROVIDER:-siliconflow}
+      - LLM_CAPTIONER_API_KEY=${LLM_CAPTIONER_API_KEY:-}
+      - LLM_CAPTIONER_BASE_URL=${LLM_CAPTIONER_BASE_URL:-https://api.siliconflow.cn/v1}
+      - LLM_CAPTIONER_MODEL=${LLM_CAPTIONER_MODEL:-Qwen/Qwen3-Omni-30B-A3B-Captioner}
+      - LLM_CAPTIONER_TEMPERATURE=${LLM_CAPTIONER_TEMPERATURE:-0.1}
+      - LLM_CAPTIONER_TIMEOUT=${LLM_CAPTIONER_TIMEOUT:-30}
+      - LLM_CAPTIONER_MAX_RETRIES=${LLM_CAPTIONER_MAX_RETRIES:-2}
       # PaddleOCR-VL 云端 OCR 配置（aistudio 高精度文档识别）
       - PADDLEOCR_VL_TOKEN=${PADDLEOCR_VL_TOKEN:-}
       - PADDLEOCR_VL_BASE_URL=${PADDLEOCR_VL_BASE_URL:-}
@@ -92,6 +100,20 @@ services:
       # v3 新增：LangSmith 区域与 Workspace
       - LANGSMITH_REGION=${LANGSMITH_REGION:-}
       - LANGSMITH_WORKSPACE_ID=${LANGSMITH_WORKSPACE_ID:-}
+      # v10 新增：Embedding 服务（RAG 知识库向量检索）
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-VL-Embedding-8B}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1024}
+      # v10 新增：RAG 检索配置
+      - RAG_ENABLED=${RAG_ENABLED:-true}
+      - RAG_TOP_K=${RAG_TOP_K:-5}
+      - RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD:-0.3}
+      # v10 新增：Tools 工具集配置
+      - TOOLS_ENABLED=${TOOLS_ENABLED:-true}
+      - TOOLS_MAX_ITERATIONS=${TOOLS_MAX_ITERATIONS:-5}
+      # v10 新增：法律知识库向量库连接（复用 checkpointer PG 实例）
+      - LAW_VECTOR_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
     depends_on:
       mysql:
         condition: service_healthy

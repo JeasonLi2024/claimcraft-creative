@@ -6,10 +6,40 @@ import { useStatus } from "@/composables/useStatus"
 import PillTag from "@/components/PillTag"
 import EmptyState from "@/components/EmptyState"
 import { cn } from "@/lib/utils"
+import type { ExtractedField } from "@/types/case"
 import {
   Upload, Plus, ChevronDown, ChevronRight, Trash2, ImagePlus,
   X, Loader2, FileText, Eye, Clock,
 } from "lucide-react"
+
+// v9: 证据类别 → 中文标签映射（与后端 classify_node 保持一致）
+const EVIDENCE_CATEGORY_LABELS: Record<string, string> = {
+  chat_screenshot: "聊天截图",
+  product_order: "商品订单",
+  logistics_tracking: "物流跟踪",
+  payment_record: "支付凭证",
+  invoice: "发票",
+  other: "其他",
+}
+
+// v9: 字段分类展示顺序（与后端 FIELD_CATEGORY_MAP 保持一致）
+const FIELD_CATEGORY_ORDER = [
+  "订单信息", "支付信息", "物流信息", "发票信息", "联系信息", "时间信息", "其他",
+]
+
+// v9: 按字段分类分组（field_category 为空时归入「其他」）
+function groupFieldsByCategory(fields: ExtractedField[]) {
+  const groups: Record<string, ExtractedField[]> = {}
+  for (const f of fields) {
+    const cat = f.field_category || "其他"
+    if (!groups[cat]) groups[cat] = []
+    groups[cat].push(f)
+  }
+  // 按预定义顺序输出，未在顺序中的类别追加到末尾
+  return FIELD_CATEGORY_ORDER
+    .filter((cat) => groups[cat]?.length)
+    .map((cat) => ({ category: cat, fields: groups[cat] }))
+}
 
 export default function EvidencePage() {
   const { caseId } = useParams<{ caseId: string }>()
@@ -184,6 +214,12 @@ export default function EvidencePage() {
                     {ev.code}
                   </span>
                   <PillTag label={ev.evidence_type || "未知"} variant="default" />
+                  {ev.evidence_category && (
+                    <PillTag
+                      label={EVIDENCE_CATEGORY_LABELS[ev.evidence_category] || ev.evidence_category}
+                      variant="primary"
+                    />
+                  )}
                   <PillTag label={ocrStatusLabel(ev.ocr_status)} variant={ocrStatusVariant(ev.ocr_status)} />
                 </div>
                 <button
@@ -222,7 +258,7 @@ export default function EvidencePage() {
               )}
 
               {/* OCR expandable section */}
-              {(ev.ocr_status === "done" || fields.length > 0) && (
+              {(ev.ocr_status === "done" || fields.length > 0 || !!ev.ocr_summary) && (
                 <div className="mt-3">
                   <button
                     onClick={() => toggleOcr(ev.id)}
@@ -234,42 +270,62 @@ export default function EvidencePage() {
 
                   {isExpanded && (
                     <div className="mt-2 space-y-2">
+                      {/* v9: 视觉摘要（Captioner 生成，100-200字） */}
+                      {ev.ocr_summary && (
+                        <div className="rounded-xl bg-primary/5 p-3">
+                          <div className="mb-1 text-xs font-semibold text-primary">{"视觉摘要"}</div>
+                          <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-wrap">
+                            {ev.ocr_summary}
+                          </p>
+                        </div>
+                      )}
+
                       {ev.extracted_text && (
                         <p className="rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap">
                           {ev.extracted_text}
                         </p>
                       )}
 
-                      {/* Field table */}
+                      {/* v9: 字段表 - 按 field_category 分组展示 */}
                       {fields.length > 0 && (
-                        <div className="overflow-x-auto rounded-xl border border-border/50">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="border-b border-border/50 bg-muted/30">
-                                <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"字段名"}</th>
-                                <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"值"}</th>
-                                <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"置信度"}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {fields.map((field, i) => (
-                                <tr key={field.id} className={cn("border-b border-border/30", i % 2 === 0 && "bg-muted/10")}>
-                                  <td className="px-3 py-2 font-medium text-foreground">{field.field_name}</td>
-                                  <td className="px-3 py-2">
-                                    <input
-                                      type="text"
-                                      defaultValue={field.field_value}
-                                      onBlur={(e) => handleFieldBlur(field.id, e.target.value)}
-                                      className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-foreground focus:border-primary focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
-                                    />
-                                  </td>
-                                  <td className="px-3 py-2 text-muted-foreground">
-                                    {field.confidence !== null ? (field.confidence * 100).toFixed(1) + "%" : "-"}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                        <div className="space-y-3">
+                          {groupFieldsByCategory(fields).map((group) => (
+                            <div key={group.category} className="overflow-hidden rounded-xl border border-border/50">
+                              <div className="border-b border-border/50 bg-muted/40 px-3 py-1.5 text-xs font-semibold text-foreground/80">
+                                {group.category}{" "}
+                                <span className="ml-1 text-muted-foreground">({group.fields.length})</span>
+                              </div>
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    <tr className="border-b border-border/30 bg-muted/20">
+                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"字段名"}</th>
+                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"值"}</th>
+                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"置信度"}</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {group.fields.map((field, i) => (
+                                      <tr key={field.id} className={cn("border-b border-border/30", i % 2 === 0 && "bg-muted/10")}>
+                                        <td className="px-3 py-2 font-medium text-foreground">{field.field_name}</td>
+                                        <td className="px-3 py-2">
+                                          <input
+                                            type="text"
+                                            defaultValue={field.field_value}
+                                            onBlur={(e) => handleFieldBlur(field.id, e.target.value)}
+                                            className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-foreground focus:border-primary focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                          />
+                                        </td>
+                                        <td className="px-3 py-2 text-muted-foreground">
+                                          {field.confidence !== null ? (field.confidence * 100).toFixed(1) + "%" : "-"}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>

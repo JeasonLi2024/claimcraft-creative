@@ -16,10 +16,13 @@ langchain-core>=1.0,<2.0
 langgraph>=1.2,<2.0
 langgraph-checkpoint-postgres>=2.0
 langchain-openai>=1.0
+langchain-postgres>=0.0.10
 langsmith>=0.3.0
 # ===== PostgreSQL Checkpointer 依赖（psycopg binary + pool）=====
 # pool extra 提供 ConnectionPool，binary extra 提供预编译 C 扩展
 psycopg[binary,pool]>=3.1
+# ===== pgvector（v10 新增：RAG 知识库向量检索）=====
+pgvector>=0.3.0
 # ===== LLM 服务支撑 =====
 httpx>=0.27
 python-dotenv>=1.0

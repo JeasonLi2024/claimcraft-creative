@@ -2,13 +2,14 @@
 """
 ClaimCraft 维权材料工坊数据模型。
 
-包含六个核心模型：
+包含核心模型：
 - Case：维权案件
 - Evidence：证据
 - ExtractedField：抽取字段
 - TimelineNode：时间线节点
 - ComplaintTemplate：投诉模板（静态）
 - ComplaintTemplateRule：投诉模板规则（Jinja2 动态）
+- LawArticle：法律条文（v10 新增，RAG 知识库）
 """
 
 
@@ -118,6 +119,14 @@ class Evidence(models.Model):
         '打码状态', max_length=20, default='none',
         help_text='none/pending/done'
     )
+    evidence_category = models.CharField(
+        'LLM分类', max_length=50, blank=True, default='',
+        help_text='chat_screenshot/product_order/logistics_tracking/payment_record/invoice/other'
+    )
+    ocr_summary = models.TextField(
+        'OCR摘要', blank=True, default='',
+        help_text='视觉预分类生成的100-200字摘要'
+    )
 
     class Meta:
         verbose_name = '证据'
@@ -140,6 +149,14 @@ class ExtractedField(models.Model):
     field_name = models.CharField('字段名', max_length=50, help_text='订单号/金额/手机号/地址/时间/承诺话术')
     field_value = models.CharField('字段值', max_length=500)
     confidence = models.FloatField('置信度', default=0.9)
+    field_category = models.CharField(
+        '字段分类', max_length=50, blank=True, default='',
+        help_text='订单信息/支付信息/物流信息/发票信息/联系信息/时间信息/其他'
+    )
+    source_hash = models.CharField(
+        '源文本哈希', max_length=32, blank=True, default='',
+        help_text='OCR文本MD5，用于缓存比对避免重复抽取'
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
@@ -294,3 +311,152 @@ class CaseTypePreset(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.get_case_type_display()})'
+
+
+class LawArticle(models.Model):
+    """法律条文（v10 新增 - RAG 知识库结构化存储）。
+
+    数据源：国家法律法规数据库 flk.npc.gov.cn 官方文本，脚本化导入。
+    真实性保证：content 存储官方原文，law_name + article_number 可溯源校验。
+
+    设计说明：
+    - 结构化数据存 MySQL（本表），向量索引存 PostgreSQL（pgvector）
+    - 检索流程：PG 向量 top-k → 取 law_name+article_number → MySQL 取完整内容
+    - embedding 字段不在此表，由 rag_service 管理 PG 侧的 law_article_vectors 表
+    """
+    # 法律分类枚举（与 design doc 一致）
+    CATEGORY_CONSUMER = 'consumer_protection'      # 消费者权益保护法
+    CATEGORY_ECOMMERCE = 'e-commerce'              # 电子商务法
+    CATEGORY_CONTRACT = 'contract'                 # 民法典合同编
+    CATEGORY_QUALITY = 'quality'                   # 产品质量法
+    CATEGORY_SAFETY = 'safety'                     # 食品安全法
+    CATEGORY_PRIVACY = 'privacy'                   # 个人信息保护法
+    CATEGORY_PLATFORM = 'platform_rule'            # 平台规则
+    CATEGORY_OTHER = 'other'
+    CATEGORY_CHOICES = [
+        (CATEGORY_CONSUMER, '消费者权益保护法'),
+        (CATEGORY_ECOMMERCE, '电子商务法'),
+        (CATEGORY_CONTRACT, '民法典合同编'),
+        (CATEGORY_QUALITY, '产品质量法'),
+        (CATEGORY_SAFETY, '食品安全法'),
+        (CATEGORY_PRIVACY, '个人信息保护法'),
+        (CATEGORY_PLATFORM, '平台规则'),
+        (CATEGORY_OTHER, '其他'),
+    ]
+
+    # ===== 基础元信息 =====
+    law_name = models.CharField('法律名称', max_length=100, db_index=True,
+        help_text='如：中华人民共和国消费者权益保护法')
+    article_number = models.CharField('条文编号', max_length=20, db_index=True,
+        help_text='如：第五十五条（保持官方原文格式）')
+    chapter = models.CharField('章节', max_length=100, blank=True, default='',
+        help_text='如：第七章 法律责任')
+
+    # ===== 条文内容（官方原文，不可篡改）=====
+    content = models.TextField('条文内容', help_text='官方颁布原文，逐字校验')
+    summary = models.CharField('条文摘要', max_length=200, blank=True, default='',
+        help_text='一句话概括，用于快速检索展示')
+
+    # ===== 适用场景标签（预过滤 + 精确匹配）=====
+    category = models.CharField('法律分类', max_length=30, db_index=True,
+        choices=CATEGORY_CHOICES, default=CATEGORY_OTHER)
+    keywords = models.JSONField('关键词', default=list, blank=True,
+        help_text='如：["退一赔三", "欺诈", "三倍赔偿"]')
+    applicable_scenarios = models.JSONField('适用场景', default=list, blank=True,
+        help_text='如：["虚假宣传", "假冒伪劣", "价格欺诈"]')
+
+    # ===== 生效信息 =====
+    effective_date = models.DateField('生效日期', null=True, blank=True)
+    is_active = models.BooleanField('现行有效', default=True, db_index=True)
+
+    # ===== 数据源溯源 =====
+    source_url = models.URLField('数据源URL', max_length=500, blank=True, default='',
+        help_text='flk.npc.gov.cn 官方法条 URL，用于溯源校验')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = '法律条文'
+        verbose_name_plural = verbose_name
+        unique_together = [('law_name', 'article_number')]
+        indexes = [
+            models.Index(fields=['category', 'is_active']),
+            models.Index(fields=['law_name', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.law_name} {self.article_number}'
+
+    def to_retrieval_dict(self) -> dict:
+        """转换为检索结果字典（供 RAG 检索器返回）。"""
+        return {
+            'law_name': self.law_name,
+            'article_number': self.article_number,
+            'chapter': self.chapter,
+            'content': self.content,
+            'summary': self.summary,
+            'category': self.category,
+            'keywords': self.keywords,
+            'applicable_scenarios': self.applicable_scenarios,
+            'source_url': self.source_url,
+        }
+
+
+class PlatformRule(models.Model):
+    """电商平台投诉规则（v10 新增 - Tools 工具集数据源）。
+
+    存储各电商平台的投诉处理规则、服务承诺、赔偿标准。
+    数据源：各平台官方规则页面，定期更新。
+    """
+    PLATFORM_CHOICES = [
+        ('taobao', '淘宝'),
+        ('tmall', '天猫'),
+        ('jd', '京东'),
+        ('pdd', '拼多多'),
+        ('douyin', '抖音电商'),
+        ('kuaishou', '快手电商'),
+        ('vipshop', '唯品会'),
+        ('suning', '苏宁易购'),
+        ('other', '其他'),
+    ]
+
+    platform = models.CharField('平台', max_length=30, db_index=True, choices=PLATFORM_CHOICES)
+    rule_name = models.CharField('规则名称', max_length=200,
+        help_text='如：延迟发货规则、假货处理规则')
+    issue_type = models.CharField('问题类型', max_length=50, db_index=True,
+        help_text='如：late_delivery, counterfeit, quality_issue, refund_dispute')
+    content = models.TextField('规则内容', help_text='官方规则原文')
+    compensation_standard = models.TextField('赔偿标准', blank=True, default='',
+        help_text='如：订单金额30%赔付，最高不超过500元')
+    handling_process = models.TextField('处理流程', blank=True, default='',
+        help_text='投诉处理步骤')
+    source_url = models.URLField('数据源URL', max_length=500, blank=True, default='')
+    effective_date = models.DateField('生效日期', null=True, blank=True)
+    is_active = models.BooleanField('现行有效', default=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = '平台规则'
+        verbose_name_plural = verbose_name
+        unique_together = [('platform', 'rule_name')]
+        indexes = [
+            models.Index(fields=['platform', 'issue_type', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'[{self.get_platform_display()}] {self.rule_name}'
+
+    def to_retrieval_dict(self) -> dict:
+        return {
+            'platform': self.platform,
+            'platform_label': self.get_platform_display(),
+            'rule_name': self.rule_name,
+            'issue_type': self.issue_type,
+            'content': self.content,
+            'compensation_standard': self.compensation_standard,
+            'handling_process': self.handling_process,
+            'source_url': self.source_url,
+        }

@@ -233,9 +233,126 @@ def _build_examples():
         ],
     ))
 
+    # ===== 示例 4：发票 =====
+    examples.append(lx.data.ExampleData(
+        text=(
+            "增值税电子普通发票\n"
+            "发票代码：044001900111\n"
+            "发票号码：08001234\n"
+            "开票日期：2025-06-15\n"
+            "购买方：张三\n"
+            "销售方：XX数码专营店\n"
+            "货物名称：手机 数量1 单价599.00\n"
+            "金额530.09 税率13% 税额68.91\n"
+            "价税合计(大写)陆佰玖拾玖元整\n"
+            "价税合计(小写)¥699.00"
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="发票代码", extraction_text="044001900111",
+                attributes={"confidence": 0.95},
+            ),
+            lx.data.Extraction(
+                extraction_class="发票号码", extraction_text="08001234",
+                attributes={"confidence": 0.95},
+            ),
+            lx.data.Extraction(
+                extraction_class="开票日期", extraction_text="2025-06-15",
+                attributes={"confidence": 0.9, "normalized_value": "2025-06-15"},
+            ),
+            lx.data.Extraction(
+                extraction_class="购买方", extraction_text="张三",
+                attributes={"confidence": 0.85},
+            ),
+            lx.data.Extraction(
+                extraction_class="销售方", extraction_text="XX数码专营店",
+                attributes={"confidence": 0.85},
+            ),
+            lx.data.Extraction(
+                extraction_class="金额", extraction_text="530.09",
+                attributes={"confidence": 0.9, "normalized_value": "530.09"},
+            ),
+            lx.data.Extraction(
+                extraction_class="税率", extraction_text="13%",
+                attributes={"confidence": 0.9, "normalized_value": "0.13"},
+            ),
+            lx.data.Extraction(
+                extraction_class="税额", extraction_text="68.91",
+                attributes={"confidence": 0.9, "normalized_value": "68.91"},
+            ),
+            lx.data.Extraction(
+                extraction_class="价税合计", extraction_text="¥699.00",
+                attributes={"confidence": 0.95, "normalized_value": "699"},
+            ),
+        ],
+    ))
+
+    # ===== 示例 5：付款凭证 =====
+    examples.append(lx.data.ExampleData(
+        text=(
+            "支付成功\n"
+            "交易流水号：202506101234567890\n"
+            "支付方式：微信支付\n"
+            "付款时间：2025-06-10 09:25:30\n"
+            "付款金额：¥699.00\n"
+            "收款方：数码专营店\n"
+            "备注：订单2025061012345678"
+        ),
+        extractions=[
+            lx.data.Extraction(
+                extraction_class="交易流水号", extraction_text="202506101234567890",
+                attributes={"confidence": 0.95},
+            ),
+            lx.data.Extraction(
+                extraction_class="支付方式", extraction_text="微信支付",
+                attributes={"confidence": 0.9},
+            ),
+            lx.data.Extraction(
+                extraction_class="付款时间", extraction_text="2025-06-10 09:25:30",
+                attributes={"confidence": 0.9, "normalized_value": "2025-06-10T09:25:30"},
+            ),
+            lx.data.Extraction(
+                extraction_class="金额", extraction_text="¥699.00",
+                attributes={"confidence": 0.95, "normalized_value": "699"},
+            ),
+            lx.data.Extraction(
+                extraction_class="收款方", extraction_text="数码专营店",
+                attributes={"confidence": 0.85},
+            ),
+        ],
+    ))
+
     return examples
 
 
-def get_examples():
-    """获取维权场景少样本示例（懒加载，避免 import 失败时整个模块崩溃）。"""
-    return _build_examples()
+# 证据类别 -> 示例索引（用于按类型过滤少样本）
+# 索引对应 _build_examples() 返回列表中的位置
+_CATEGORY_EXAMPLE_INDICES = {
+    "product_order": [0],        # 商品订单
+    "chat_screenshot": [1],      # 聊天截图
+    "logistics_tracking": [2],   # 物流跟踪
+    "invoice": [3],              # 发票
+    "payment_record": [4],       # 付款凭证
+}
+
+
+def get_examples(category: str = "") -> list:
+    """获取维权场景少样本示例（懒加载，避免 import 失败时整个模块崩溃）。
+
+    Args:
+        category: 证据类别（chat_screenshot/product_order/logistics_tracking/
+                  payment_record/invoice）。为空时返回全部示例。
+
+    Returns:
+        少样本示例列表。指定 category 时返回该类示例 + 1 个通用示例（提升泛化）。
+    """
+    all_examples = _build_examples()
+    if not category or category not in _CATEGORY_EXAMPLE_INDICES:
+        return all_examples
+
+    indices = _CATEGORY_EXAMPLE_INDICES[category]
+    selected = [all_examples[i] for i in indices if i < len(all_examples)]
+    # 追加 1 个通用示例（商品订单）以提升跨类型泛化
+    if 0 not in indices and len(all_examples) > 0:
+        selected.append(all_examples[0])
+    return selected

@@ -47,7 +47,11 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
     """
     from api.models import Case, ComplaintTemplate
     from api.services.complaint_service import generate_complaint
-    from api.agents.prompts.templates import COMPLAINT_REWRITE_PROMPT
+    from api.agents.prompts.templates import (
+        COMPLAINT_REWRITE_PROMPT,
+        TOOLS_ENABLED_SECTION,
+        TOOLS_DISABLED_SECTION,
+    )
 
     case_id = state["case_id"]
     errors = []
@@ -110,15 +114,35 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
                 ensure_ascii=False,
                 indent=2,
             )
+
+            # v10 新增：Tools 工具集启用判断
+            from api.agents.tools.law_tools import is_tools_enabled, get_all_law_tools, _get_max_iterations
+            tools_enabled = is_tools_enabled()
+
+            if tools_enabled:
+                tools_section = TOOLS_ENABLED_SECTION
+            else:
+                tools_section = TOOLS_DISABLED_SECTION
+
             prompt = COMPLAINT_REWRITE_PROMPT.format(
                 tone=tone,
                 skeleton=final_content,
                 facts_json=facts_json,
                 timeline_json=timeline_json,
+                tools_section=tools_section,
             )
-            rewritten = await sync_to_async(llm_service.chat_with_retry)([
-                {"role": "user", "content": prompt}
-            ])
+
+            if tools_enabled:
+                # v10 新增：绑定 Tools 让 LLM 主动调用查询法律条款
+                rewritten = await _rewrite_with_tools(
+                    prompt, tone, errors
+                )
+            else:
+                # 原逻辑：单次 LLM 重写
+                rewritten = await sync_to_async(llm_service.chat_with_retry)([
+                    {"role": "user", "content": prompt}
+                ])
+
             if isinstance(rewritten, str) and rewritten.strip():
                 final_content = rewritten.strip()
         except Exception as e:
@@ -171,3 +195,100 @@ def _select_tone(extracted_fields: list[dict]) -> str:
             except (ValueError, TypeError):
                 continue
     return "restrained"
+
+
+async def _rewrite_with_tools(prompt: str, tone: str, errors: list[str]) -> str:
+    """v10 新增：用绑定 Tools 的 LLM 重写投诉正文（多轮工具调用）。
+
+    流程：
+    1. 绑定 Tools 到 LLM（llm.bind_tools）
+    2. 发送 prompt，LLM 返回 content + tool_calls
+    3. 执行 tool_calls（asyncio.gather 并行）
+    4. 将 tool_results 追加到消息历史，再次调用 LLM
+    5. 循环直到 LLM 不再调用工具或达到最大轮数
+    6. 返回最终 content（投诉正文）
+
+    Args:
+        prompt: 初始重写 prompt
+        tone: 语气
+        errors: 错误累积列表
+
+    Returns:
+        重写后的投诉正文
+    """
+    from api.agents.tools.law_tools import get_all_law_tools, _get_max_iterations
+    from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+    llm = llm_service.get_scenario_llm("text")
+    tools = get_all_law_tools()
+    llm_with_tools = llm.bind_tools(tools)
+
+    # 构建 tool_name → tool 映射（便于执行 tool_calls）
+    tool_map = {t.name: t for t in tools}
+
+    messages = [HumanMessage(content=prompt)]
+    max_iterations = _get_max_iterations()
+
+    for iteration in range(max_iterations):
+        try:
+            response = await llm_with_tools.ainvoke(messages)
+        except Exception as e:
+            logger.warning(f"LLM 工具调用失败 (iteration {iteration}): {e}")
+            errors.append(f"LLM 工具调用失败: {e}")
+            break
+
+        # 若无 tool_calls，返回最终 content
+        if not response.tool_calls:
+            logger.info(f"[投诉生成] Tools 调用完成（{iteration} 轮），返回最终正文")
+            return response.content if hasattr(response, 'content') else str(response)
+
+        # 追加 AI 消息（含 tool_calls）
+        messages.append(response)
+
+        # 执行所有 tool_calls（asyncio.gather 并行）
+        import asyncio
+        async def _exec_tool(tool_call):
+            tool_name = tool_call['name']
+            tool_args = tool_call['args']
+            tool = tool_map.get(tool_name)
+            if not tool:
+                return ToolMessage(
+                    content=f"工具 {tool_name} 不存在",
+                    tool_call_id=tool_call['id']
+                )
+            try:
+                logger.info(
+                    f"[投诉生成] 调用工具 {tool_name} (args={tool_args})"
+                )
+                result = await tool.ainvoke(tool_args)
+                return ToolMessage(
+                    content=result if isinstance(result, str) else str(result),
+                    tool_call_id=tool_call['id']
+                )
+            except Exception as e:
+                logger.error(f"工具 {tool_name} 执行失败: {e}", exc_info=True)
+                return ToolMessage(
+                    content=f"工具执行失败: {e}",
+                    tool_call_id=tool_call['id']
+                )
+
+        tool_messages = await asyncio.gather(*[
+            _exec_tool(tc) for tc in response.tool_calls
+        ])
+        messages.extend(tool_messages)
+
+        logger.info(
+            f"[投诉生成] iteration {iteration + 1}: 执行 {len(response.tool_calls)} 个工具"
+        )
+
+    # 达到最大轮数，强制获取最终 content
+    logger.warning(
+        f"[投诉生成] 达到最大工具调用轮数 {max_iterations}，强制结束"
+    )
+    try:
+        final_response = await llm.ainvoke(messages)
+        return final_response.content if hasattr(final_response, 'content') else str(final_response)
+    except Exception as e:
+        logger.error(f"最终 LLM 调用失败: {e}")
+        errors.append(f"最终 LLM 调用失败: {e}")
+        return ""

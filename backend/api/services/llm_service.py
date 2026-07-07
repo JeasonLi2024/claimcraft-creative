@@ -72,12 +72,18 @@ PROVIDER_PRESETS = {
 SCENARIO_PREFIX = {
     'text': 'LLM_',
     'ocr':  'LLM_OCR_',
+    'captioner': 'LLM_CAPTIONER_',
 }
 
 # OCR 场景默认值（与文本 LLM 解耦的预设）
 OCR_DEFAULT_MODEL = 'deepseek-ai/DeepSeek-OCR'
 OCR_DEFAULT_TEMPERATURE = 0.1
 OCR_DEFAULT_TIMEOUT = 60
+
+# Captioner 场景默认值（视觉预分类+摘要，Qwen3-Omni Captioner）
+CAPTIONER_DEFAULT_MODEL = 'Qwen/Qwen3-Omni-30B-A3B-Captioner'
+CAPTIONER_DEFAULT_TEMPERATURE = 0.1
+CAPTIONER_DEFAULT_TIMEOUT = 30
 
 
 def _get_config() -> dict:
@@ -107,15 +113,23 @@ def get_scenario_config(scenario: str) -> dict:
 
     preset = PROVIDER_PRESETS.get(provider, {})
 
-    # 默认模型：OCR 场景有独立默认值
+    # 默认模型：OCR / captioner 场景有独立默认值
     if scenario == 'ocr':
         default_model = OCR_DEFAULT_MODEL
         default_temperature = OCR_DEFAULT_TEMPERATURE
         default_timeout = OCR_DEFAULT_TIMEOUT
+    elif scenario == 'captioner':
+        default_model = CAPTIONER_DEFAULT_MODEL
+        default_temperature = CAPTIONER_DEFAULT_TEMPERATURE
+        default_timeout = CAPTIONER_DEFAULT_TIMEOUT
     else:
         default_model = preset.get('model', 'deepseek-chat')
         default_temperature = 0.3
         default_timeout = 30
+
+    # captioner 场景默认供应商
+    if not provider and scenario == 'captioner':
+        provider = 'siliconflow'
 
     return {
         'provider': provider,
@@ -154,9 +168,9 @@ def is_scenario_available(scenario: str) -> bool:
     cfg = get_scenario_config(scenario)
     if cfg['api_key']:
         return True
-    # OCR 场景回退到文本 LLM
-    if scenario == 'ocr' and is_llm_available():
-        logger.info("OCR 场景未独立配置 LLM_OCR_API_KEY，复用文本 LLM 配置")
+    # OCR / captioner 场景回退到文本 LLM
+    if scenario in ('ocr', 'captioner') and is_llm_available():
+        logger.info(f"{scenario} 场景未独立配置，复用文本 LLM 配置")
         return True
     return False
 
@@ -186,13 +200,13 @@ def get_scenario_llm(scenario: str):
             f"{'LLM_API_KEY' if scenario == 'text' else 'LLM_OCR_API_KEY (或 LLM_API_KEY 作为回退)'}。"
         )
 
-    # OCR 场景：若 LLM_OCR_API_KEY 未配置，复用 LLM_API_KEY
+    # OCR / captioner 场景：若独立 API Key 未配置，复用 LLM_API_KEY
     cfg = get_scenario_config(scenario)
-    if scenario == 'ocr' and not cfg['api_key']:
+    if scenario in ('ocr', 'captioner') and not cfg['api_key']:
         text_cfg = _get_config()
         cfg = {**cfg, 'api_key': text_cfg['api_key']}
         logger.info(
-            f"OCR 场景复用文本 LLM 凭证 (provider={cfg['provider']}, model={cfg['model']})"
+            f"{scenario} 场景复用文本 LLM 凭证 (provider={cfg['provider']}, model={cfg['model']})"
         )
 
     try:

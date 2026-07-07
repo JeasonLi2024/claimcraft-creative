@@ -53,8 +53,28 @@ CATEGORY_TO_CASE_TYPE = {
     "product_order": "商品订单",
     "logistics_tracking": "物流跟踪",
     "payment_record": "支付凭证",
+    "invoice": "发票",
     "other": "其他",
 }
+
+# 字段名 → 字段分类映射（用于 ExtractedField.field_category）
+# 按 7 类聚合：订单信息/支付信息/物流信息/发票信息/联系信息/时间信息/其他
+FIELD_CATEGORY_MAP = {
+    "订单号": "订单信息", "商家名称": "订单信息", "商品名称": "订单信息",
+    "金额": "支付信息", "交易流水号": "支付信息", "支付方式": "支付信息",
+    "付款时间": "支付信息", "收款方": "支付信息", "退款金额": "支付信息",
+    "物流单号": "物流信息", "地址": "物流信息",
+    "手机号": "联系信息", "邮箱": "联系信息",
+    "时间": "时间信息", "开票日期": "时间信息",
+    "发票代码": "发票信息", "发票号码": "发票信息", "购买方": "发票信息",
+    "销售方": "发票信息", "税率": "发票信息", "税额": "发票信息",
+    "价税合计": "发票信息",
+    "承诺话术": "其他",
+}
+
+# 缓存命中阈值：若已有 ≥此数量的高置信度字段且 source_hash 未变，跳过 LLM 抽取
+CACHE_HIT_FIELD_COUNT = 3
+CACHE_HIT_CONFIDENCE = 0.9
 
 
 @traceable(name="字段抽取节点", run_type="chain")
@@ -75,6 +95,7 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
         get_extraction_passes, get_prompt_description,
         get_api_key, get_base_url, get_provider,
     )
+    import hashlib
 
     case_id = state["case_id"]
     ocr_results = state.get("evidence_ocr_results", [])
@@ -113,6 +134,7 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
         evidence_id = ocr["evidence_id"]
         evidence_code = ocr["evidence_code"]
         text = ocr.get("ocr_corrected_text") or ocr.get("ocr_raw_text", "")
+        category = category_map.get(evidence_id, "other")
 
         # 注入 evidence_id metadata 到当前 LangSmith Run（UI 可按证据筛选）
         if ls is not None:
@@ -121,35 +143,65 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
                 if rt:
                     rt.metadata["evidence_id"] = evidence_id
                     rt.metadata["evidence_code"] = evidence_code
-                    rt.tags.extend([f"evidence-{evidence_code}"])
+                    rt.metadata["evidence_category"] = category
+                    rt.tags.extend([f"evidence-{evidence_code}", f"category-{category}"])
             except Exception as e:
                 logger.debug(f"注入 evidence_id metadata 失败（忽略）: {e}")
+
+        # 计算 OCR 文本哈希（用于缓存比对，避免重复抽取）
+        source_hash = hashlib.md5(text.encode("utf-8")).hexdigest() if text else ""
+
+        # 0. 缓存检查：若该证据已有 ≥3 个高置信度字段且 source_hash 未变，跳过抽取
+        cached_fields = await _check_extract_cache(evidence_id, source_hash)
+        if cached_fields is not None:
+            logger.info(f"证据 {evidence_code} 缓存命中（source_hash 未变），跳过抽取")
+            # HITL 判断仍基于缓存字段的置信度
+            needs_review = any(
+                f.get("confidence", 1.0) < LOW_CONFIDENCE_THRESHOLD
+                for f in cached_fields
+            )
+            if needs_review:
+                any_needs_review = True
+            return {
+                "evidence_id": evidence_id,
+                "evidence_code": evidence_code,
+                "fields": cached_fields,
+                "needs_human_review": needs_review,
+                "source_hash": source_hash,
+                "cache_hit": True,
+            }
 
         # 1. 正则抽取（始终作为兜底）
         regex_fields = await sync_to_async(extract_fields_regex)(text)
 
-        # 2. LLM 抽取（langextract 或 with_structured_output）
+        # 2. LLM 抽取（langextract 或 with_structured_output，按 category 选少样本）
         llm_fields = []
         if not text.strip():
             pass  # 空文本跳过 LLM
         elif use_langextract:
-            llm_fields = await _extract_with_langextract(text, evidence_code, errors)
+            llm_fields = await _extract_with_langextract(
+                text, evidence_code, errors, category
+            )
         elif use_structured_output:
             llm_fields = await _extract_with_structured_output(
-                text, evidence_code, category_map.get(evidence_id, "other"), errors
+                text, evidence_code, category, errors
             )
 
         # 3. 合并去重
         merged = await sync_to_async(merge_fields)(regex_fields, llm_fields)
 
-        # 4. HITL 判断
+        # 4. 为每个字段补充 field_category（按字段名映射）
+        for f in merged:
+            f["field_category"] = FIELD_CATEGORY_MAP.get(f["field_name"], "其他")
+
+        # 5. HITL 判断
         needs_review = any(
             f.get("confidence", 1.0) < LOW_CONFIDENCE_THRESHOLD for f in merged
         )
         if needs_review:
             any_needs_review = True
 
-        # 5. 持久化（幂等：先 delete 再 create）
+        # 6. 持久化（幂等：先 delete 再 create，写入 field_category + source_hash）
         try:
             evidence = await sync_to_async(Evidence.objects.get)(pk=evidence_id, case_id=case_id)
             await sync_to_async(evidence.extracted_fields.all().delete)()
@@ -159,6 +211,8 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
                     field_name=f["field_name"],
                     field_value=f["field_value"],
                     confidence=f.get("confidence", 0.7),
+                    field_category=f.get("field_category", "其他"),
+                    source_hash=source_hash,
                 )
         except Evidence.DoesNotExist:
             errors.append(f"证据 {evidence_id} 不存在，无法持久化抽取字段")
@@ -168,13 +222,15 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
 
         logger.info(
             f"证据 {evidence_code} 抽取完成 ({len(merged)} 字段, "
-            f"needs_review={needs_review})"
+            f"category={category}, needs_review={needs_review})"
         )
         return {
             "evidence_id": evidence_id,
             "evidence_code": evidence_code,
             "fields": merged,
             "needs_human_review": needs_review,
+            "source_hash": source_hash,
+            "cache_hit": False,
         }
 
     results = await asyncio.gather(*[_process_one(ocr) for ocr in ocr_results])
@@ -187,8 +243,58 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
     }
 
 
+async def _check_extract_cache(evidence_id: int, source_hash: str) -> list[dict] | None:
+    """检查该证据是否已有可复用的抽取结果（source_hash 未变 + 高置信度）。
+
+    缓存命中条件：
+    1. 该证据已存在 ≥ CACHE_HIT_FIELD_COUNT 个 ExtractedField
+    2. 所有字段的 source_hash 与当前一致（OCR 文本未变）
+    3. 至少 1 个字段 confidence >= CACHE_HIT_CONFIDENCE
+
+    Args:
+        evidence_id: 证据 ID
+        source_hash: 当前 OCR 文本的 MD5
+
+    Returns:
+        命中时返回字段列表 [{field_name, field_value, confidence, field_category, source}]
+        未命中返回 None
+    """
+    if not source_hash:
+        return None
+    from api.models import ExtractedField
+
+    try:
+        existing = await sync_to_async(list)(
+            ExtractedField.objects.filter(
+                evidence_id=evidence_id, source_hash=source_hash
+            )
+        )
+    except Exception as e:
+        logger.debug(f"缓存检查失败（忽略，按未命中处理）: {e}")
+        return None
+
+    if len(existing) < CACHE_HIT_FIELD_COUNT:
+        return None
+
+    # 至少 1 个高置信度字段才视为有效缓存
+    if not any(f.confidence >= CACHE_HIT_CONFIDENCE for f in existing):
+        return None
+
+    # 命中：构造字段列表（保持向后兼容字段格式）
+    return [
+        {
+            "field_name": f.field_name,
+            "field_value": f.field_value,
+            "confidence": f.confidence,
+            "field_category": f.field_category or "其他",
+            "source": "cache",
+        }
+        for f in existing
+    ]
+
+
 async def _extract_with_langextract(
-    text: str, evidence_code: str, errors: list[str]
+    text: str, evidence_code: str, errors: list[str], category: str = ""
 ) -> list[dict]:
     """使用 LangExtract (Qwen3 + OpenAI 兼容接口 + 少样本示例) 抽取字段。
 
@@ -200,6 +306,7 @@ async def _extract_with_langextract(
         text: OCR 识别后的文本
         evidence_code: 证据编号（用于日志）
         errors: 错误累积列表
+        category: 证据类别（用于按类型过滤少样本示例）
 
     Returns:
         list[dict]: [{field_name, field_value, confidence, source}]
@@ -223,10 +330,16 @@ async def _extract_with_langextract(
     )
 
     try:
+        # 按证据类别选少样本示例（同类 + 1 个通用示例）
+        examples = get_examples(category)
+        logger.info(
+            f"LangExtract 调用 (evidence={evidence_code}, category={category or 'all'}, "
+            f"examples={len(examples)})"
+        )
         result = await sync_to_async(lx.extract)(
             text_or_documents=text,
             prompt_description=get_prompt_description(),
-            examples=get_examples(),
+            examples=examples,
             config=config,
             extraction_passes=get_extraction_passes(),
         )

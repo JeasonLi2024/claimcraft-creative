@@ -25,6 +25,10 @@ class CaseWorkflowState(TypedDict):
     case_id: int
     evidence_ids: list[int]                # 待处理的证据 ID 列表（空则处理案件全部有图证据）
 
+    # ===== 预分类节点输出（累积式） =====
+    # list[dict]: {evidence_id, evidence_code, evidence_category, ocr_summary, confidence}
+    evidence_preclassify_results: Annotated[list[dict], add]
+
     # ===== OCR 节点输出（累积式） =====
     # list[EvidenceOcrResult]: {evidence_id, evidence_code, image_path,
     #   ocr_raw_text, ocr_corrected_text, ocr_strategy_used, ocr_status, errors}

@@ -111,6 +111,31 @@ def get_llm_ocr_prompt() -> str:
     return custom or DEFAULT_LLM_OCR_PROMPT
 
 
+def get_llm_ocr_prompt_by_category(category: str = "") -> str:
+    """按证据类型获取 OCR prompt。
+
+    优先级：.env 中 LLM_OCR_PROMPT（全局覆盖） > 类型化 prompt > DEFAULT_LLM_OCR_PROMPT
+
+    Args:
+        category: 证据类别（chat_screenshot/product_order/logistics_tracking/
+                  payment_record/invoice/other）
+
+    Returns:
+        对应类型的 OCR prompt，无匹配时回退到通用 prompt。
+    """
+    # 若 .env 显式配置了全局 LLM_OCR_PROMPT，优先使用（向后兼容）
+    custom = os.environ.get('LLM_OCR_PROMPT', '').strip()
+    if custom:
+        return custom
+
+    if category:
+        from api.agents.prompts.templates import OCR_PROMPT_BY_CATEGORY
+        if category in OCR_PROMPT_BY_CATEGORY:
+            return OCR_PROMPT_BY_CATEGORY[category]
+
+    return DEFAULT_LLM_OCR_PROMPT
+
+
 def get_llm_ocr_max_image_mb() -> int:
     """读取 LLM 视觉 OCR 的最大图片大小限制（MB）。
 

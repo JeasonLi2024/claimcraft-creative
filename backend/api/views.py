@@ -763,6 +763,7 @@ class CaseWorkflowView(APIView):
                     initial_state = {
                         "case_id": case.id,
                         "evidence_ids": evidence_ids,
+                        "evidence_preclassify_results": [],
                         "evidence_ocr_results": [],
                         "evidence_classify_results": [],
                         "evidence_extract_results": [],

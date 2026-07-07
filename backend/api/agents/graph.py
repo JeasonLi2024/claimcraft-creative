@@ -47,6 +47,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.store.postgres import PostgresStore
 
 from api.agents.state import CaseWorkflowState
+from api.agents.nodes.preclassify_node import preclassify_node
 from api.agents.nodes.ocr_node import ocr_node
 from api.agents.nodes.classify_node import classify_node
 from api.agents.nodes.extract_node import extract_node
@@ -272,8 +273,8 @@ def _route_after_extract(state: CaseWorkflowState) -> Literal["review", "evidenc
 def build_case_workflow():
     """构建案件工作流 StateGraph（单例化）。
 
-    节点顺序：
-        START → ocr → classify → extract → [review?] → evidence_chain → complaint → END
+    节点顺序（v9 新增 preclassify 节点）：
+        START → preclassify → ocr → classify → extract → [review?] → evidence_chain → complaint → END
 
     条件边：
         extract → review（needs_human_review=True）
@@ -292,6 +293,7 @@ def build_case_workflow():
     # 添加节点（节点级 timeout + error_handler，Saga 降级）
     # timeout 仅 async invoke（ainvoke）模式下对 async 节点生效；
     # checkpointer 已用 _AsyncCompatibleSyncCheckpointer 包装支持 async 接口
+    g.add_node("preclassify", preclassify_node, timeout=60, error_handler=_make_error_handler("视觉预分类"))
     g.add_node("ocr", ocr_node, timeout=180, error_handler=_make_error_handler("OCR"))
     g.add_node("classify", classify_node, timeout=60, error_handler=_make_error_handler("分类"))
     g.add_node("extract", extract_node, timeout=300, error_handler=_make_error_handler("字段抽取"))
@@ -300,7 +302,8 @@ def build_case_workflow():
     g.add_node("complaint", complaint_node, timeout=120, error_handler=_make_error_handler("投诉生成"))
 
     # 添加边
-    g.add_edge(START, "ocr")
+    g.add_edge(START, "preclassify")
+    g.add_edge("preclassify", "ocr")
     g.add_edge("ocr", "classify")
     g.add_edge("classify", "extract")
     g.add_conditional_edges(

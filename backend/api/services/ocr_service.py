@@ -45,10 +45,10 @@ MOCK_OCR_TEXT = """订单号：202506101234
 """
 
 
-def ocr_image_with_strategy(
-    image_path: str, case_description: str = ""
+async def ocr_image_with_strategy(
+    image_path: str, case_description: str = "", evidence_category: str = ""
 ) -> tuple[str, str, str]:
-    """对图片执行多策略 OCR，返回 (raw_text, corrected_text, strategy_name)。
+    """对图片执行多策略 OCR（异步），返回 (raw_text, corrected_text, strategy_name)。
 
     使用 OCRPipeline 按环境变量 OCR_STRATEGIES 配置的策略链尝试。
     全部失败则用 Mock 兜底。
@@ -58,24 +58,25 @@ def ocr_image_with_strategy(
     - PaddleOCR-VL / 本地 PaddleOCR / Tesseract / Mock：不纠错（返回原文）
 
     Args:
-        image_path: 图片本地路径
+        image_path: 图片本地路径（Django storage 管理，非用户直接输入）
         case_description: 案件描述（可选，透传给策略用于纠错上下文）
+        evidence_category: 证据类别（透传给 LLMVisionStrategy 选 prompt）
 
     Returns:
         (raw_text, corrected_text, strategy_name) 三元组
     """
     from api.services.ocr_strategies import get_default_pipeline
     pipeline = get_default_pipeline()
-    return pipeline.recognize(image_path, case_description)
+    return await pipeline.recognize(image_path, case_description, evidence_category)
 
 
-def ocr_image(image_path: str, case_description: str = "") -> str:
-    """对图片执行 OCR，返回纠错后文本。
+async def ocr_image(image_path: str, case_description: str = "") -> str:
+    """对图片执行 OCR（异步），返回纠错后文本。
 
-    向后兼容接口：内部调用 ocr_image_with_strategy()。
+    向后兼容接口：内部 await ocr_image_with_strategy()。
     多策略 Pipeline + Mock 兜底 + 同款模型纠错。
     """
-    raw_text, corrected_text, strategy = ocr_image_with_strategy(
+    raw_text, corrected_text, strategy = await ocr_image_with_strategy(
         image_path, case_description
     )
     logger.info(

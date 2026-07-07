@@ -32,6 +32,9 @@ export interface Evidence {
   ocr_status: 'pending' | 'done' | 'failed' | null
   mask_status: 'none' | 'pending' | 'done' | null
   masked_image: string | null
+  // v9 新增：视觉预分类+摘要字段
+  evidence_category: string  // chat_screenshot/product_order/logistics_tracking/payment_record/invoice/other
+  ocr_summary: string        // 100-200字摘要，由 Captioner 生成
   created_at: string
 }
 
@@ -73,6 +76,10 @@ export interface ExtractedField {
   field_name: string
   field_value: string
   confidence: number | null
+  // v9 新增：字段分类（订单信息/支付信息/物流信息/发票信息/联系信息/时间信息/其他）
+  field_category: string
+  // v9 新增：源 OCR 文本 MD5，用于缓存比对
+  source_hash: string
 }
 
 export interface CasePreset {
