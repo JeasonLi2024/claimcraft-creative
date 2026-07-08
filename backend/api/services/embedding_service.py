@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """Embedding 服务（v10 新增）。
 
-通过 SiliconFlow OpenAI 兼容接口调用 Qwen/Qwen3-VL-Embedding-8B 生成文本向量。
+通过 SiliconFlow OpenAI 兼容接口调用 BAAI/bge-large-zh-v1.5 生成文本向量。
 
 设计要点：
 - 复用 LangChain OpenAIEmbeddings（与 LangChain 生态无缝衔接）
 - 配置从 .env 读取（EMBEDDING_*），无硬编码
 - 向量维度 1024（与 pgvector 索引一致）
 - 同步 + 异步双接口（embed_query / aembed_query）
+- 模型专为中文检索优化，适合法律文本向量化
 """
 import os
 import logging
@@ -28,7 +29,7 @@ def _get_embedding_config() -> dict:
             'EMBEDDING_BASE_URL', 'https://api.siliconflow.cn/v1'
         ).strip(),
         'model': os.environ.get(
-            'EMBEDDING_MODEL', 'Qwen/Qwen3-VL-Embedding-8B'
+            'EMBEDDING_MODEL', 'BAAI/bge-large-zh-v1.5'
         ).strip(),
         'dimensions': int(os.environ.get('EMBEDDING_DIMENSIONS', '1024')),
     }
@@ -50,9 +51,9 @@ def get_embedding_llm():
         RuntimeError: API Key 未配置
 
     说明：
-        SiliconFlow 的 Qwen3-VL-Embedding-8B 不支持 dimensions 参数（付费限制），
-        故不传 dimensions，使用模型原生维度 4096。
-        如需切换为支持 dimensions 的模型，请在 .env 中修改 EMBEDDING_MODEL。
+        BAAI/bge-large-zh-v1.5 原生 1024 维，专为中文优化。
+        仅当 dimensions 配置为非 0 时才传参（部分模型不支持 dimensions 参数）。
+        如需切换模型，请在 .env 中修改 EMBEDDING_MODEL。
     """
     cfg = _get_embedding_config()
     if not cfg['api_key']:
@@ -67,6 +68,11 @@ def get_embedding_llm():
         'model': cfg['model'],
         'api_key': cfg['api_key'],
         'base_url': cfg['base_url'],
+        # 禁用 LangChain 的 tiktoken 分词检查
+        # 原因：LangChain 默认用 tiktoken 分词并传 encoding_format 参数，
+        # SiliconFlow 不支持该参数会报 20015 错误。
+        # bge-large-zh-v1.5 的 512 token 限制由 API 端自动截断处理。
+        'check_embedding_ctx_length': False,
     }
     # 仅当 dimensions 配置为非 0 时才传参（部分模型不支持 dimensions 参数）
     if cfg['dimensions'] > 0:
@@ -96,6 +102,10 @@ async def embed_query(text: str) -> list[float]:
     Returns:
         1024 维浮点列表
     """
+    if not text or not text.strip():
+        text = '空'
+    else:
+        text = text[:500]  # bge-large-zh-v1.5 限制 512 token
     llm = get_embedding_llm()
     return await llm.aembed_query(text)
 
@@ -103,11 +113,24 @@ async def embed_query(text: str) -> list[float]:
 async def embed_documents(texts: list[str]) -> list[list[float]]:
     """批量异步生成文本向量。
 
+    对输入文本做安全处理：
+    - 空文本替换为占位符（避免 API 报错）
+    - 超长文本截断到 500 字符（bge-large-zh-v1.5 限制 512 token）
+
     Args:
         texts: 文本列表
 
     Returns:
         向量列表（每个元素为 1024 维浮点列表）
     """
+    # 安全处理：空文本替换 + 超长截断
+    MAX_CHARS = 500  # bge-large-zh-v1.5 限制 512 token，中文约 1 token/字
+    safe_texts = []
+    for t in texts:
+        if not t or not t.strip():
+            safe_texts.append('空')
+        else:
+            safe_texts.append(t[:MAX_CHARS])
+
     llm = get_embedding_llm()
-    return await llm.aembed_documents(texts)
+    return await llm.aembed_documents(safe_texts)

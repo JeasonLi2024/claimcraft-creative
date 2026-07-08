@@ -54,7 +54,7 @@ class CaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Case
         fields = [
-            'id', 'title', 'description', 'case_type', 'status',
+            'id', 'title', 'description', 'case_type', 'case_mode', 'status',
             'created_at', 'updated_at', 'owner',
             'evidence_count', 'timeline_count', 'template_count',
             'image_evidence_count', 'extracted_field_count',

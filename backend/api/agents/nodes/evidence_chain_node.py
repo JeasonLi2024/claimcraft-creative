@@ -55,6 +55,7 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         LAW_ARTICLES_EMPTY_SECTION,
         TOOLS_ENABLED_SECTION,
         TOOLS_DISABLED_SECTION,
+        SCENARIO_DESCRIPTIONS,
     )
 
     case_id = state["case_id"]
@@ -92,7 +93,8 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     # 3. 主动预检索法条（强制首次，失败降级）
     case_keywords = _extract_case_keywords(case.description, extract_results)
-    law_articles = await _pre_retrieve_law_articles(case_keywords)
+    from api.agents.tools.law_tools import pre_retrieve_law_articles
+    law_articles = await pre_retrieve_law_articles(case_keywords)
     law_articles_section = _format_law_articles_section(law_articles, errors)
 
     # 4. LLM 绑定工具 + 多轮工具调用
@@ -108,6 +110,7 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         evidences_json=evidences_json,
         law_articles_section=law_articles_section,
         tools_section=tools_section,
+        scenario_description=SCENARIO_DESCRIPTIONS.get(case.case_type, SCENARIO_DESCRIPTIONS["other"]),
     )
 
     tool_call_log = []
@@ -150,33 +153,6 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         "evidence_chain_tool_calls": tool_call_log,
         "errors": errors,
     }
-
-
-async def _pre_retrieve_law_articles(case_keywords: list[str]) -> list[dict]:
-    """主动预检索法条（强制首次调用，失败降级）。
-
-    混合模式：首次强制尝试 RAG 检索，失败或返回空则降级为空列表。
-    """
-    if not case_keywords:
-        return []
-
-    try:
-        from api.services.rag_service import LawRetriever, is_rag_enabled
-        if not is_rag_enabled():
-            logger.info("[证据链] RAG 未启用，跳过预检索")
-            return []
-
-        retriever = LawRetriever()
-        query = " ".join(case_keywords)
-        results = await retriever.retrieve(query, top_k=5)
-        if results:
-            logger.info(f"[证据链] 预检索到 {len(results)} 条相关法条")
-        else:
-            logger.info("[证据链] 预检索未返回法条（降级为空）")
-        return results or []
-    except Exception as e:
-        logger.warning(f"[证据链] 预检索法条失败（降级为空列表）: {e}")
-        return []
 
 
 def _format_law_articles_section(law_articles: list[dict], errors: list[str]) -> str:

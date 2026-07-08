@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 import {
   Home, FileText, BarChart3, Briefcase, Image, Clock,
   MessageSquare, Shield, Download, ChevronRight, LogOut,
-  Menu, X,
+  Menu, X, Gavel,
 } from "lucide-react"
 
 const sidebarNav = [
@@ -15,11 +15,20 @@ const sidebarNav = [
   { label: "数据仪表盘", path: "/dashboard", icon: BarChart3 },
 ]
 
-const caseNav = [
+const caseNavComplain = [
   { label: "工作台", path: "workspace", icon: Home },
   { label: "证据管理", path: "evidence", icon: Image },
   { label: "时间线", path: "timeline", icon: Clock },
   { label: "投诉文本", path: "complaint", icon: MessageSquare },
+  { label: "脱敏打码", path: "mask", icon: Shield },
+  { label: "导出", path: "export", icon: Download },
+]
+
+const caseNavRespond = [
+  { label: "工作台", path: "workspace", icon: Home },
+  { label: "证据管理", path: "evidence", icon: Image },
+  { label: "时间线", path: "timeline", icon: Clock },
+  { label: "反证答辩", path: "respond", icon: Gavel },
   { label: "脱敏打码", path: "mask", icon: Shield },
   { label: "导出", path: "export", icon: Download },
 ]
@@ -37,6 +46,8 @@ export default function AppLayout() {
   const { statusLabel, statusColor } = useStatus()
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  const caseNav = currentCase?.case_mode === "respond" ? caseNavRespond : caseNavComplain
 
   const isActive = (path: string) => location.pathname === path
   const caseBasePath = caseId ? `/cases/${caseId}` : ""

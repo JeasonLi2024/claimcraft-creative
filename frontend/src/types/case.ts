@@ -1,8 +1,11 @@
+export type CaseMode = 'complain' | 'respond'
+
 export interface Case {
   id: number
   title: string
   description: string
   dispute_type: string
+  case_mode?: CaseMode
   status: 'draft' | 'processing' | 'submitted' | 'closed' | 'cancelled'
   owner: number
   evidence_count: number
@@ -18,6 +21,7 @@ export interface CaseCreateDTO {
   title: string
   description: string
   dispute_type: string
+  case_mode?: CaseMode
 }
 
 export interface Evidence {
@@ -52,6 +56,13 @@ export interface ComplaintData {
   title: string
   content: string
   template_type: string
+}
+
+export interface RespondData {
+  title: string
+  content: string
+  template_type: string
+  tone?: string
 }
 
 export interface MaskResult {

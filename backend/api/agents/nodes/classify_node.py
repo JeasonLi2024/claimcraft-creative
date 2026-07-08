@@ -39,6 +39,11 @@ CATEGORY_LABELS = {
     "logistics_tracking": "物流跟踪",
     "payment_record": "支付凭证",
     "invoice": "发票",
+    "service_contract": "服务合同",
+    "work_record": "施工记录",
+    "communication_record": "沟通记录",
+    "contract_document": "合同文件",
+    "medical_record": "医疗记录",
     "other": "其他",
 }
 

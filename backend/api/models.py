@@ -38,10 +38,19 @@ class Case(models.Model):
         ('other', '其他'),
     ]
 
+    CASE_MODE_CHOICES = [
+        ('complain', '维权投诉'),
+        ('respond', '商家反证'),
+    ]
+
     title = models.CharField('案件标题', max_length=200)
     description = models.TextField('案件描述', blank=True, default='')
     case_type = models.CharField(
         '纠纷类型', max_length=20, choices=CASE_TYPES, default='shopping'
+    )
+    case_mode = models.CharField(
+        '案件模式', max_length=20, choices=CASE_MODE_CHOICES,
+        default='complain'
     )
     status = FSMField('案件状态', default='draft', protected=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -121,7 +130,7 @@ class Evidence(models.Model):
     )
     evidence_category = models.CharField(
         'LLM分类', max_length=50, blank=True, default='',
-        help_text='chat_screenshot/product_order/logistics_tracking/payment_record/invoice/other'
+        help_text='chat_screenshot/product_order/logistics_tracking/payment_record/invoice/service_contract/work_record/communication_record/contract_document/medical_record/other'
     )
     ocr_summary = models.TextField(
         'OCR摘要', blank=True, default='',
@@ -266,6 +275,32 @@ class ComplaintTemplateRule(models.Model):
         return f'[{case_label}][{self.get_template_type_display()}] 规则'
 
 
+class RespondTemplate(models.Model):
+    """商家反证答辩书模板。"""
+
+    case = models.ForeignKey(
+        Case,
+        related_name='respond_templates',
+        on_delete=models.CASCADE,
+        verbose_name='所属案件'
+    )
+    template_type = models.CharField(
+        '答辩类型', max_length=20,
+        choices=[('platform', '平台申诉版'), ('regulatory', '监管申诉版'), ('legal', '法律答辩版')],
+        default='platform'
+    )
+    title = models.CharField('标题', max_length=200)
+    content = models.TextField('答辩内容')
+
+    class Meta:
+        verbose_name = '反证答辩书'
+        verbose_name_plural = '反证答辩书'
+        ordering = ['id']
+
+    def __str__(self):
+        return f'[{self.get_template_type_display()}] {self.title}'
+
+
 class CaseStatusLog(models.Model):
     """案件状态变更日志。"""
 
@@ -332,6 +367,9 @@ class LawArticle(models.Model):
     CATEGORY_SAFETY = 'safety'                     # 食品安全法
     CATEGORY_PRIVACY = 'privacy'                   # 个人信息保护法
     CATEGORY_PLATFORM = 'platform_rule'            # 平台规则
+    CATEGORY_SERVICE = 'service'                  # 服务违约相关
+    CATEGORY_MEDICAL = 'medical'                   # 医疗纠纷相关
+    CATEGORY_LABOR = 'labor'                       # 劳动争议相关
     CATEGORY_OTHER = 'other'
     CATEGORY_CHOICES = [
         (CATEGORY_CONSUMER, '消费者权益保护法'),
@@ -341,6 +379,9 @@ class LawArticle(models.Model):
         (CATEGORY_SAFETY, '食品安全法'),
         (CATEGORY_PRIVACY, '个人信息保护法'),
         (CATEGORY_PLATFORM, '平台规则'),
+        (CATEGORY_SERVICE, '服务违约相关'),
+        (CATEGORY_MEDICAL, '医疗纠纷相关'),
+        (CATEGORY_LABOR, '劳动争议相关'),
         (CATEGORY_OTHER, '其他'),
     ]
 
@@ -418,10 +459,28 @@ class PlatformRule(models.Model):
         ('kuaishou', '快手电商'),
         ('vipshop', '唯品会'),
         ('suning', '苏宁易购'),
+        ('meituan', '美团'),
+        ('eleme', '饿了么'),
+        ('ctrip', '携程'),
+        ('keelage', 'Keep'),
+        ('classin', 'ClassIn'),
+        ('labor_arbitration', '劳动仲裁委'),
+        ('court_small', '法院小额诉讼'),
+        ('medical_dispute', '医疗纠纷调解'),
         ('other', '其他'),
     ]
 
+    RULE_TYPE_CHOICES = [
+        ('platform', '平台规则'),
+        ('regulatory', '监管规则'),
+        ('industry', '行业规则'),
+    ]
+
     platform = models.CharField('平台', max_length=30, db_index=True, choices=PLATFORM_CHOICES)
+    rule_type = models.CharField(
+        '规则类型', max_length=20, db_index=True,
+        choices=RULE_TYPE_CHOICES, default='platform'
+    )
     rule_name = models.CharField('规则名称', max_length=200,
         help_text='如：延迟发货规则、假货处理规则')
     issue_type = models.CharField('问题类型', max_length=50, db_index=True,

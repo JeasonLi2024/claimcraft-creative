@@ -47,6 +47,19 @@ FILE_CATEGORY_MAP = {
     'cat4_网络交易监督管理办法.txt': ('platform_rule', '网络交易监督管理办法'),
     'cat4_网络购买商品七日无理由退货暂行办法.txt': ('platform_rule', '网络购买商品七日无理由退货暂行办法'),
     'cat4_网络零售第三方平台交易规则制定程序规定.txt': ('platform_rule', '网络零售第三方平台交易规则制定程序规定（试行）'),
+    # 服务场景（cat3 前缀，B2 扩展）
+    'cat3_消费者权益保护法实施条例.txt': ('service', '中华人民共和国消费者权益保护法实施条例'),
+    'cat3_互联网广告管理办法.txt': ('service', '互联网广告管理办法'),
+    'cat3_明码标价和禁止价格欺诈规定.txt': ('service', '明码标价和禁止价格欺诈规定'),
+    'cat3_家政服务管理办法.txt': ('service', '家政服务管理办法'),
+    # 医疗场景（cat4 前缀，B2 扩展）
+    'cat4_医疗纠纷预防和处理条例.txt': ('medical', '医疗纠纷预防和处理条例'),
+    'cat4_医疗事故处理条例.txt': ('medical', '医疗事故处理条例'),
+    'cat4_基本医疗卫生与健康促进法.txt': ('medical', '中华人民共和国基本医疗卫生与健康促进法'),
+    # 劳动场景（cat5 前缀，B2 扩展）
+    'cat5_劳动法.txt': ('labor', '中华人民共和国劳动法'),
+    'cat5_劳动合同法.txt': ('labor', '中华人民共和国劳动合同法'),
+    'cat5_劳动争议调解仲裁法.txt': ('labor', '中华人民共和国劳动争议调解仲裁法'),
 }
 
 # 平台规则文件（存入 PlatformRule 表）
@@ -127,6 +140,49 @@ LAW_KEYWORDS_MAP = {
     '网络零售第三方平台交易规则制定程序规定（试行）': {
         'keywords': ['平台规则', '交易规则', '备案'],
         'scenarios': ['平台规则制定', '交易规则备案'],
+    },
+    # ===== B2 扩展：服务场景（service） =====
+    '中华人民共和国消费者权益保护法实施条例': {
+        'keywords': ['消费者权益', '经营者义务', '消费维权', '实施细则'],
+        'scenarios': ['消费者维权', '经营者义务', '消费纠纷'],
+    },
+    '互联网广告管理办法': {
+        'keywords': ['互联网广告', '网络广告', '广告监管', '广告发布者'],
+        'scenarios': ['互联网广告违规', '虚假广告', '广告监管'],
+    },
+    '明码标价和禁止价格欺诈规定': {
+        'keywords': ['明码标价', '价格欺诈', '虚构价格', '价格欺骗'],
+        'scenarios': ['价格欺诈', '未明码标价', '虚构原价'],
+    },
+    '家政服务管理办法': {
+        'keywords': ['家政服务', '家政公司', '家政人员', '服务合同'],
+        'scenarios': ['家政服务纠纷', '家政服务质量', '家政合同违约'],
+    },
+    # ===== B2 扩展：医疗场景（medical） =====
+    '医疗纠纷预防和处理条例': {
+        'keywords': ['医疗纠纷', '医疗事故', '医疗损害', '医疗责任'],
+        'scenarios': ['医疗纠纷', '医疗事故处理', '医疗损害赔偿'],
+    },
+    '医疗事故处理条例': {
+        'keywords': ['医疗事故', '事故等级', '医疗损害', '事故鉴定'],
+        'scenarios': ['医疗事故', '事故鉴定', '医疗赔偿'],
+    },
+    '中华人民共和国基本医疗卫生与健康促进法': {
+        'keywords': ['医疗卫生', '健康促进', '医疗机构', '医务人员'],
+        'scenarios': ['医疗卫生服务', '医疗机构责任', '健康权'],
+    },
+    # ===== B2 扩展：劳动场景（labor） =====
+    '中华人民共和国劳动法': {
+        'keywords': ['劳动', '劳动合同', '工资', '工时', '劳动保护'],
+        'scenarios': ['劳动纠纷', '工资争议', '工时违法'],
+    },
+    '中华人民共和国劳动合同法': {
+        'keywords': ['劳动合同', '解除合同', '经济补偿', '竞业限制'],
+        'scenarios': ['劳动合同纠纷', '违法解除合同', '经济补偿'],
+    },
+    '中华人民共和国劳动争议调解仲裁法': {
+        'keywords': ['劳动争议', '调解', '仲裁', '仲裁时效'],
+        'scenarios': ['劳动争议仲裁', '调解', '劳动争议处理'],
     },
 }
 
@@ -341,10 +397,10 @@ def parse_law_file(file_path: Path) -> tuple[list[dict], dict]:
     # 添加关键词和适用场景
     add_keywords_and_scenarios(articles, law_name)
 
-    # 解析预期条款数（去掉非数字字符，如"41条" → 41）
+    # 解析预期条款数（只取第一个数字序列，如"41条" → 41、"110条（共10章）" → 110）
     expected_str = meta.get('条款数', '')
-    expected_digits = re.sub(r'[^\d]', '', expected_str)
-    expected_count = int(expected_digits) if expected_digits else 0
+    expected_match = re.search(r'\d+', expected_str)
+    expected_count = int(expected_match.group(0)) if expected_match else 0
 
     # 统计信息
     stats = {
@@ -386,10 +442,10 @@ def parse_platform_rule_file(file_path: Path) -> tuple[list[dict], dict]:
 
     add_keywords_and_scenarios(articles, rule_name)
 
-    # 解析预期条款数（去掉非数字字符）
+    # 解析预期条款数（只取第一个数字序列）
     expected_str = meta.get('条款数', '')
-    expected_digits = re.sub(r'[^\d]', '', expected_str)
-    expected_count = int(expected_digits) if expected_digits else 0
+    expected_match = re.search(r'\d+', expected_str)
+    expected_count = int(expected_match.group(0)) if expected_match else 0
 
     stats = {
         'filename': filename,

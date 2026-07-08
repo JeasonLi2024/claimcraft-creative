@@ -16,11 +16,16 @@ from pydantic import BaseModel, Field
 class EvidenceClassification(BaseModel):
     """单条证据的分类结果。"""
     evidence_category: Literal[
-        "chat_screenshot",      # 聊天截图
-        "product_order",        # 商品订单
-        "logistics_tracking",   # 物流跟踪
-        "payment_record",       # 支付凭证
-        "other",                # 其他
+        "chat_screenshot",          # 聊天截图
+        "product_order",            # 商品订单
+        "logistics_tracking",       # 物流跟踪
+        "payment_record",           # 支付凭证
+        "service_contract",         # 服务合同
+        "work_record",             # 施工记录
+        "communication_record",    # 沟通记录
+        "contract_document",        # 合同文件
+        "medical_record",           # 医疗记录
+        "other",                    # 其他
     ] = Field(description="证据材料类型")
     category_label: str = Field(description="中文类型标签，如 聊天截图/商品订单/物流跟踪/支付凭证/其他")
     confidence: float = Field(ge=0, le=1, description="分类置信度")

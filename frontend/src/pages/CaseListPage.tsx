@@ -6,6 +6,7 @@ import HeroSection from "@/components/HeroSection"
 import CaseCard from "@/components/CaseCard"
 import EmptyState from "@/components/EmptyState"
 import StatusTag from "@/components/StatusTag"
+import { cn } from "@/lib/utils"
 import { Plus, Search, FileText, Image, Loader2 } from "lucide-react"
 
 const DISPUTE_FILTERS = [
@@ -15,6 +16,11 @@ const DISPUTE_FILTERS = [
   { value: "second_hand", label: "二手交易" },
   { value: "other", label: "其他" },
 ]
+
+const CASE_MODES = [
+  { value: "complain", label: "维权投诉" },
+  { value: "respond", label: "商家反证" },
+] as const
 
 const STATUS_FILTERS = [
   { value: "", label: "全部状态" },
@@ -43,6 +49,7 @@ export default function CaseListPage() {
   const [newTitle, setNewTitle] = useState("")
   const [newDesc, setNewDesc] = useState("")
   const [newType, setNewType] = useState("online_shopping")
+  const [newMode, setNewMode] = useState<"complain" | "respond">("complain")
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState("")
 
@@ -70,12 +77,14 @@ export default function CaseListPage() {
         title: newTitle.trim(),
         description: newDesc.trim(),
         dispute_type: newType,
+        case_mode: newMode,
       })
       setShowCreate(false)
       setNewTitle("")
       setNewDesc("")
       setNewType("online_shopping")
-      navigate(`/cases/${created.id}/workspace`)
+      setNewMode("complain")
+      navigate(`/cases/${created.id}/workspace`, { state: { case_mode: newMode } })
     } catch (err: any) {
       setCreateError(err.response?.data?.detail || err.message || "创建失败")
     } finally {
@@ -237,6 +246,31 @@ export default function CaseListPage() {
                     <option key={f.value} value={f.value}>{f.label}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-foreground">案件模式</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {CASE_MODES.map((m) => (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => setNewMode(m.value)}
+                      className={cn(
+                        "rounded-xl border px-4 py-2.5 text-sm font-medium transition-all",
+                        newMode === m.value
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-input text-muted-foreground hover:bg-accent"
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {newMode === "complain"
+                    ? "消费者维权投诉，生成投诉文案"
+                    : "商家反证答辩，生成反证答辩书"}
+                </p>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button

@@ -2,7 +2,7 @@
 """Admin 注册。"""
 from django.contrib import admin
 
-from api.models import Case, Evidence, TimelineNode, ComplaintTemplate
+from api.models import Case, Evidence, TimelineNode, ComplaintTemplate, RespondTemplate
 
 
 @admin.register(Case)
@@ -30,6 +30,13 @@ class TimelineNodeAdmin(admin.ModelAdmin):
 
 @admin.register(ComplaintTemplate)
 class ComplaintTemplateAdmin(admin.ModelAdmin):
+    list_display = ('id', 'case', 'template_type', 'title')
+    list_filter = ('template_type',)
+    search_fields = ('title', 'content')
+
+
+@admin.register(RespondTemplate)
+class RespondTemplateAdmin(admin.ModelAdmin):
     list_display = ('id', 'case', 'template_type', 'title')
     list_filter = ('template_type',)
     search_fields = ('title', 'content')

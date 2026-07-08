@@ -78,6 +78,10 @@ class Command(BaseCommand):
             '--no-embed', action='store_true', default=False,
             help='不生成 embedding（仅写入 MySQL 结构化数据）'
         )
+        parser.add_argument(
+            '--embed-only', action='store_true', default=False,
+            help='仅重新生成 embedding（不导入/覆盖 MySQL 法条数据，保护 LLM 生成的 keywords）'
+        )
 
     def handle(self, *args, **options):
         # ========== 平台规则导入（如果指定了 --platform-file）==========
@@ -86,6 +90,44 @@ class Command(BaseCommand):
             # 如果同时指定了 --file，继续导入法律条文
             if not options['file']:
                 return
+
+        # ========== 仅重新生成 embedding（保护 LLM keywords）==========
+        if options['embed_only']:
+            from api.models import LawArticle
+            qs = LawArticle.objects.filter(is_active=True)
+            if options['category']:
+                qs = qs.filter(category=options['category'])
+            law_articles_for_embed = list(qs.order_by('law_name', 'id'))
+            self.stdout.write(self.style.SUCCESS(
+                f'--embed-only 模式：从 MySQL 加载 {len(law_articles_for_embed)} 条法条，'
+                f'仅重新生成 embedding（不覆盖 keywords 等字段）'
+            ))
+
+            if not law_articles_for_embed:
+                self.stdout.write(self.style.WARNING('无可生成 embedding 的法条'))
+                return
+
+            self.stdout.write('\n开始生成 embedding 向量...')
+            try:
+                import sys
+                if sys.platform == 'win32':
+                    import selectors
+                    loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
+                else:
+                    loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    embed_count = loop.run_until_complete(self._generate_embeddings(
+                        law_articles_for_embed, force=True
+                    ))
+                finally:
+                    loop.close()
+                self.stdout.write(self.style.SUCCESS(
+                    f'PG 向量写入完成: {embed_count} 条法条已生成 embedding'
+                ))
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f'Embedding 生成失败: {e}'))
+            return
 
         from api.services.law_data import get_all_law_articles, get_law_articles_by_category
         from api.models import LawArticle
@@ -342,23 +384,18 @@ class Command(BaseCommand):
             logger.info('所有法条已有 embedding，跳过（使用 --force-embed 强制重新生成）')
             return 0
 
-        # 构造 embedding 输入文本（法条名称 + 编号 + 章节 + 摘要 + 关键词 + 内容）
-        texts = []
-        for article in to_embed:
-            keywords_str = ' '.join(article.keywords) if article.keywords else ''
-            scenarios_str = ' '.join(article.applicable_scenarios) if article.applicable_scenarios else ''
-            text = (
-                f"{article.law_name} {article.article_number}\n"
-                f"摘要：{article.summary}\n"
-                f"关键词：{keywords_str}\n"
-                f"适用场景：{scenarios_str}\n"
-                f"条文内容：{article.content}"
-            )
-            texts.append(text)
+        # 构造 embedding 输入文本：仅条文正文主体（content）
+        # 设计说明：
+        # - 向量索引聚焦条款本身的语义，避免 law_name 作为前缀干扰
+        # - law_name / article_number / chapter / category / keywords / summary
+        #   作为元数据存 MySQL（LawArticle 表），检索后用联合键回查
+        # - 这是标准 RAG 实践：向量索引内容，元数据用于过滤和溯源
+        texts = [article.content for article in to_embed]
 
-        # 批量生成 embedding（分批处理，每批最多 50 条）
+        # 批量生成 embedding（分批处理，每批最多 32 条 —— SiliconFlow 限制）
+        # bge-large-zh-v1.5 限制：max batch=32, max token=512
         self.stdout.write(f'正在为 {len(to_embed)} 条法条生成 embedding...')
-        batch_size = 50
+        batch_size = 32
         embeddings = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]

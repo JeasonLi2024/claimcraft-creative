@@ -244,17 +244,32 @@ class LawRetriever:
 
     async def retrieve(self, query: str, category: str = "",
                        top_k: int = 0) -> list[dict]:
-        """检索相关法条。
+        """检索相关法条（三阶段标准 RAG：粗排 → RRF 融合 → Rerank 精排）。
+
+        检索流程（法律/医疗等高严谨领域最佳实践）：
+        1. 粗排（双路召回）：
+           - BM25 关键词检索（rank_bm25 + jieba 分词）：精确匹配法律术语
+           - PG 向量检索（bge-large-zh-v1.5 余弦相似度）：语义相似补充
+           - 各召回 candidate_limit 条（默认 50，由 RERANK_CANDIDATE_LIMIT 控制）
+        2. RRF 融合（Reciprocal Rank Fusion）：
+           - score = Σ 1/(60+rank_i)，仅用 rank 位置融合，不依赖原始 score 量纲
+           - 同时被 BM25 和向量检索命中的条款得分更高
+        3. Rerank 精排（Cross-encoder 重排，可选）：
+           - bge-reranker-v2-m3 对每个 (query, candidate) 对计算相关性分数
+           - 精度比 bi-encoder 高 10-20%，适合法律/医疗高严谨领域
+           - 未配置 RERANK_API_KEY 时自动降级为 RRF 顺序截断
 
         Args:
             query: 查询文本（如 "商家虚假宣传欺诈消费者"）
             category: 法律分类过滤（空=全部）
-            top_k: 返回 top-k（0=使用 .env 默认值 5）
+            top_k: 返回 top-k（0=使用 .env 默认值 RAG_TOP_K=5）
 
         Returns:
             list[dict]: 法条列表，每条含：
                 law_name, article_number, chapter, content, summary,
-                category, keywords, applicable_scenarios, source_url, score
+                category, keywords, applicable_scenarios, source_url,
+                score（RRF 分数）, bm25_score, vector_score,
+                rerank_score（仅 rerank 启用时）
             检索失败返回空列表（不阻塞主工作流）
         """
         if not self._config['enabled']:
@@ -270,26 +285,41 @@ class LawRetriever:
         top_k = top_k or self._config['top_k']
         score_threshold = self._config['score_threshold']
 
-        try:
-            # 1. 生成查询向量
-            query_embedding = await embed_query(query)
+        # 检测 rerank 可用性：启用时扩大粗排候选量，为 rerank 提供足够候选
+        from api.services.rerank_service import is_rerank_available, _get_rerank_config
+        rerank_enabled = is_rerank_available()
+        if rerank_enabled:
+            candidate_limit = _get_rerank_config()['candidate_limit']
+        else:
+            candidate_limit = top_k * 2
 
-            # 2. PG 向量检索
+        try:
+            # 1. BM25 关键词检索（精确匹配优先）
+            bm25_results = await self._bm25_search(
+                query, category=category, top_k=candidate_limit
+            )
+
+            # 2. PG 向量检索（语义相似补充）
+            query_embedding = await embed_query(query)
             vector_store = self._get_vector_store()
             vector_results = await vector_store.search(
                 query_embedding, category=category,
-                top_k=top_k, score_threshold=score_threshold
+                top_k=candidate_limit, score_threshold=score_threshold
             )
 
-            if not vector_results:
+            # 3. RRF 融合（BM25 + 向量检索）
+            from api.services.bm25_service import reciprocal_rank_fusion
+            fused_results = reciprocal_rank_fusion(bm25_results, vector_results)
+
+            if not fused_results:
                 logger.info(f'[RAG] 未检索到相关法条 (query={query[:50]})')
                 return []
 
-            # 3. 从 MySQL 取完整法条内容
+            # 4. 从 MySQL 取完整法条内容
             from api.models import LawArticle
             from asgiref.sync import sync_to_async
 
-            law_keys = [(r['law_name'], r['article_number']) for r in vector_results]
+            law_keys = [(r['law_name'], r['article_number']) for r in fused_results]
             articles = await sync_to_async(list)(
                 LawArticle.objects.filter(
                     law_name__in=[k[0] for k in law_keys],
@@ -299,27 +329,71 @@ class LawRetriever:
             )
             article_map = {(a.law_name, a.article_number): a for a in articles}
 
-            # 4. 聚合结果（向量 score + MySQL 结构化数据）
+            # 5. 聚合结果（RRF score + BM25/向量原始 score + MySQL 结构化数据）
             results = []
-            for vr in vector_results:
-                article = article_map.get((vr['law_name'], vr['article_number']))
+            for r in fused_results:
+                key = (r['law_name'], r['article_number'])
+                article = article_map.get(key)
                 if not article:
                     continue
                 result = article.to_retrieval_dict()
-                result['score'] = vr['score']
+                result['score'] = round(r['rrf_score'], 4)
+                result['bm25_score'] = r.get('bm25_score', 0.0)
+                result['vector_score'] = r.get('vector_score', 0.0)
                 results.append(result)
 
-            # 按 score 降序
-            results.sort(key=lambda x: x['score'], reverse=True)
+            # 6. Rerank 精排（Cross-encoder 重排，高严谨领域关键步骤）
+            if rerank_enabled:
+                from api.services.rerank_service import rerank as _rerank
+                results = await _rerank(query, results, top_n=top_k)
+            else:
+                results = results[:top_k]
 
             logger.info(
-                f'[RAG] 检索完成 (query={query[:50]}, '
-                f'category={category or "all"}, results={len(results)})'
+                f'[RAG] Hybrid 检索完成 (query={query[:50]}, '
+                f'category={category or "all"}, bm25={len(bm25_results)}, '
+                f'vector={len(vector_results)}, fused={len(fused_results)}, '
+                f'final={len(results)}, rerank={"on" if rerank_enabled else "off"})'
             )
             return results
 
         except Exception as e:
             logger.error(f'[RAG] 检索失败（降级返回空列表）: {e}', exc_info=True)
+            return []
+
+    async def _bm25_search(self, query: str, category: str = "",
+                           top_k: int = 5) -> list[dict]:
+        """BM25 关键词检索（rank_bm25 + jieba 分词）。
+
+        替代原 _keyword_search 的 LIKE 匹配方案，BM25 基于 TF-IDF 改进，
+        对中文法律术语的精确匹配效果更好。
+
+        Args:
+            query: 查询文本
+            category: 法律分类过滤（空=全部）
+            top_k: 返回最多数量
+
+        Returns:
+            list[dict]: [{law_name, article_number, category, score}]
+            score 已归一化到 0-1 范围
+        """
+        try:
+            from api.services.bm25_service import LawBM25Index
+            from asgiref.sync import sync_to_async
+
+            index = LawBM25Index.get_instance()
+
+            @sync_to_async
+            def _search():
+                return index.search(query, category=category, top_k=top_k)
+
+            return await _search()
+
+        except ImportError:
+            logger.debug('[RAG] rank_bm25 未安装，跳过 BM25 检索')
+            return []
+        except Exception as e:
+            logger.warning(f'[RAG] BM25 检索失败（降级返回空列表）: {e}')
             return []
 
     async def retrieve_by_keywords(self, keywords: list[str],

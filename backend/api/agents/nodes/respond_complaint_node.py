@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
-"""投诉生成节点（async）：Jinja2 骨架 + LLM 重写。
+"""反证答辩书生成节点（async）：Jinja2 骨架 + LLM 重写（v10 反向维权）。
 
-重构说明（v4 异步化）：
-- def → async def，支持节点级 timeout
-- Django ORM 调用用 sync_to_async 包装
-- LLM 调用用 sync_to_async(chat_with_retry) 包装
-- @traceable 装饰器
-
-语气策略：
-- 金额 > 1000 元 → firm（坚定）
-- 金额 ≤ 1000 元 → restrained（克制）
+与 complaint_node.py 平行，主要差异：
+- 输出"商家反证答辩书"而非"消费者投诉书"
+- 持久化到 RespondTemplate 表（而非 ComplaintTemplate）
+- 语气策略：反证模式默认 firm（坚定反驳不实指控）
+- 复用 evidence_chain 节点输出 + 7 个法律工具 + 主动预检索法条
 """
 import json
 import logging
@@ -30,25 +26,27 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# 金额阈值（决定语气）
+# 反证模式默认语气：坚定反驳不实指控
+DEFAULT_RESPOND_TONE = "firm"
+# 金额阈值（用于在 firm 之上进一步强调）
 FIRM_TONE_AMOUNT_THRESHOLD = 1000
 
 
-@traceable(name="投诉生成节点", run_type="chain")
-async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
-    """投诉生成节点（async）。
+@traceable(name="反证答辩书生成节点", run_type="chain")
+async def respond_complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
+    """反证答辩书生成节点（async）。
 
     流程：
-    1. 调用既有 complaint_service.generate_complaint() 获取 Jinja2 骨架
-    2. 根据金额选择语气
-    3. 若 LLM 可用，重写正文
-    4. 写回 ComplaintTemplate 表（upsert）
-    5. 输出 complaint_draft
+    1. 调用 complaint_service.generate_complaint() 获取 Jinja2 骨架（复用同一生成器）
+    2. 反证模式默认语气 firm
+    3. 若 LLM 可用，重写正文为商家反证答辩书
+    4. 写回 RespondTemplate 表（upsert）
+    5. 输出 respond_draft
     """
-    from api.models import Case, ComplaintTemplate
+    from api.models import Case, RespondTemplate
     from api.services.complaint_service import generate_complaint
     from api.agents.prompts.templates import (
-        COMPLAINT_REWRITE_PROMPT,
+        RESPOND_COMPLAINT_PROMPT,
         TOOLS_ENABLED_SECTION,
         TOOLS_DISABLED_SECTION,
         SCENARIO_DESCRIPTIONS,
@@ -66,7 +64,6 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
         }
 
     # 读用户偏好（store 长期记忆，跨案件复用）
-    # 延迟 import 避免 graph.py ↔ complaint_node 循环导入
     user_pref_tone = None
     try:
         from api.agents.graph import _get_store
@@ -80,7 +77,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
     # 1. 默认模板类型
     template_type = "platform"
 
-    # 2. Jinja2 骨架
+    # 2. Jinja2 骨架（复用 generate_complaint，骨架本身不含立场）
     try:
         skeleton = await sync_to_async(generate_complaint)(case, template_type)
     except Exception as e:
@@ -98,10 +95,10 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
         for f in er.get("fields", []):
             all_fields.append(f)
 
-    # 4. 语气选择（基于金额）
-    tone = _select_tone(all_fields)
+    # 4. 语气选择：反证模式默认 firm（坚定反驳）
+    tone = _select_respond_tone(all_fields)
     # 用户偏好覆盖默认语气（store 长期记忆）
-    if user_pref_tone in ("firm", "restrained"):
+    if user_pref_tone in ("firm", "restrained", "legal"):
         tone = user_pref_tone
         logger.info(f"应用用户偏好语气: {tone}")
 
@@ -116,45 +113,47 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
                 indent=2,
             )
 
-            # v10 新增：Tools 工具集启用判断
+            # v10 工具集启用判断
             from api.agents.tools.law_tools import (
                 is_tools_enabled, get_all_law_tools, _get_max_iterations,
                 invoke_llm_with_tools, pre_retrieve_law_articles,
             )
             tools_enabled = is_tools_enabled()
 
-            # v10 新增：主动预检索法条（强制首次，失败降级）
-            case_keywords = _extract_complaint_keywords(case, all_fields)
+            # 主动预检索法条（强制首次，失败降级）
+            case_keywords = _extract_respond_keywords(case, all_fields)
             law_articles = await pre_retrieve_law_articles(case_keywords, top_k=5)
-            law_articles_section = _format_complaint_law_section(law_articles)
+            law_articles_section = _format_respond_law_section(law_articles)
 
             if tools_enabled:
                 tools_section = TOOLS_ENABLED_SECTION
             else:
                 tools_section = TOOLS_DISABLED_SECTION
 
-            prompt = COMPLAINT_REWRITE_PROMPT.format(
+            prompt = RESPOND_COMPLAINT_PROMPT.format(
                 tone=tone,
                 skeleton=final_content,
                 facts_json=facts_json,
                 timeline_json=timeline_json,
                 tools_section=tools_section,
                 law_articles_section=law_articles_section,
-                scenario_description=SCENARIO_DESCRIPTIONS.get(case.case_type, SCENARIO_DESCRIPTIONS["other"]),
+                scenario_description=SCENARIO_DESCRIPTIONS.get(
+                    case.case_type, SCENARIO_DESCRIPTIONS["other"]
+                ),
             )
 
             if tools_enabled:
-                # v10：绑定 7 个工具 + 多轮工具调用循环（使用通用函数）
+                # 绑定 7 个工具 + 多轮工具调用循环（与 complaint_node 一致）
                 tools = get_all_law_tools()
                 rewritten, tool_call_log = await invoke_llm_with_tools(
                     prompt=prompt,
                     tools=tools,
                     max_iterations=_get_max_iterations(),
                     errors=errors,
-                    node_name="投诉生成",
+                    node_name="反证答辩生成",
                 )
                 logger.info(
-                    f"[投诉生成] 工具调用完成，共 {len(tool_call_log)} 次"
+                    f"[反证答辩生成] 工具调用完成，共 {len(tool_call_log)} 次"
                 )
             else:
                 # 原逻辑：单次 LLM 重写
@@ -165,28 +164,28 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             if isinstance(rewritten, str) and rewritten.strip():
                 final_content = rewritten.strip()
         except Exception as e:
-            logger.warning(f"LLM 投诉重写失败，使用骨架: {e}")
-            errors.append(f"LLM 投诉重写失败: {e}")
+            logger.warning(f"LLM 反证答辩重写失败，使用骨架: {e}")
+            errors.append(f"LLM 反证答辩重写失败: {e}")
 
-    # 6. 持久化到 ComplaintTemplate 表（upsert）
+    # 6. 持久化到 RespondTemplate 表（upsert）
     try:
         await sync_to_async(lambda c=case, tt=template_type, sk=skeleton, fc=final_content:
-            ComplaintTemplate.objects.update_or_create(
+            RespondTemplate.objects.update_or_create(
                 case=c,
                 template_type=tt,
                 defaults={
-                    "title": sk.get("title", "投诉标题"),
+                    "title": sk.get("title", "反证答辩书"),
                     "content": fc,
                 },
             )
         )()
     except Exception as e:
-        logger.error(f"持久化 ComplaintTemplate 失败: {e}", exc_info=True)
-        errors.append(f"持久化 ComplaintTemplate 失败: {e}")
+        logger.error(f"持久化 RespondTemplate 失败: {e}", exc_info=True)
+        errors.append(f"持久化 RespondTemplate 失败: {e}")
 
     return {
         "complaint_draft": {
-            "title": skeleton.get("title", "投诉标题"),
+            "title": skeleton.get("title", "反证答辩书"),
             "content": final_content,
             "template_type": template_type,
             "tone": tone,
@@ -195,29 +194,38 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
     }
 
 
-def _select_tone(extracted_fields: list[dict]) -> str:
-    """根据金额选择语气。
+def _select_respond_tone(extracted_fields: list[dict]) -> str:
+    """反证模式语气选择：默认 firm（坚定反驳不实指控）。
+
+    金额较大时可进一步强调，但仍保持 firm。
+    用户偏好可在调用方覆盖。
 
     Args:
         extracted_fields: 抽取字段列表
 
     Returns:
-        "firm" | "restrained"
+        "firm"（默认）| "restrained"（金额极小，可降低强度）
     """
     for f in extracted_fields:
         if f.get("field_name") == "金额":
             try:
                 amount = float(f.get("field_value", "0"))
-                if amount > FIRM_TONE_AMOUNT_THRESHOLD:
+                # 金额极小（≤ 阈值）时也可考虑 restrained，但反证模式默认坚定
+                # 这里保持 firm 作为默认，避免被指控时显得软弱
+                if amount <= FIRM_TONE_AMOUNT_THRESHOLD:
                     return "firm"
-                return "restrained"
+                return "firm"
             except (ValueError, TypeError):
                 continue
-    return "restrained"
+    return DEFAULT_RESPOND_TONE
 
 
-def _extract_complaint_keywords(case, all_fields: list[dict]) -> list[str]:
-    """从案件描述和抽取字段提取用于 RAG 检索的关键词。"""
+def _extract_respond_keywords(case, all_fields: list[dict]) -> list[str]:
+    """从案件描述和抽取字段提取用于 RAG 检索的关键词（反证视角）。
+
+    与 complaint 视角的关键词略不同，更强调商家抗辩视角
+    （如：商品质量、合同履约、消费者违约等）。
+    """
     keywords = []
     description = case.description if case else ""
 
@@ -232,27 +240,30 @@ def _extract_complaint_keywords(case, all_fields: list[dict]) -> list[str]:
             try:
                 amount = float(field_value)
                 if amount > 1000:
-                    keywords.append("欺诈")
-                    keywords.append("退一赔三")
+                    keywords.append("违约责任")
+                    keywords.append("合同履行")
             except (ValueError, TypeError):
                 pass
         elif field_name in ("商品名", "商品名称"):
             keywords.append(field_value)
 
-    # 案件类型相关关键词
+    # 案件类型相关关键词（反证视角）
     case_type = case.case_type if case else ""
     type_keywords_map = {
-        "shopping": ["网购", "商品", "退换货"],
-        "service": ["服务", "违约"],
-        "secondhand": ["二手", "交易"],
+        "shopping": ["商品质量", "退换货", "消费者违约"],
+        "service": ["服务履约", "合同义务"],
+        "secondhand": ["二手交易", "描述相符"],
     }
     keywords.extend(type_keywords_map.get(case_type, []))
 
     return keywords
 
 
-def _format_complaint_law_section(law_articles: list[dict]) -> str:
-    """格式化法条注入投诉重写 prompt 的片段。"""
+def _format_respond_law_section(law_articles: list[dict]) -> str:
+    """格式化法条注入反证答辩书 prompt 的片段。
+
+    复用 COMPLAINT_LAW_ARTICLES_SECTION_TEMPLATE，因为格式相同。
+    """
     from api.agents.prompts.templates import (
         COMPLAINT_LAW_ARTICLES_SECTION_TEMPLATE,
         COMPLAINT_LAW_ARTICLES_EMPTY_SECTION,
@@ -278,5 +289,5 @@ def _format_complaint_law_section(law_articles: list[dict]) -> str:
             law_articles_json=law_articles_json
         )
     except Exception as e:
-        logger.warning(f"[投诉生成] 法条片段格式化失败: {e}")
+        logger.warning(f"[反证答辩生成] 法条片段格式化失败: {e}")
         return COMPLAINT_LAW_ARTICLES_EMPTY_SECTION

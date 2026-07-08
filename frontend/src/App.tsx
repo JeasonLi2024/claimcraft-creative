@@ -12,6 +12,7 @@ const WorkspacePage = lazy(() => import("@/pages/WorkspacePage"))
 const EvidencePage = lazy(() => import("@/pages/EvidencePage"))
 const TimelinePage = lazy(() => import("@/pages/TimelinePage"))
 const ComplaintPage = lazy(() => import("@/pages/ComplaintPage"))
+const RespondPage = lazy(() => import("@/pages/RespondPage"))
 const MaskPage = lazy(() => import("@/pages/MaskPage"))
 const ExportPage = lazy(() => import("@/pages/ExportPage"))
 
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="/cases/:caseId/evidence" element={<EvidencePage />} />
             <Route path="/cases/:caseId/timeline" element={<TimelinePage />} />
             <Route path="/cases/:caseId/complaint" element={<ComplaintPage />} />
+            <Route path="/cases/:caseId/respond" element={<RespondPage />} />
             <Route path="/cases/:caseId/mask" element={<MaskPage />} />
             <Route path="/cases/:caseId/export" element={<ExportPage />} />
           </Route>

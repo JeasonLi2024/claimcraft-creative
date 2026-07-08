@@ -47,6 +47,8 @@ PRECLASSIFY_CONFIDENCE_THRESHOLD = 0.8
 VALID_CATEGORIES = {
     "chat_screenshot", "product_order", "logistics_tracking",
     "payment_record", "invoice", "other",
+    "service_contract", "work_record", "communication_record",
+    "contract_document", "medical_record",
 }
 
 

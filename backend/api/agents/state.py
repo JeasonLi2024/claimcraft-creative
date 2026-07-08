@@ -24,6 +24,7 @@ class CaseWorkflowState(TypedDict):
     # ===== 案件上下文 =====
     case_id: int
     evidence_ids: list[int]                # 待处理的证据 ID 列表（空则处理案件全部有图证据）
+    case_mode: str                          # 案件模式：complain（维权投诉）/ respond（商家反证）
 
     # ===== 预分类节点输出（累积式） =====
     # list[dict]: {evidence_id, evidence_code, evidence_category, ocr_summary, confidence}

@@ -54,6 +54,7 @@ from api.agents.nodes.extract_node import extract_node
 from api.agents.nodes.review_node import review_node
 from api.agents.nodes.evidence_chain_node import evidence_chain_node
 from api.agents.nodes.complaint_node import complaint_node
+from api.agents.nodes.respond_complaint_node import respond_complaint_node
 
 logger = logging.getLogger(__name__)
 
@@ -270,16 +271,30 @@ def _route_after_extract(state: CaseWorkflowState) -> Literal["review", "evidenc
     return "evidence_chain"
 
 
+def _route_by_case_mode(state: CaseWorkflowState) -> Literal["complaint", "respond_complaint"]:
+    """条件边路由：根据案件模式（case_mode）路由到投诉生成或反证答辩生成。
+
+    - case_mode=complain（默认）→ complaint 节点（消费者投诉书）
+    - case_mode=respond         → respond_complaint 节点（商家反证答辩书）
+    """
+    if state.get("case_mode") == "respond":
+        return "respond_complaint"
+    return "complaint"
+
+
 def build_case_workflow():
     """构建案件工作流 StateGraph（单例化）。
 
-    节点顺序（v9 新增 preclassify 节点）：
-        START → preclassify → ocr → classify → extract → [review?] → evidence_chain → complaint → END
+    节点顺序（v9 新增 preclassify 节点；v10 新增 respond_complaint 反向维权分支）：
+        START → preclassify → ocr → classify → extract → [review?] → evidence_chain
+              → [case_mode?] → complaint | respond_complaint → END
 
     条件边：
         extract → review（needs_human_review=True）
         extract → evidence_chain（默认）
         review → evidence_chain
+        evidence_chain → complaint（case_mode=complain，默认）
+        evidence_chain → respond_complaint（case_mode=respond，反向维权）
 
     Returns:
         编译后的 StateGraph，已启用 PostgresSaver checkpointer + PostgresStore
@@ -300,6 +315,7 @@ def build_case_workflow():
     g.add_node("review", review_node, timeout=30, error_handler=_make_error_handler("人工校正"))
     g.add_node("evidence_chain", evidence_chain_node, timeout=120, error_handler=_make_error_handler("证据链"))
     g.add_node("complaint", complaint_node, timeout=120, error_handler=_make_error_handler("投诉生成"))
+    g.add_node("respond_complaint", respond_complaint_node, timeout=120, error_handler=_make_error_handler("反证答辩生成"))
 
     # 添加边
     g.add_edge(START, "preclassify")
@@ -312,8 +328,14 @@ def build_case_workflow():
         {"review": "review", "evidence_chain": "evidence_chain"},
     )
     g.add_edge("review", "evidence_chain")
-    g.add_edge("evidence_chain", "complaint")
+    # v10 反向维权分支：根据 case_mode 路由到 complaint 或 respond_complaint
+    g.add_conditional_edges(
+        "evidence_chain",
+        _route_by_case_mode,
+        {"complaint": "complaint", "respond_complaint": "respond_complaint"},
+    )
     g.add_edge("complaint", END)
+    g.add_edge("respond_complaint", END)
 
     # 编译（启用 PostgresSaver checkpointer + PostgresStore 长期记忆，HITL 必须）
     compiled = g.compile(checkpointer=_get_checkpointer(), store=_get_store())
