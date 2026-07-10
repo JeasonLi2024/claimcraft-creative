@@ -70,9 +70,17 @@ async def review_node(state: CaseWorkflowState) -> Command[Literal["evidence_cha
                     "confidence": f.get("confidence", 0.0),
                 })
 
-    # 2. 若无低置信度字段，直接跳转 evidence_chain
+    # 2. 若无低置信度字段，直接跳转 evidence_chain（发送 review.skipped 通知）
     if not fields_to_review:
         logger.info(f"案件 {case_id} 无低置信度字段，跳过 HITL")
+        # 通过 get_stream_writer 发送 review.skipped 自定义事件
+        try:
+            from langgraph.config import get_stream_writer
+            writer = get_stream_writer()
+            if writer:
+                writer({"event_type": "review.skipped", "message": "无需人工校正，跳过审核"})
+        except Exception:
+            pass  # 非 LangGraph 运行上下文，静默跳过
         return Command(update={}, goto="evidence_chain")
 
     # 3. 调用 interrupt 暂停（resume 时整个节点重新执行）

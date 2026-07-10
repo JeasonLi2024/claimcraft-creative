@@ -48,9 +48,13 @@ class CaseWorkflowState(TypedDict):
     # ===== 证据链节点输出 =====
     # list[dict]: {datetime, event, category, evidence_codes, chain_order}
     evidence_chain: list[dict]
+    # list[dict]: 工具调用日志 {tool_name, args, result_summary}
+    evidence_chain_tool_calls: list[dict]
 
     # ===== 投诉节点输出 =====
     complaint_draft: Optional[dict]         # {"title", "content", "template_type", "tone"}
+    # list[dict]: 投诉生成工具调用日志
+    complaint_tool_calls: list[dict]
 
     # ===== HITL 校正节点输出 =====
     review_decision: Optional[dict]          # 人工校正结果

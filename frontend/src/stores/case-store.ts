@@ -557,7 +557,21 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
         break
       }
       case "node.progress": {
-        // progress 事件主要用于日志，目前不改变状态
+        // 里程碑进度通知：更新当前节点的进度阶段信息
+        const node = event.node as string
+        const stage = event.stage as string
+        const message = event.message as string
+        set((s) => ({
+          nodeStates: {
+            ...s.nodeStates,
+            [node]: {
+              ...s.nodeStates[node],
+              status: "running",
+              progressStage: stage,
+              progressMessage: message,
+            },
+          },
+        }))
         break
       }
       case "node.complete": {

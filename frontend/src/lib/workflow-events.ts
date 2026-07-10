@@ -12,6 +12,7 @@ export const NODE_ORDER = [
   "review",
   "evidence_chain",
   "complaint",
+  "respond_complaint",
 ] as const
 
 /** 节点中文标签 */
@@ -23,6 +24,7 @@ export const NODE_LABELS: Record<string, string> = {
   review: "人工审核",
   evidence_chain: "证据链",
   complaint: "投诉书",
+  respond_complaint: "反证答辩书",
 }
 
 /** 投诉书语气标签 */
@@ -49,6 +51,8 @@ export interface NodeStatus {
   durationMs?: number
   products?: Record<string, unknown>
   error?: string
+  progressStage?: string
+  progressMessage?: string
 }
 
 export type ConnectionState =
@@ -67,6 +71,7 @@ export type ProductBlockType =
   | "extract"
   | "evidence_chain"
   | "complaint"
+  | "respond_complaint"
 
 export interface ProductBlock {
   id: string
@@ -183,6 +188,8 @@ export function summarizeProducts(
     }
     case "complaint":
       return "投诉书已生成"
+    case "respond_complaint":
+      return "反证答辩书已生成"
     default:
       return ""
   }

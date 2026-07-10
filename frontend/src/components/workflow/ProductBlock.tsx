@@ -52,6 +52,13 @@ interface ChainNode {
   chain_order: number
 }
 
+interface ToolCallLog {
+  tool_name: string
+  args?: Record<string, unknown>
+  result_summary?: string
+  result?: unknown
+}
+
 const FIELD_CATEGORY_ORDER = [
   "订单信息", "支付信息", "物流信息", "发票信息", "联系信息", "时间信息", "其他",
 ]
@@ -192,18 +199,83 @@ function NodeProductsDetail({
 
   if (node === "evidence_chain") {
     const nodes = (products.evidence_chain as ChainNode[]) || []
+    const toolCalls = (products.evidence_chain_tool_calls as ToolCallLog[]) || []
     return (
-      <div className="relative pl-4">
-        <div className="absolute left-1 top-1 bottom-1 w-0.5 bg-[#EAEAEA]" />
-        {nodes.map((n, i) => (
-          <div key={i} className="relative pb-2 last:pb-0">
-            <span className="absolute -left-3 top-1 w-2 h-2 rounded-full bg-[#111111]" />
-            <div className="text-xs font-medium text-[#111111]">{n.event}</div>
-            <div className="text-xs text-[#787774]">
-              {n.datetime} · {(n.evidence_codes || []).join(", ")}
+      <div className="space-y-3">
+        <div className="relative pl-4">
+          <div className="absolute left-1 top-1 bottom-1 w-0.5 bg-[#EAEAEA]" />
+          {nodes.map((n, i) => (
+            <div key={i} className="relative pb-2 last:pb-0">
+              <span className="absolute -left-3 top-1 w-2 h-2 rounded-full bg-[#111111]" />
+              <div className="text-xs font-medium text-[#111111]">{n.event}</div>
+              <div className="text-xs text-[#787774]">
+                {n.datetime} · {(n.evidence_codes || []).join(", ")}
+              </div>
+            </div>
+          ))}
+        </div>
+        {toolCalls.length > 0 && (
+          <div className="rounded-md border border-[#EAEAEA] bg-[#F7F6F3] p-2">
+            <div className="text-xs font-semibold text-[#111111] mb-1">
+              工具调用记录（{toolCalls.length} 次）
+            </div>
+            <div className="space-y-1">
+              {toolCalls.map((tc, i) => (
+                <div key={i} className="text-xs text-[#787774]">
+                  <span className="font-mono text-[#111111]">{tc.tool_name}</span>
+                  {tc.result_summary && (
+                    <span className="ml-2">{tc.result_summary}</span>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
-        ))}
+        )}
+      </div>
+    )
+  }
+
+  // complaint / respond_complaint 节点：展示投诉书摘要 + 工具调用日志
+  if (node === "complaint" || node === "respond_complaint") {
+    const draft = products.complaint_draft as
+      | { title?: string; content?: string; tone?: string }
+      | undefined
+    const toolCalls = (products.complaint_tool_calls as ToolCallLog[]) || []
+    return (
+      <div className="space-y-2">
+        {draft && (
+          <div className="rounded-md border border-[#EAEAEA] bg-[#F7F6F3] p-2">
+            <div className="text-xs font-semibold text-[#111111] mb-1">
+              {draft.title || (node === "respond_complaint" ? "反证答辩书" : "投诉书")}
+            </div>
+            <p className="text-xs text-[#111111] line-clamp-4 whitespace-pre-wrap">
+              {draft.content?.slice(0, 300) || ""}
+              {draft.content && draft.content.length > 300 ? "..." : ""}
+            </p>
+            {draft.tone && (
+              <span className="inline-block mt-1 text-xs text-[#787774]">
+                语气: {draft.tone}
+              </span>
+            )}
+          </div>
+        )}
+        {toolCalls.length > 0 && (
+          <div className="rounded-md border border-[#EAEAEA] p-2">
+            <div className="text-xs font-semibold text-[#111111] mb-1">
+              工具调用记录（{toolCalls.length} 次）
+            </div>
+            <div className="space-y-1">
+              {toolCalls.map((tc, i) => (
+                <div key={i} className="text-xs text-[#787774]">
+                  <span className="font-mono text-[#111111]">{tc.tool_name}</span>
+                  {tc.result_summary && (
+                    <span className="ml-2">{tc.result_summary}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     )
   }

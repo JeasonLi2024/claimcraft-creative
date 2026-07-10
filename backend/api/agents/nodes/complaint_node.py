@@ -18,6 +18,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 
 from api.agents.state import CaseWorkflowState
+from api.agents.utils.progress import emit_progress
 from api.services import llm_service
 
 try:
@@ -107,8 +108,11 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     # 5. LLM 重写（若可用）
     final_content = skeleton.get("content", "")
+    tool_call_log = []
     if llm_service.is_llm_available() and final_content.strip():
         try:
+            await emit_progress(stage="skeleton_ready", message="投诉书骨架已生成，准备 LLM 重写...")
+
             facts_json = json.dumps(all_fields, ensure_ascii=False, indent=2)
             timeline_json = json.dumps(
                 state.get("evidence_chain", []),
@@ -124,9 +128,15 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             tools_enabled = is_tools_enabled()
 
             # v10 新增：主动预检索法条（强制首次，失败降级）
+            await emit_progress(stage="rag_retrieval", message="正在检索相关法条...")
             case_keywords = _extract_complaint_keywords(case, all_fields)
             law_articles = await pre_retrieve_law_articles(case_keywords, top_k=5)
             law_articles_section = _format_complaint_law_section(law_articles)
+            await emit_progress(
+                stage="rag_done",
+                message=f"法条检索完成，命中 {len(law_articles)} 条",
+                detail={"candidate_count": len(law_articles)},
+            )
 
             if tools_enabled:
                 tools_section = TOOLS_ENABLED_SECTION
@@ -144,6 +154,10 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             )
 
             if tools_enabled:
+                await emit_progress(
+                    stage="llm_generating",
+                    message="LLM 重写投诉书中（含工具调用）...",
+                )
                 # v10：绑定 7 个工具 + 多轮工具调用循环（使用通用函数）
                 tools = get_all_law_tools()
                 rewritten, tool_call_log = await invoke_llm_with_tools(
@@ -157,6 +171,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
                     f"[投诉生成] 工具调用完成，共 {len(tool_call_log)} 次"
                 )
             else:
+                await emit_progress(stage="llm_generating", message="LLM 重写投诉书中...")
                 # 原逻辑：单次 LLM 重写
                 rewritten = await sync_to_async(llm_service.chat_with_retry)([
                     {"role": "user", "content": prompt}
@@ -191,6 +206,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             "template_type": template_type,
             "tone": tone,
         },
+        "complaint_tool_calls": tool_call_log,
         "errors": errors,
     }
 

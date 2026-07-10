@@ -23,6 +23,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 
 from api.agents.state import CaseWorkflowState
+from api.agents.utils.progress import emit_progress
 from api.services import llm_service
 
 try:
@@ -74,6 +75,7 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         }
 
     # 1. 基础时间线重建
+    await emit_progress(stage="timeline_rebuild", message="正在重建基础时间线...")
     try:
         await sync_to_async(rebuild_timeline)(case)
     except Exception as e:
@@ -84,7 +86,7 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
     if not llm_service.is_scenario_available("text"):
         chain = await _build_fallback_chain(case)
         errors.append("[证据链] LLM 不可用，仅返回基础时间线")
-        return {"evidence_chain": chain, "errors": errors}
+        return {"evidence_chain": chain, "evidence_chain_tool_calls": [], "errors": errors}
 
     # 构造 LLM 输入
     evidences_json = _build_evidences_json(
@@ -92,10 +94,16 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
     )
 
     # 3. 主动预检索法条（强制首次，失败降级）
+    await emit_progress(stage="rag_retrieval", message="正在检索相关法条（三阶段 RAG）...")
     case_keywords = _extract_case_keywords(case.description, extract_results)
     from api.agents.tools.law_tools import pre_retrieve_law_articles
     law_articles = await pre_retrieve_law_articles(case_keywords)
     law_articles_section = _format_law_articles_section(law_articles, errors)
+    await emit_progress(
+        stage="rag_done",
+        message=f"法条检索完成，命中 {len(law_articles)} 条",
+        detail={"candidate_count": len(law_articles)},
+    )
 
     # 4. LLM 绑定工具 + 多轮工具调用
     from api.agents.tools.law_tools import (
@@ -103,6 +111,10 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         invoke_llm_with_tools,
     )
     tools_enabled = is_tools_enabled()
+    await emit_progress(
+        stage="llm_reasoning",
+        message="LLM 构造证据链中（含工具调用）..." if tools_enabled else "LLM 构造证据链中...",
+    )
     tools_section = TOOLS_ENABLED_SECTION if tools_enabled else TOOLS_DISABLED_SECTION
 
     prompt = EVIDENCE_CHAIN_PROMPT.format(
