@@ -1,4 +1,4 @@
-import { lazy, useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Outlet, useLocation, useNavigate, useParams, Link } from "react-router"
 import { useAuthStore } from "@/stores/auth-store"
 import { useCaseStore } from "@/stores/case-store"
@@ -6,8 +6,8 @@ import { useStatus } from "@/composables/useStatus"
 import { cn } from "@/lib/utils"
 import {
   Home, FileText, BarChart3, Briefcase, Image, Clock,
-  MessageSquare, Shield, Download, ChevronRight, LogOut,
-  Menu, X, Gavel,
+  MessageSquare, Shield, Download, ChevronRight, ChevronDown, LogOut,
+  Menu, X, Gavel, UserRound, Settings, LayoutDashboard,
 } from "lucide-react"
 
 const sidebarNav = [
@@ -46,6 +46,8 @@ export default function AppLayout() {
   const { statusLabel, statusColor } = useStatus()
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const profileMenuRef = useRef<HTMLDivElement>(null)
 
   const caseNav = currentCase?.case_mode === "respond" ? caseNavRespond : caseNavComplain
 
@@ -60,7 +62,25 @@ export default function AppLayout() {
 
   useEffect(() => {
     setMobileMenuOpen(false)
+    setProfileMenuOpen(false)
   }, [location.pathname])
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+        setProfileMenuOpen(false)
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setProfileMenuOpen(false)
+    }
+    document.addEventListener("mousedown", handlePointerDown)
+    document.addEventListener("keydown", handleKeyDown)
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown)
+      document.removeEventListener("keydown", handleKeyDown)
+    }
+  }, [])
 
   return (
     <div className="min-h-screen">
@@ -93,18 +113,61 @@ export default function AppLayout() {
 
           <div className="flex items-center gap-3">
             {isAuthenticated && (
-              <>
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary text-xs font-bold text-secondary-foreground">
-                  {userInitial}
-                </div>
+              <div ref={profileMenuRef} className="relative">
                 <button
-                  onClick={handleLogout}
-                  className="hidden rounded-lg px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:block"
-                  title="退出登录"
+                  type="button"
+                  onClick={() => setProfileMenuOpen((open) => !open)}
+                  className={cn(
+                    "flex items-center gap-2 rounded-xl border px-1.5 py-1 transition-all",
+                    profileMenuOpen
+                      ? "border-secondary/35 bg-accent shadow-sm"
+                      : "border-transparent hover:border-border hover:bg-card"
+                  )}
+                  aria-haspopup="menu"
+                  aria-expanded={profileMenuOpen}
+                  aria-label="打开个人账户菜单"
                 >
-                  <LogOut className="h-4 w-4" />
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-secondary text-xs font-bold text-secondary-foreground shadow-sm">
+                    {userInitial}
+                  </span>
+                  <span className="hidden max-w-28 truncate text-sm font-semibold text-foreground sm:block">
+                    {user?.username || "用户"}
+                  </span>
+                  <ChevronDown className={cn("hidden h-3.5 w-3.5 text-muted-foreground transition-transform sm:block", profileMenuOpen && "rotate-180")} />
                 </button>
-              </>
+
+                {profileMenuOpen && (
+                  <div role="menu" className="absolute right-0 top-[calc(100%+10px)] z-50 w-72 overflow-hidden rounded-2xl border border-border bg-white shadow-[0_24px_70px_rgba(24,33,29,.18)]">
+                    <div className="border-b border-border bg-[#f5f6f2] p-4">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-secondary text-sm font-bold text-secondary-foreground">
+                          {userInitial}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-foreground">{user?.username || "ClaimCraft 用户"}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">{user?.email || "尚未设置邮箱"}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="p-2">
+                      <Link role="menuitem" to="/profile" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent">
+                        <UserRound className="h-4 w-4 text-secondary" /><span className="flex-1">个人信息管理</span><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Link>
+                      <Link role="menuitem" to="/cases" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent">
+                        <Briefcase className="h-4 w-4 text-secondary" /><span className="flex-1">我的案件</span>
+                      </Link>
+                      <Link role="menuitem" to="/dashboard" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent">
+                        <LayoutDashboard className="h-4 w-4 text-secondary" /><span className="flex-1">数据仪表盘</span>
+                      </Link>
+                    </div>
+                    <div className="border-t border-border p-2">
+                      <button role="menuitem" onClick={handleLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-destructive transition-colors hover:bg-destructive/8">
+                        <LogOut className="h-4 w-4" />退出当前账号
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -171,12 +234,19 @@ export default function AppLayout() {
                 <button onClick={() => setMobileMenuOpen(false)}><X className="h-5 w-5" /></button>
               </div>
               <nav className="flex flex-col gap-1">
+                <div className="mb-3 rounded-xl bg-muted p-3">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-xs font-bold text-secondary-foreground">{userInitial}</span>
+                    <div className="min-w-0"><p className="truncate text-sm font-semibold">{user?.username || "用户"}</p><p className="truncate text-xs text-muted-foreground">{user?.email || "尚未设置邮箱"}</p></div>
+                  </div>
+                </div>
                 {sidebarNav.map((item) => (
                   <Link key={item.path} to={item.path}
                     className={cn("rounded-lg px-3 py-2 text-sm", isActive(item.path) ? "bg-primary/8 text-primary font-medium" : "text-muted-foreground")}>
                     {item.label}
                   </Link>
                 ))}
+                <Link to="/profile" className={cn("flex items-center gap-2 rounded-lg px-3 py-2 text-sm", isActive("/profile") ? "bg-primary/8 text-primary font-medium" : "text-muted-foreground")}><Settings className="h-4 w-4" />个人信息管理</Link>
                 {caseId && caseNav.map((item) => (
                   <Link key={item.path} to={`${caseBasePath}/${item.path}`}
                     className={cn("rounded-lg px-3 py-2 text-sm", isActive(`${caseBasePath}/${item.path}`) ? "bg-primary/8 text-primary font-medium" : "text-muted-foreground")}>

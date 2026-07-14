@@ -8,6 +8,7 @@ const RegisterPage = lazy(() => import("@/pages/RegisterPage"))
 const AppLayout = lazy(() => import("@/layouts/AppLayout"))
 const CaseListPage = lazy(() => import("@/pages/CaseListPage"))
 const DashboardPage = lazy(() => import("@/pages/DashboardPage"))
+const ProfilePage = lazy(() => import("@/pages/ProfilePage"))
 const WorkspacePage = lazy(() => import("@/pages/WorkspacePage"))
 const EvidencePage = lazy(() => import("@/pages/EvidencePage"))
 const TimelinePage = lazy(() => import("@/pages/TimelinePage"))
@@ -55,6 +56,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/cases" element={<CaseListPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route path="/cases/:caseId/workspace" element={<WorkspacePage />} />
             <Route path="/cases/:caseId/evidence" element={<EvidencePage />} />
             <Route path="/cases/:caseId/timeline" element={<TimelinePage />} />
