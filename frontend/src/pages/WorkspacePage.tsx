@@ -109,7 +109,7 @@ export default function WorkspacePage() {
         <h1 className="text-2xl font-bold text-foreground">{caseData.title}</h1>
         {caseData.description && <p className="mt-2 text-muted-foreground">{caseData.description}</p>}
         <div className="mt-2 flex flex-wrap gap-2">
-          <PillTag label={caseData.dispute_type || "未知类型"} variant="primary" />
+          <PillTag label={caseData.case_type || "未知类型"} variant="primary" />
         </div>
       </div>
 

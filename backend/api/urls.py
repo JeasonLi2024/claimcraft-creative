@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
 """api 应用路由。"""
 from django.urls import path
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-    TokenVerifyView,
-)
+from rest_framework_simplejwt.views import TokenVerifyView
 
 from api.views import (
     RegisterView,
+    LoginView,
+    RefreshView,
+    LogoutView,
+    LogoutAllView,
     CurrentUserView,
+    CurrentUserAvatarView,
+    UserPreferenceView,
+    ChangePasswordView,
+    CurrentEmailSendCodeView,
+    CurrentEmailVerifyView,
+    EmailChangeRequestView,
+    EmailChangeConfirmView,
+    UserSessionListView,
+    UserSessionDetailView,
     CaseDetailView,
     CaseListCreateView,
     CaseUpdateDeleteView,
@@ -43,10 +52,21 @@ from api.views import (
 urlpatterns = [
     # 鉴权路由
     path('auth/register/', RegisterView.as_view()),
-    path('auth/login/', TokenObtainPairView.as_view()),
-    path('auth/refresh/', TokenRefreshView.as_view()),
+    path('auth/login/', LoginView.as_view()),
+    path('auth/refresh/', RefreshView.as_view()),
     path('auth/verify/', TokenVerifyView.as_view()),
     path('auth/me/', CurrentUserView.as_view()),
+    path('auth/me/avatar/', CurrentUserAvatarView.as_view()),
+    path('auth/me/email/send-code/', CurrentEmailSendCodeView.as_view()),
+    path('auth/me/email/verify/', CurrentEmailVerifyView.as_view()),
+    path('auth/me/email/change/request/', EmailChangeRequestView.as_view()),
+    path('auth/me/email/change/confirm/', EmailChangeConfirmView.as_view()),
+    path('auth/me/preferences/', UserPreferenceView.as_view()),
+    path('auth/change-password/', ChangePasswordView.as_view()),
+    path('auth/logout/', LogoutView.as_view()),
+    path('auth/logout-all/', LogoutAllView.as_view()),
+    path('auth/sessions/', UserSessionListView.as_view()),
+    path('auth/sessions/<int:session_id>/', UserSessionDetailView.as_view()),
     # T1 新增路由
     path('cases/', CaseListCreateView.as_view()),
     path('cases/<int:pk>/manage/', CaseUpdateDeleteView.as_view()),

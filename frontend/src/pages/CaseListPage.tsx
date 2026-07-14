@@ -30,11 +30,11 @@ import {
   X,
 } from "lucide-react"
 
-const DISPUTE_FILTERS = [
+const CASE_TYPE_FILTERS = [
   { value: "", label: "全部类型" },
-  { value: "online_shopping", label: "网购纠纷" },
-  { value: "service_breach", label: "服务违约" },
-  { value: "second_hand", label: "二手交易" },
+  { value: "shopping", label: "网购纠纷" },
+  { value: "service", label: "服务违约" },
+  { value: "secondhand", label: "二手交易" },
   { value: "other", label: "其他" },
 ]
 
@@ -53,8 +53,8 @@ const STATUS_FILTERS = [
 ]
 
 const quickStarts = [
-  { type: "online_shopping", mode: "complain" as const, title: "网购退款纠纷", text: "整理订单、聊天、物流与退款记录", icon: ShoppingBag, color: "bg-[#e4eee8] text-[#315a48]" },
-  { type: "service_breach", mode: "complain" as const, title: "服务履约争议", text: "梳理合同、付款与履约承诺", icon: FileCheck2, color: "bg-[#eee9dd] text-[#705d39]" },
+  { type: "shopping", mode: "complain" as const, title: "网购退款纠纷", text: "整理订单、聊天、物流与退款记录", icon: ShoppingBag, color: "bg-[#e4eee8] text-[#315a48]" },
+  { type: "service", mode: "complain" as const, title: "服务履约争议", text: "梳理合同、付款与履约承诺", icon: FileCheck2, color: "bg-[#eee9dd] text-[#705d39]" },
   { type: "other", mode: "respond" as const, title: "商家反证材料", text: "组织履约记录与沟通依据", icon: Store, color: "bg-[#e6e8ec] text-[#4d5965]" },
 ]
 
@@ -68,27 +68,27 @@ export default function CaseListPage() {
   const user = useAuthStore((s) => s.user)
 
   const [search, setSearch] = useState("")
-  const [disputeType, setDisputeType] = useState("")
+  const [caseType, setCaseType] = useState("")
   const [status, setStatus] = useState("")
   const [showCreate, setShowCreate] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null)
   const [newTitle, setNewTitle] = useState("")
   const [newDesc, setNewDesc] = useState("")
-  const [newType, setNewType] = useState("online_shopping")
+  const [newType, setNewType] = useState("shopping")
   const [newMode, setNewMode] = useState<"complain" | "respond">("complain")
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState("")
 
   const debouncedSearch = useDebounce(search, 300)
-  const hasFilters = Boolean(search || disputeType || status)
+  const hasFilters = Boolean(search || caseType || status)
 
   const loadCases = useCallback(() => {
     const params: Record<string, string> = {}
     if (debouncedSearch) params.search = debouncedSearch
-    if (disputeType) params.dispute_type = disputeType
+    if (caseType) params.case_type = caseType
     if (status) params.status = status
     fetchCases(params)
-  }, [debouncedSearch, disputeType, status, fetchCases])
+  }, [debouncedSearch, caseType, status, fetchCases])
 
   useEffect(() => { loadCases() }, [loadCases])
 
@@ -102,7 +102,7 @@ export default function CaseListPage() {
 
   const recentCase = useMemo(() => [...cases].sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime())[0], [cases])
 
-  function openCreate(type = "online_shopping", mode: "complain" | "respond" = "complain", title = "") {
+  function openCreate(type = "shopping", mode: "complain" | "respond" = "complain", title = "") {
     setNewType(type)
     setNewMode(mode)
     setNewTitle(title)
@@ -112,7 +112,7 @@ export default function CaseListPage() {
 
   function clearFilters() {
     setSearch("")
-    setDisputeType("")
+    setCaseType("")
     setStatus("")
   }
 
@@ -122,11 +122,11 @@ export default function CaseListPage() {
     if (!newTitle.trim()) { setCreateError("请输入案件标题"); return }
     setCreating(true)
     try {
-      const created = await useCaseStore.getState().createCase({ title: newTitle.trim(), description: newDesc.trim(), dispute_type: newType, case_mode: newMode })
+      const created = await useCaseStore.getState().createCase({ title: newTitle.trim(), description: newDesc.trim(), case_type: newType, case_mode: newMode })
       setShowCreate(false)
       setNewTitle("")
       setNewDesc("")
-      setNewType("online_shopping")
+      setNewType("shopping")
       setNewMode("complain")
       navigate(`/cases/${created.id}/workspace`, { state: { case_mode: newMode } })
     } catch (err: any) {
@@ -194,7 +194,7 @@ export default function CaseListPage() {
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
             <div className="relative min-w-[240px] flex-1"><Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a918c]" /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索案件标题或描述" className="w-full rounded-xl border border-[#d9ddd5] bg-[#f8f8f5] py-2.5 pl-10 pr-4 text-sm placeholder:text-[#a0a5a1] focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10" /></div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <label className="relative"><ListFilter className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /><select value={disputeType} onChange={(e) => setDisputeType(e.target.value)} className="w-full appearance-none rounded-xl border border-[#d9ddd5] bg-white py-2.5 pl-9 pr-9 text-sm focus:border-[#3f6b57] focus:outline-none sm:w-auto">{DISPUTE_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /></label>
+              <label className="relative"><ListFilter className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /><select value={caseType} onChange={(e) => setCaseType(e.target.value)} className="w-full appearance-none rounded-xl border border-[#d9ddd5] bg-white py-2.5 pl-9 pr-9 text-sm focus:border-[#3f6b57] focus:outline-none sm:w-auto">{CASE_TYPE_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /></label>
               <label className="relative"><Filter className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /><select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full appearance-none rounded-xl border border-[#d9ddd5] bg-white py-2.5 pl-9 pr-9 text-sm focus:border-[#3f6b57] focus:outline-none sm:w-auto">{STATUS_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#818783]" /></label>
               {hasFilters && <button onClick={clearFilters} className="inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-sm text-[#747b76] hover:bg-[#f1f2ee] hover:text-[#181b1a]"><X className="h-3.5 w-3.5" />清除</button>}
             </div>
@@ -226,7 +226,7 @@ export default function CaseListPage() {
             <form onSubmit={handleCreate} className="space-y-5 p-6">
               <div><label className="mb-2 block text-sm font-semibold">案件标题</label><input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="例如：XX 平台延迟发货退款纠纷" className="w-full rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10" autoFocus /></div>
               <div><label className="mb-2 block text-sm font-semibold">案件描述</label><textarea value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="简要描述发生了什么、目前有哪些证据和希望解决的问题..." rows={3} className="w-full resize-none rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10" /></div>
-              <div className="grid gap-4 sm:grid-cols-2"><div><label className="mb-2 block text-sm font-semibold">纠纷类型</label><select value={newType} onChange={(e) => setNewType(e.target.value)} className="w-full rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none">{DISPUTE_FILTERS.filter((item) => item.value).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div><div><label className="mb-2 block text-sm font-semibold">案件模式</label><div className="grid grid-cols-2 gap-2">{CASE_MODES.map((item) => <button key={item.value} type="button" onClick={() => setNewMode(item.value)} className={cn("rounded-xl border px-3 py-3 text-xs font-semibold transition-all", newMode === item.value ? "border-[#3f6b57] bg-[#e7eee9] text-[#2f5947]" : "border-[#d9ddd5] bg-white text-[#777e79] hover:bg-[#f1f2ee]")}>{item.value === "complain" ? <ShoppingBag className="mx-auto mb-1 h-4 w-4" /> : <Gavel className="mx-auto mb-1 h-4 w-4" />}{item.label}</button>)}</div></div></div>
+              <div className="grid gap-4 sm:grid-cols-2"><div><label className="mb-2 block text-sm font-semibold">纠纷类型</label><select value={newType} onChange={(e) => setNewType(e.target.value)} className="w-full rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none">{CASE_TYPE_FILTERS.filter((item) => item.value).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div><div><label className="mb-2 block text-sm font-semibold">案件模式</label><div className="grid grid-cols-2 gap-2">{CASE_MODES.map((item) => <button key={item.value} type="button" onClick={() => setNewMode(item.value)} className={cn("rounded-xl border px-3 py-3 text-xs font-semibold transition-all", newMode === item.value ? "border-[#3f6b57] bg-[#e7eee9] text-[#2f5947]" : "border-[#d9ddd5] bg-white text-[#777e79] hover:bg-[#f1f2ee]")}>{item.value === "complain" ? <ShoppingBag className="mx-auto mb-1 h-4 w-4" /> : <Gavel className="mx-auto mb-1 h-4 w-4" />}{item.label}</button>)}</div></div></div>
               <div className="rounded-xl bg-[#eef1ec] p-4 text-xs leading-5 text-[#68706a]">{newMode === "complain" ? "将创建消费者维权流程，可生成平台、监管和仲裁准备文稿。" : "将创建商家反证流程，用于组织履约与沟通依据。"}</div>
               <div className="flex justify-end gap-3 pt-2"><button type="button" onClick={() => setShowCreate(false)} className="rounded-xl border border-[#d9ddd5] bg-white px-4 py-2.5 text-sm font-semibold hover:bg-[#f1f2ee]">取消</button><button type="submit" disabled={creating} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-[#181b1a] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#2b302d] disabled:opacity-50">{creating ? <><Loader2 className="h-4 w-4 animate-spin" />创建中</> : <>创建案件<ArrowRight className="h-4 w-4" /></>}</button></div>
             </form>

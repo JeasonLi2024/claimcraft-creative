@@ -41,7 +41,7 @@ export default function AppLayout() {
 
   const user = useAuthStore((s) => s.user)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const clearAuth = useAuthStore((s) => s.clearAuth)
+  const logout = useAuthStore((s) => s.logout)
   const currentCase = useCaseStore((s) => s.currentCase)
   const { statusLabel, statusColor } = useStatus()
 
@@ -55,8 +55,8 @@ export default function AppLayout() {
   const caseBasePath = caseId ? `/cases/${caseId}` : ""
   const userInitial = user?.username?.charAt(0).toUpperCase() || "U"
 
-  function handleLogout() {
-    clearAuth()
+  async function handleLogout() {
+    await logout()
     navigate("/login")
   }
 

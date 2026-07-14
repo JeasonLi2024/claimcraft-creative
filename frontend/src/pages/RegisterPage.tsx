@@ -30,7 +30,12 @@ export default function RegisterPage() {
     }
     setLoading(true)
     try {
-      await register({ username, email, password })
+      await register({
+        username: username.trim(),
+        email: email.trim(),
+        password,
+        password_confirm: confirmPassword,
+      })
       navigate("/cases", { replace: true })
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || "注册失败")

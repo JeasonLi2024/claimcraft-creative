@@ -5,14 +5,229 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
 from api.models import (
+    EmailVerificationChallenge,
+    UserProfile,
+    UserPreference,
+    UserSession,
     Case, Evidence, ExtractedField, TimelineNode,
     ComplaintTemplate, ComplaintTemplateRule, CaseStatusLog,
     CaseTypePreset,
 )
 
 
+def _get_user_profile(user: User) -> UserProfile:
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'display_name': user.username},
+    )
+    return profile
+
+
+def _get_user_preferences(user: User) -> UserPreference:
+    preferences, _ = UserPreference.objects.get_or_create(user=user)
+    return preferences
+
+
+def _build_media_url(request, file_field) -> str:
+    if not file_field:
+        return ''
+    url = file_field.url
+    if request is not None:
+        return request.build_absolute_uri(url)
+    return url
+
+
+class UserSummarySerializer(serializers.ModelSerializer):
+    """用户摘要序列化器。"""
+
+    display_name = serializers.SerializerMethodField()
+    email_verified = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email',
+            'display_name', 'email_verified', 'avatar_url',
+        ]
+
+    def get_display_name(self, obj):
+        profile = _get_user_profile(obj)
+        return profile.display_name or obj.username
+
+    def get_email_verified(self, obj):
+        return _get_user_profile(obj).email_verified
+
+    def get_avatar_url(self, obj):
+        profile = _get_user_profile(obj)
+        return _build_media_url(self.context.get('request'), profile.avatar_display)
+
+
+class UserPreferenceSerializer(serializers.ModelSerializer):
+    """用户偏好序列化器。"""
+
+    class Meta:
+        model = UserPreference
+        fields = [
+            'workflow_reminders',
+            'export_reminder',
+            'compact_case_cards',
+            'default_case_mode',
+            'default_template_type',
+        ]
+
+
+class UserDetailSerializer(serializers.ModelSerializer):
+    """用户详情序列化器。"""
+
+    display_name = serializers.SerializerMethodField()
+    bio = serializers.SerializerMethodField()
+    locale = serializers.SerializerMethodField()
+    timezone = serializers.SerializerMethodField()
+    email_verified = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    avatar_updated_at = serializers.SerializerMethodField()
+    preferences = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email',
+            'display_name', 'bio', 'locale', 'timezone',
+            'email_verified', 'avatar_url', 'avatar_updated_at',
+            'date_joined', 'last_login',
+            'preferences',
+        ]
+
+    def get_display_name(self, obj):
+        profile = _get_user_profile(obj)
+        return profile.display_name or obj.username
+
+    def get_bio(self, obj):
+        return _get_user_profile(obj).bio
+
+    def get_locale(self, obj):
+        return _get_user_profile(obj).locale
+
+    def get_timezone(self, obj):
+        return _get_user_profile(obj).timezone
+
+    def get_email_verified(self, obj):
+        return _get_user_profile(obj).email_verified
+
+    def get_avatar_url(self, obj):
+        profile = _get_user_profile(obj)
+        return _build_media_url(self.context.get('request'), profile.avatar_display)
+
+    def get_avatar_updated_at(self, obj):
+        return _get_user_profile(obj).avatar_updated_at
+
+    def get_preferences(self, obj):
+        preferences = _get_user_preferences(obj)
+        return UserPreferenceSerializer(preferences).data
+
+
+class UserProfileUpdateSerializer(serializers.ModelSerializer):
+    """用户资料更新序列化器。"""
+
+    class Meta:
+        model = UserProfile
+        fields = ['display_name', 'bio', 'locale', 'timezone']
+
+
+class AvatarUploadSerializer(serializers.Serializer):
+    """头像上传请求序列化器。"""
+
+    avatar = serializers.ImageField(required=True)
+
+
+class EmailSendCodeSerializer(serializers.Serializer):
+    """当前邮箱验证码发送请求。"""
+
+
+class EmailCodeVerifySerializer(serializers.Serializer):
+    """邮箱验证码校验请求。"""
+
+    code = serializers.RegexField(r'^\d{6}$', error_messages={'invalid': '验证码必须为 6 位数字'})
+
+
+class EmailChangeRequestSerializer(serializers.Serializer):
+    """新邮箱变更申请请求。"""
+
+    new_email = serializers.EmailField(required=True)
+
+    def validate_new_email(self, value):
+        return value.strip().lower()
+
+
+class EmailChangeConfirmSerializer(EmailCodeVerifySerializer):
+    """新邮箱确认请求。"""
+
+    new_email = serializers.EmailField(required=True)
+
+    def validate_new_email(self, value):
+        return value.strip().lower()
+
+
+class EmailVerificationChallengeSerializer(serializers.ModelSerializer):
+    """邮箱验证码挑战摘要序列化器。"""
+
+    class Meta:
+        model = EmailVerificationChallenge
+        fields = [
+            'id',
+            'scene',
+            'target_email',
+            'expires_at',
+            'attempt_count',
+            'used_at',
+            'created_at',
+        ]
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """修改密码序列化器。"""
+
+    old_password = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+    new_password = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+    new_password_confirm = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+    logout_other_sessions = serializers.BooleanField(required=False, default=False)
+
+    def validate_old_password(self, value):
+        user = self.context.get('user') or getattr(self.context.get('request'), 'user', None)
+        if user is None or not user.check_password(value):
+            raise serializers.ValidationError('旧密码错误')
+        return value
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({'new_password_confirm': '两次新密码输入不一致'})
+        validate_password(attrs['new_password'])
+        return attrs
+
+
+class UserSessionSerializer(serializers.ModelSerializer):
+    """用户会话序列化器。"""
+
+    is_current = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserSession
+        fields = [
+            'id', 'device_name', 'device_type',
+            'created_at', 'last_seen_at', 'expires_at',
+            'revoked_at', 'is_current',
+        ]
+
+    def get_is_current(self, obj):
+        current_session_id = self.context.get('current_session_id')
+        if current_session_id is None:
+            return False
+        return obj.id == current_session_id
+
+
 class UserSerializer(serializers.ModelSerializer):
-    """用户序列化器。"""
+    """兼容旧视图的用户基础序列化器。"""
 
     class Meta:
         model = User
@@ -23,20 +238,26 @@ class RegisterSerializer(serializers.ModelSerializer):
     """注册序列化器。"""
 
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
-    password2 = serializers.CharField(write_only=True, required=True)
+    password_confirm = serializers.CharField(write_only=True, required=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'password2']
+        fields = ['username', 'email', 'password', 'password_confirm']
 
     def validate(self, attrs):
-        if attrs['password'] != attrs['password2']:
-            raise serializers.ValidationError({'password': '两次密码不一致'})
+        if attrs['password'] != attrs['password_confirm']:
+            raise serializers.ValidationError({'password_confirm': '两次密码不一致'})
         return attrs
 
     def create(self, validated_data):
-        validated_data.pop('password2')
-        user = User.objects.create_user(**validated_data)
+        password = validated_data.pop('password')
+        validated_data.pop('password_confirm')
+        user = User.objects.create_user(password=password, **validated_data)
+        UserProfile.objects.get_or_create(
+            user=user,
+            defaults={'display_name': user.username},
+        )
+        UserPreference.objects.get_or_create(user=user)
         return user
 
 

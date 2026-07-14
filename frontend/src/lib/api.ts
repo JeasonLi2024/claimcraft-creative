@@ -1,6 +1,10 @@
 import apiClient from "./api-client"
 import type {
-  User, LoginDTO, RegisterDTO, AuthResponse,
+  User, UserSummary, UserPreferences, UserProfileUpdateDTO, UserSession,
+  LoginDTO, RegisterDTO, AuthResponse, RefreshResponse,
+  LogoutAllResponse, ChangePasswordDTO, ChangePasswordResponse,
+  AvatarMutationResponse, EmailCodeSendResponse, EmailCodeVerifyDTO,
+  EmailChangeRequestDTO, EmailChangeConfirmDTO, EmailUserMutationResponse,
   Case, CaseCreateDTO, Evidence, TimelineNode,
   ComplaintData, MaskResult, StatusLog,
   ExtractedField, CasePreset, DashboardStats,
@@ -12,9 +16,44 @@ export const authApi = {
   login: (data: LoginDTO) =>
     apiClient.post<AuthResponse>("/auth/login/", data).then((r) => r.data),
   register: (data: RegisterDTO) =>
-    apiClient.post<AuthResponse>("/auth/register/", data).then((r) => r.data),
+    apiClient.post<UserSummary>("/auth/register/", data).then((r) => r.data),
+  refresh: (refresh: string) =>
+    apiClient.post<RefreshResponse>("/auth/refresh/", { refresh }).then((r) => r.data),
   me: () =>
     apiClient.get<User>("/auth/me/").then((r) => r.data),
+  updateMe: (data: UserProfileUpdateDTO) =>
+    apiClient.patch<User>("/auth/me/", data).then((r) => r.data),
+  getPreferences: () =>
+    apiClient.get<UserPreferences>("/auth/me/preferences/").then((r) => r.data),
+  updatePreferences: (data: Partial<UserPreferences>) =>
+    apiClient.patch<UserPreferences>("/auth/me/preferences/", data).then((r) => r.data),
+  changePassword: (data: ChangePasswordDTO) =>
+    apiClient.post<ChangePasswordResponse>("/auth/change-password/", data).then((r) => r.data),
+  logout: (refresh: string) =>
+    apiClient.post<{ detail: string }>("/auth/logout/", { refresh }).then((r) => r.data),
+  logoutAll: () =>
+    apiClient.post<LogoutAllResponse>("/auth/logout-all/").then((r) => r.data),
+  listSessions: () =>
+    apiClient.get<UserSession[]>("/auth/sessions/").then((r) => r.data),
+  revokeSession: (sessionId: number) =>
+    apiClient.delete<{ detail: string; session_id: number }>(`/auth/sessions/${sessionId}/`).then((r) => r.data),
+  uploadAvatar: (file: File) => {
+    const formData = new FormData()
+    formData.append("avatar", file)
+    return apiClient.post<AvatarMutationResponse>("/auth/me/avatar/", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((r) => r.data)
+  },
+  deleteAvatar: () =>
+    apiClient.delete<AvatarMutationResponse>("/auth/me/avatar/").then((r) => r.data),
+  sendCurrentEmailCode: () =>
+    apiClient.post<EmailCodeSendResponse>("/auth/me/email/send-code/", {}).then((r) => r.data),
+  verifyCurrentEmailCode: (data: EmailCodeVerifyDTO) =>
+    apiClient.post<EmailUserMutationResponse>("/auth/me/email/verify/", data).then((r) => r.data),
+  requestEmailChange: (data: EmailChangeRequestDTO) =>
+    apiClient.post<EmailCodeSendResponse>("/auth/me/email/change/request/", data).then((r) => r.data),
+  confirmEmailChange: (data: EmailChangeConfirmDTO) =>
+    apiClient.post<EmailUserMutationResponse>("/auth/me/email/change/confirm/", data).then((r) => r.data),
 }
 
 // Cases

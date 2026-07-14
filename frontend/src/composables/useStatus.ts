@@ -16,9 +16,9 @@ export const STATUS_COLOR: Record<string, string> = {
 
 export const DISPUTE_TYPES = [
   { value: "", label: "全部纠纷类型" },
-  { value: "online_shopping", label: "网购纠纷" },
-  { value: "service_breach", label: "服务违约" },
-  { value: "second_hand", label: "二手交易" },
+  { value: "shopping", label: "网购纠纷" },
+  { value: "service", label: "服务违约" },
+  { value: "secondhand", label: "二手交易" },
   { value: "other", label: "其他" },
 ]
 
@@ -49,5 +49,5 @@ export function useStatus() {
     const item = DISPUTE_TYPES.find((d) => d.value === t)
     return item && item.value ? item.label : t || "其他"
   }
-  return { statusLabel, statusColor, disputeLabel }
+  return { statusLabel, statusColor, disputeLabel, caseTypeLabel: disputeLabel }
 }

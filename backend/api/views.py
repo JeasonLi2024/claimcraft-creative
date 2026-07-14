@@ -3,9 +3,14 @@
 import asyncio
 import json
 import logging
+import secrets
+import string
 import threading
 import time
 
+from django.conf import settings
+from django.contrib.auth.models import User
+from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
@@ -22,21 +27,56 @@ from rest_framework.generics import (
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.serializers import (
+    TokenObtainPairSerializer,
+    TokenRefreshSerializer,
+)
+from rest_framework_simplejwt.settings import api_settings as simplejwt_api_settings
+from rest_framework_simplejwt.backends import TokenBackend
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from api.models import (
+    AccountAuditLog,
     Case, Evidence, ExtractedField, TimelineNode, CaseStatusLog,
     CaseTypePreset, ComplaintTemplateRule,
+    EmailVerificationChallenge,
+    UserPreference,
+    UserProfile,
+    UserSession,
 )
 from api.serializers import (
+    AvatarUploadSerializer,
+    ChangePasswordSerializer,
     CaseSerializer,
     CaseListSerializer,
     CaseStatusLogSerializer,
+    EmailChangeConfirmSerializer,
+    EmailChangeRequestSerializer,
+    EmailCodeVerifySerializer,
     EvidenceSerializer,
+    EmailSendCodeSerializer,
     ExtractedFieldSerializer,
     TimelineNodeSerializer,
+    UserDetailSerializer,
+    UserPreferenceSerializer,
+    UserProfileUpdateSerializer,
+    UserSessionSerializer,
     UserSerializer,
     RegisterSerializer,
     CaseTypePresetSerializer,
+)
+from api.services.avatar_service import (
+    AvatarValidationError,
+    delete_user_avatar,
+    save_user_avatar,
+)
+from api.services.mail_service import (
+    MailDeliveryError,
+    get_mail_delivery_service,
 )
 from api.services import (
     evidence_service,
@@ -51,10 +91,324 @@ from api.services import (
 )
 
 logger = logging.getLogger(__name__)
+token_backend = TokenBackend(
+    algorithm=simplejwt_api_settings.ALGORITHM,
+    signing_key=simplejwt_api_settings.SIGNING_KEY,
+    verifying_key=simplejwt_api_settings.VERIFYING_KEY,
+    audience=simplejwt_api_settings.AUDIENCE,
+    issuer=simplejwt_api_settings.ISSUER,
+    jwk_url=simplejwt_api_settings.JWK_URL,
+    leeway=simplejwt_api_settings.LEEWAY,
+)
+
+EMAIL_CODE_DIGITS = string.digits
 
 # 允许的图片扩展名与最大文件大小（10MB）
 ALLOWED_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
+
+
+def _get_client_ip(request):
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
+
+
+def _get_user_agent(request):
+    return request.META.get('HTTP_USER_AGENT', '')[:1000]
+
+
+def _detect_device_type(user_agent: str) -> str:
+    ua = (user_agent or '').lower()
+    if any(token in ua for token in ('iphone', 'android', 'mobile')):
+        return 'mobile'
+    if any(token in ua for token in ('ipad', 'tablet')):
+        return 'tablet'
+    if any(token in ua for token in ('windows', 'macintosh', 'linux')):
+        return 'desktop'
+    if ua:
+        return 'web'
+    return 'other'
+
+
+def _build_device_name(user_agent: str) -> str:
+    ua = user_agent or ''
+    ua_lower = ua.lower()
+
+    platform = 'Unknown'
+    if 'windows' in ua_lower:
+        platform = 'Windows'
+    elif 'macintosh' in ua_lower or 'mac os x' in ua_lower:
+        platform = 'macOS'
+    elif 'iphone' in ua_lower or 'ios' in ua_lower:
+        platform = 'iPhone'
+    elif 'ipad' in ua_lower:
+        platform = 'iPad'
+    elif 'android' in ua_lower:
+        platform = 'Android'
+    elif 'linux' in ua_lower:
+        platform = 'Linux'
+
+    browser = 'Browser'
+    if 'edg/' in ua_lower:
+        browser = 'Edge'
+    elif 'chrome/' in ua_lower and 'edg/' not in ua_lower:
+        browser = 'Chrome'
+    elif 'firefox/' in ua_lower:
+        browser = 'Firefox'
+    elif 'safari/' in ua_lower and 'chrome/' not in ua_lower:
+        browser = 'Safari'
+
+    return f'{platform} / {browser}'
+
+
+def _get_refresh_expiry():
+    return timezone.now() + settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME']
+
+
+def _get_access_lifetime_seconds():
+    return int(settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds())
+
+
+def _get_refresh_lifetime_seconds():
+    return int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
+
+
+def _get_or_create_profile(user):
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'display_name': user.username},
+    )
+    return profile
+
+
+def _get_or_create_preferences(user):
+    preferences, _ = UserPreference.objects.get_or_create(user=user)
+    return preferences
+
+
+def _normalize_email(email: str) -> str:
+    return (email or '').strip().lower()
+
+
+def _get_email_code_length() -> int:
+    return max(4, settings.CLAIMCRAFT_EMAIL_VERIFICATION_CODE_LENGTH)
+
+
+def _get_email_code_expiry_minutes() -> int:
+    return max(1, settings.CLAIMCRAFT_EMAIL_VERIFICATION_EXPIRES_MINUTES)
+
+
+def _get_email_code_max_attempts() -> int:
+    return max(1, settings.CLAIMCRAFT_EMAIL_VERIFICATION_MAX_ATTEMPTS)
+
+
+def _get_email_resend_cooldown_seconds() -> int:
+    return max(1, settings.CLAIMCRAFT_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS)
+
+
+def _get_email_hourly_send_limit() -> int:
+    return max(1, settings.CLAIMCRAFT_EMAIL_VERIFICATION_MAX_SENDS_PER_HOUR)
+
+
+def _generate_email_verification_code() -> str:
+    length = _get_email_code_length()
+    return ''.join(secrets.choice(EMAIL_CODE_DIGITS) for _ in range(length))
+
+
+def _get_email_challenge_queryset(user, scene, target_email=None):
+    queryset = EmailVerificationChallenge.objects.filter(user=user, scene=scene)
+    if target_email is not None:
+        queryset = queryset.filter(target_email=_normalize_email(target_email))
+    return queryset.order_by('-created_at', '-id')
+
+
+def _get_latest_email_challenge(user, scene, target_email=None):
+    return _get_email_challenge_queryset(user, scene, target_email).first()
+
+
+def _validate_new_email_for_change(user: User, new_email: str) -> str:
+    normalized_email = _normalize_email(new_email)
+    if not normalized_email:
+        raise ValueError('新邮箱不能为空')
+    if normalized_email == _normalize_email(user.email):
+        raise ValueError('新邮箱不能与当前邮箱相同')
+    if User.objects.filter(email__iexact=normalized_email).exclude(pk=user.pk).exists():
+        raise LookupError('该邮箱已被其他账户占用')
+    return normalized_email
+
+
+def _build_email_rate_limit_error(detail: str, *, cooldown_seconds=None, hourly_limit=None):
+    payload = {'detail': detail}
+    if cooldown_seconds is not None:
+        payload['cooldown_seconds'] = cooldown_seconds
+    if hourly_limit is not None:
+        payload['hourly_limit'] = hourly_limit
+    return payload
+
+
+def _check_email_send_limits(user, scene):
+    now = timezone.now()
+    hourly_limit = _get_email_hourly_send_limit()
+    cooldown_seconds = _get_email_resend_cooldown_seconds()
+    recent_since = now - timedelta(hours=1)
+
+    recent_queryset = EmailVerificationChallenge.objects.filter(
+        user=user,
+        scene=scene,
+        created_at__gte=recent_since,
+    ).order_by('-created_at', '-id')
+
+    if recent_queryset.count() >= hourly_limit:
+        return _build_email_rate_limit_error(
+            '验证码发送过于频繁，请稍后再试',
+            hourly_limit=hourly_limit,
+        )
+
+    latest = recent_queryset.first()
+    if latest is not None:
+        delta_seconds = (now - latest.created_at).total_seconds()
+        if delta_seconds < cooldown_seconds:
+            return _build_email_rate_limit_error(
+                '发送过于频繁，请稍后再试',
+                cooldown_seconds=int(cooldown_seconds - delta_seconds),
+            )
+    return None
+
+
+def _create_and_send_email_challenge(*, user, scene, target_email):
+    target_email = _normalize_email(target_email)
+    rate_limit_payload = _check_email_send_limits(user, scene)
+    if rate_limit_payload is not None:
+        return None, rate_limit_payload
+
+    code = _generate_email_verification_code()
+    expires_minutes = _get_email_code_expiry_minutes()
+    challenge = EmailVerificationChallenge(
+        user=user,
+        scene=scene,
+        target_email=target_email,
+        expires_at=timezone.now() + timedelta(minutes=expires_minutes),
+    )
+    challenge.set_plain_code(code)
+    challenge.save()
+
+    try:
+        mail_result = get_mail_delivery_service().send_verification_code(
+            to_email=target_email,
+            code=code,
+            scene=scene,
+            expires_minutes=expires_minutes,
+        )
+    except MailDeliveryError:
+        challenge.delete()
+        raise
+
+    return challenge, {
+        'detail': '验证码发送成功',
+        'scene': scene,
+        'target_email': target_email,
+        'expires_at': challenge.expires_at,
+        'provider': mail_result.provider,
+    }
+
+
+def _build_user_detail_response(request):
+    return UserDetailSerializer(
+        request.user,
+        context={'request': request},
+    ).data
+
+
+def _get_verifiable_challenge_or_response(*, user, scene, target_email):
+    challenge = _get_latest_email_challenge(user, scene, target_email)
+    if challenge is None:
+        return None, Response(
+            {'detail': '未找到验证码请求，请先发送验证码'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if challenge.is_used:
+        return None, Response(
+            {'detail': '验证码已使用，请重新发送'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if challenge.is_expired:
+        return None, Response(
+            {'detail': '验证码已过期，请重新发送'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    max_attempts = _get_email_code_max_attempts()
+    if challenge.attempt_count >= max_attempts:
+        return None, Response(
+            {
+                'detail': '验证码尝试次数已达上限，请重新发送',
+                'max_attempts': max_attempts,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return challenge, None
+
+
+def _check_email_challenge_code(challenge, submitted_code):
+    max_attempts = _get_email_code_max_attempts()
+    if challenge.check_plain_code(submitted_code):
+        return None
+
+    challenge.mark_attempt()
+    remaining_attempts = max(0, max_attempts - challenge.attempt_count)
+    if challenge.attempt_count >= max_attempts:
+        return Response(
+            {
+                'detail': '验证码错误次数过多，请重新发送',
+                'max_attempts': max_attempts,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response(
+        {
+            'detail': '验证码错误',
+            'remaining_attempts': remaining_attempts,
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _get_current_session_id(request):
+    token = getattr(request, 'auth', None)
+    session_id = None
+    if token is not None:
+        session_id = token.get('session_id')
+    if not session_id:
+        session_id = request.headers.get('X-Session-ID')
+    if not session_id and hasattr(request, 'data'):
+        session_id = request.data.get('current_session_id')
+    try:
+        return int(session_id) if session_id is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _blacklist_refresh_by_jti(refresh_jti: str) -> bool:
+    if not refresh_jti:
+        return False
+    try:
+        outstanding = OutstandingToken.objects.get(jti=refresh_jti)
+    except OutstandingToken.DoesNotExist:
+        return False
+    BlacklistedToken.objects.get_or_create(token=outstanding)
+    return True
+
+
+def _write_account_audit_log(user, action, request, session=None, metadata=None):
+    AccountAuditLog.objects.create(
+        user=user,
+        session=session,
+        action=action,
+        ip_address=_get_client_ip(request),
+        user_agent=_get_user_agent(request),
+        metadata=metadata or {},
+    )
 
 
 # ===== 鉴权视图 =====
@@ -71,11 +425,572 @@ class RegisterView(APIView):
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
+class LoginView(APIView):
+    """用户登录：POST /auth/login/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = TokenObtainPairSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.user
+        _get_or_create_profile(user)
+        _get_or_create_preferences(user)
+
+        user_agent = _get_user_agent(request)
+        with transaction.atomic():
+            refresh = RefreshToken.for_user(user)
+            session = UserSession.objects.create(
+                user=user,
+                refresh_jti=refresh['jti'],
+                device_name=_build_device_name(user_agent),
+                device_type=_detect_device_type(user_agent),
+                ip_address=_get_client_ip(request),
+                user_agent=user_agent,
+                last_seen_at=timezone.now(),
+                expires_at=_get_refresh_expiry(),
+            )
+            refresh['session_id'] = session.id
+            access = refresh.access_token
+
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
+
+            _write_account_audit_log(
+                user=user,
+                action=AccountAuditLog.ACTION_LOGIN,
+                request=request,
+                session=session,
+                metadata={'session_id': session.id},
+            )
+
+        return Response(
+            {
+                'access': str(access),
+                'refresh': str(refresh),
+                'access_expires_in': _get_access_lifetime_seconds(),
+                'refresh_expires_in': _get_refresh_lifetime_seconds(),
+                'session_id': session.id,
+                'user': UserDetailSerializer(
+                    user,
+                    context={'request': request},
+                ).data,
+            }
+        )
+
+
+class RefreshView(APIView):
+    """刷新 token：POST /auth/refresh/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response(
+                {'refresh': ['该字段是必填项。']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            old_refresh = RefreshToken(refresh_token)
+        except TokenError:
+            return Response(
+                {'detail': 'refresh token 无效'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        old_jti = old_refresh.get('jti')
+        session_id = old_refresh.get('session_id')
+
+        serializer = TokenRefreshSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = dict(serializer.validated_data)
+
+        new_refresh_value = payload.get('refresh')
+        if new_refresh_value:
+            new_refresh = RefreshToken(new_refresh_value)
+        else:
+            new_refresh = old_refresh
+
+        if session_id is not None:
+            new_refresh['session_id'] = session_id
+
+        access = new_refresh.access_token
+        payload['access'] = str(access)
+        payload['refresh'] = str(new_refresh)
+        payload['access_expires_in'] = _get_access_lifetime_seconds()
+        payload['refresh_expires_in'] = _get_refresh_lifetime_seconds()
+        payload['session_id'] = session_id
+
+        session = None
+        if session_id is not None:
+            session = UserSession.objects.filter(
+                id=session_id,
+                user_id=new_refresh.get('user_id'),
+            ).first()
+        if session is None and old_jti:
+            session = UserSession.objects.filter(refresh_jti=old_jti).first()
+
+        if session is not None:
+            session.refresh_jti = new_refresh.get('jti')
+            session.last_seen_at = timezone.now()
+            session.expires_at = _get_refresh_expiry()
+            session.revoked_at = None
+            session.save(
+                update_fields=[
+                    'refresh_jti',
+                    'last_seen_at',
+                    'expires_at',
+                    'revoked_at',
+                ]
+            )
+
+        return Response(payload)
+
+
+class LogoutView(APIView):
+    """退出当前设备：POST /auth/logout/。"""
+
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response(
+                {'refresh': ['该字段是必填项。']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            refresh = RefreshToken(refresh_token)
+        except TokenError:
+            try:
+                payload = token_backend.decode(refresh_token, verify=True)
+            except Exception:
+                return Response(
+                    {'detail': 'refresh token 无效'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            refresh = payload
+
+        session = None
+        session_id = refresh.get('session_id')
+        refresh_jti = refresh.get('jti')
+        token_user_id = refresh.get('user_id')
+
+        if token_user_id != request.user.id:
+            return Response(
+                {'detail': '无权操作该 refresh token'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if session_id is not None:
+            session = UserSession.objects.filter(
+                id=session_id,
+                user=request.user,
+            ).first()
+        if session is None and refresh_jti:
+            session = UserSession.objects.filter(
+                user=request.user,
+                refresh_jti=refresh_jti,
+            ).first()
+
+        _blacklist_refresh_by_jti(refresh_jti)
+
+        if session is not None and session.revoked_at is None:
+            session.revoked_at = timezone.now()
+            session.save(update_fields=['revoked_at'])
+
+        _write_account_audit_log(
+            user=request.user,
+            action=AccountAuditLog.ACTION_LOGOUT,
+            request=request,
+            session=session,
+            metadata={'session_id': getattr(session, 'id', session_id)},
+        )
+
+        return Response({'detail': '已退出当前设备'})
+
+
+class LogoutAllView(APIView):
+    """退出全部设备：POST /auth/logout-all/。"""
+
+    def post(self, request):
+        active_sessions = list(
+            UserSession.objects.filter(
+                user=request.user,
+                revoked_at__isnull=True,
+            )
+        )
+        revoked_count = 0
+
+        for outstanding in OutstandingToken.objects.filter(
+            user=request.user,
+            expires_at__gt=timezone.now(),
+        ):
+            BlacklistedToken.objects.get_or_create(token=outstanding)
+
+        for session in active_sessions:
+            if session.revoked_at is None:
+                session.revoked_at = timezone.now()
+                session.save(update_fields=['revoked_at'])
+                revoked_count += 1
+
+        _write_account_audit_log(
+            user=request.user,
+            action=AccountAuditLog.ACTION_LOGOUT_ALL,
+            request=request,
+            metadata={'revoked_sessions': revoked_count},
+        )
+
+        return Response(
+            {'detail': '已退出全部设备', 'revoked_sessions': revoked_count}
+        )
+
+
 class CurrentUserView(APIView):
-    """当前登录用户：GET /auth/me/。"""
+    """当前登录用户：GET/PATCH /auth/me/。"""
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        _get_or_create_profile(request.user)
+        _get_or_create_preferences(request.user)
+        return Response(_build_user_detail_response(request))
+
+    def patch(self, request):
+        profile = _get_or_create_profile(request.user)
+        serializer = UserProfileUpdateSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(_build_user_detail_response(request))
+
+
+class UserPreferenceView(APIView):
+    """账户偏好：GET/PATCH /auth/me/preferences/。"""
+
+    def get(self, request):
+        preferences = _get_or_create_preferences(request.user)
+        return Response(UserPreferenceSerializer(preferences).data)
+
+    def patch(self, request):
+        preferences = _get_or_create_preferences(request.user)
+        serializer = UserPreferenceSerializer(
+            preferences,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class ChangePasswordView(APIView):
+    """修改密码：POST /auth/change-password/。"""
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={'request': request, 'user': request.user},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        request.user.set_password(serializer.validated_data['new_password'])
+        request.user.save(update_fields=['password'])
+
+        revoked_count = 0
+        current_session_id = _get_current_session_id(request)
+        if serializer.validated_data.get('logout_other_sessions'):
+            other_sessions = UserSession.objects.filter(
+                user=request.user,
+                revoked_at__isnull=True,
+            )
+            if current_session_id is not None:
+                other_sessions = other_sessions.exclude(id=current_session_id)
+            for session in other_sessions:
+                _blacklist_refresh_by_jti(session.refresh_jti)
+                session.revoked_at = timezone.now()
+                session.save(update_fields=['revoked_at'])
+                revoked_count += 1
+
+        current_session = None
+        if current_session_id is not None:
+            current_session = UserSession.objects.filter(
+                id=current_session_id,
+                user=request.user,
+            ).first()
+
+        _write_account_audit_log(
+            user=request.user,
+            action=AccountAuditLog.ACTION_CHANGE_PASSWORD,
+            request=request,
+            session=current_session,
+            metadata={
+                'logout_other_sessions': serializer.validated_data.get(
+                    'logout_other_sessions', False
+                ),
+                'revoked_other_sessions': revoked_count,
+            },
+        )
+
+        return Response(
+            {
+                'detail': '密码修改成功',
+                'revoked_other_sessions': revoked_count,
+            }
+        )
+
+
+class UserSessionListView(APIView):
+    """会话列表：GET /auth/sessions/。"""
+
+    def get(self, request):
+        current_session_id = _get_current_session_id(request)
+        recent_threshold = timezone.now() - timedelta(days=30)
+        sessions = UserSession.objects.filter(user=request.user).filter(
+            Q(revoked_at__isnull=True) | Q(last_seen_at__gte=recent_threshold)
+        )
+        serializer = UserSessionSerializer(
+            sessions,
+            many=True,
+            context={'current_session_id': current_session_id},
+        )
+        return Response(serializer.data)
+
+
+class UserSessionDetailView(APIView):
+    """撤销单个会话：DELETE /auth/sessions/<id>/。"""
+
+    def delete(self, request, session_id):
+        session = get_object_or_404(
+            UserSession,
+            id=session_id,
+            user=request.user,
+        )
+
+        _blacklist_refresh_by_jti(session.refresh_jti)
+        if session.revoked_at is None:
+            session.revoked_at = timezone.now()
+            session.save(update_fields=['revoked_at'])
+
+        _write_account_audit_log(
+            user=request.user,
+            action=AccountAuditLog.ACTION_REVOKE_SESSION,
+            request=request,
+            session=session,
+            metadata={'session_id': session.id},
+        )
+
+        return Response({'detail': '会话已撤销', 'session_id': session.id})
+
+
+class CurrentUserAvatarView(APIView):
+    """头像上传/删除：POST/DELETE /auth/me/avatar/。"""
+
+    def post(self, request):
+        profile = _get_or_create_profile(request.user)
+        serializer = AvatarUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            save_user_avatar(profile, serializer.validated_data['avatar'])
+        except AvatarValidationError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                'detail': '头像上传成功',
+                'user': _build_user_detail_response(request),
+            }
+        )
+
+    def delete(self, request):
+        profile = _get_or_create_profile(request.user)
+        delete_user_avatar(profile)
+        return Response(
+            {
+                'detail': '头像已删除',
+                'user': _build_user_detail_response(request),
+            }
+        )
+
+
+class CurrentEmailSendCodeView(APIView):
+    """当前邮箱发送验证码：POST /auth/me/email/send-code/。"""
+
+    def post(self, request):
+        serializer = EmailSendCodeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        current_email = _normalize_email(request.user.email)
+        if not current_email:
+            return Response(
+                {'detail': '当前账户未绑定邮箱'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=request.user,
+                scene=EmailVerificationChallenge.Scene.VERIFY_CURRENT_EMAIL,
+                target_email=current_email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class CurrentEmailVerifyView(APIView):
+    """校验当前邮箱验证码：POST /auth/me/email/verify/。"""
+
+    def post(self, request):
+        serializer = EmailCodeVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        current_email = _normalize_email(request.user.email)
+        if not current_email:
+            return Response(
+                {'detail': '当前账户未绑定邮箱'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=request.user,
+            scene=EmailVerificationChallenge.Scene.VERIFY_CURRENT_EMAIL,
+            target_email=current_email,
+        )
+        if error_response is not None:
+            return error_response
+
+        invalid_code_response = _check_email_challenge_code(
+            challenge,
+            serializer.validated_data['code'],
+        )
+        if invalid_code_response is not None:
+            return invalid_code_response
+
+        with transaction.atomic():
+            challenge.mark_used(save=False)
+            challenge.save(update_fields=['used_at', 'updated_at'])
+            profile = _get_or_create_profile(request.user)
+            if not profile.email_verified:
+                profile.email_verified = True
+                profile.save(update_fields=['email_verified', 'updated_at'])
+
+        return Response(
+            {
+                'detail': '邮箱验证成功',
+                'user': _build_user_detail_response(request),
+            }
+        )
+
+
+class EmailChangeRequestView(APIView):
+    """新邮箱发送验证码：POST /auth/me/email/change/request/。"""
+
+    def post(self, request):
+        serializer = EmailChangeRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            new_email = _validate_new_email_for_change(
+                request.user,
+                serializer.validated_data['new_email'],
+            )
+        except ValueError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except LookupError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=request.user,
+                scene=EmailVerificationChallenge.Scene.CHANGE_EMAIL,
+                target_email=new_email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class EmailChangeConfirmView(APIView):
+    """确认新邮箱变更：POST /auth/me/email/change/confirm/。"""
+
+    def post(self, request):
+        serializer = EmailChangeConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            new_email = _validate_new_email_for_change(
+                request.user,
+                serializer.validated_data['new_email'],
+            )
+        except ValueError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except LookupError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=request.user,
+            scene=EmailVerificationChallenge.Scene.CHANGE_EMAIL,
+            target_email=new_email,
+        )
+        if error_response is not None:
+            return error_response
+
+        invalid_code_response = _check_email_challenge_code(
+            challenge,
+            serializer.validated_data['code'],
+        )
+        if invalid_code_response is not None:
+            return invalid_code_response
+
+        with transaction.atomic():
+            challenge.mark_used(save=False)
+            challenge.save(update_fields=['used_at', 'updated_at'])
+            request.user.email = new_email
+            request.user.save(update_fields=['email'])
+            profile = _get_or_create_profile(request.user)
+            if not profile.email_verified:
+                profile.email_verified = True
+                profile.save(update_fields=['email_verified', 'updated_at'])
+
+        return Response(
+            {
+                'detail': '邮箱修改成功',
+                'user': _build_user_detail_response(request),
+            }
+        )
 
 
 # ===== 案件视图 =====

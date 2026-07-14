@@ -1,13 +1,15 @@
+import type { UserSummary } from "./auth"
+
 export type CaseMode = 'complain' | 'respond'
 
 export interface Case {
   id: number
   title: string
   description: string
-  dispute_type: string
+  case_type: string
   case_mode?: CaseMode
   status: 'draft' | 'processing' | 'submitted' | 'closed' | 'cancelled'
-  owner: number
+  owner: UserSummary
   evidence_count: number
   timeline_count: number
   template_count: number
@@ -20,7 +22,7 @@ export interface Case {
 export interface CaseCreateDTO {
   title: string
   description: string
-  dispute_type: string
+  case_type: string
   case_mode?: CaseMode
 }
 

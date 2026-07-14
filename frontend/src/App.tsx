@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react"
+import { Suspense, lazy, useEffect } from "react"
 import { Routes, Route, Navigate, Outlet } from "react-router"
 import { useAuthStore } from "@/stores/auth-store"
 
@@ -19,6 +19,10 @@ const ExportPage = lazy(() => import("@/pages/ExportPage"))
 
 function AuthGuard() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const isInitialized = useAuthStore((s) => s.isInitialized)
+  if (!isInitialized) {
+    return <PageLoader />
+  }
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
   }
@@ -27,6 +31,10 @@ function AuthGuard() {
 
 function PublicOnly() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const isInitialized = useAuthStore((s) => s.isInitialized)
+  if (!isInitialized) {
+    return <PageLoader />
+  }
   if (isAuthenticated) {
     return <Navigate to="/cases" replace />
   }
@@ -42,6 +50,12 @@ function PageLoader() {
 }
 
 export default function App() {
+  const initialize = useAuthStore((s) => s.initialize)
+
+  useEffect(() => {
+    void initialize()
+  }, [initialize])
+
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>

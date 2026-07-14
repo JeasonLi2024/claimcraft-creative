@@ -25,6 +25,30 @@ except ImportError:
     pass
 
 
+def _get_env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _get_env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_env_list(name: str, default):
+    value = os.environ.get(name)
+    if not value:
+        return list(default)
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
 # ============================================================
 # LangSmith 观察配置（必须在 LangChain/LangGraph 初始化前设置）
 # ============================================================
@@ -84,6 +108,7 @@ INSTALLED_APPS = [
     # 第三方
     'rest_framework',
     'corsheaders',
+    'rest_framework_simplejwt.token_blacklist',
     # 业务应用
     'api',
 ]
@@ -210,6 +235,85 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': None,
 }
 SIMPLE_JWT = {
+    # 当前前端仍采用“前端持 token”模式，保留较稳定的 access 生命周期，
+    # 避免频繁刷新；refresh 维持 7 天并开启轮换与黑名单，给后续会话撤销铺路。
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
 }
+
+
+# ===== 头像上传配置 =====
+CLAIMCRAFT_AVATAR_MAX_UPLOAD_BYTES = _get_env_int(
+    'CLAIMCRAFT_AVATAR_MAX_UPLOAD_BYTES', 5 * 1024 * 1024
+)
+CLAIMCRAFT_AVATAR_ALLOWED_EXTENSIONS = _get_env_list(
+    'CLAIMCRAFT_AVATAR_ALLOWED_EXTENSIONS',
+    ['jpg', 'jpeg', 'png', 'webp'],
+)
+CLAIMCRAFT_AVATAR_DISPLAY_SIZE = _get_env_int(
+    'CLAIMCRAFT_AVATAR_DISPLAY_SIZE', 256
+)
+CLAIMCRAFT_AVATAR_DISPLAY_FORMAT = os.environ.get(
+    'CLAIMCRAFT_AVATAR_DISPLAY_FORMAT', 'WEBP'
+).strip().upper()
+CLAIMCRAFT_AVATAR_DISPLAY_QUALITY = _get_env_int(
+    'CLAIMCRAFT_AVATAR_DISPLAY_QUALITY', 90
+)
+
+
+# ===== 邮件发送配置 =====
+CLAIMCRAFT_MAIL_PROVIDER_ORDER = _get_env_list(
+    'CLAIMCRAFT_MAIL_PROVIDER_ORDER', ['agent_cli', 'smtp']
+)
+CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL = os.environ.get(
+    'CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL', ''
+).strip()
+CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME = os.environ.get(
+    'CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME', 'ClaimCraft'
+).strip()
+CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS = _get_env_int(
+    'CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS', 30
+)
+
+CLAIMCRAFT_AGENT_MAIL_COMMAND = os.environ.get(
+    'CLAIMCRAFT_AGENT_MAIL_COMMAND', 'agently-cli'
+).strip()
+CLAIMCRAFT_AGENT_MAIL_HOME = os.environ.get(
+    'CLAIMCRAFT_AGENT_MAIL_HOME', ''
+).strip()
+CLAIMCRAFT_AGENT_MAIL_ENABLED = _get_env_bool(
+    'CLAIMCRAFT_AGENT_MAIL_ENABLED', True
+)
+
+CLAIMCRAFT_SMTP_ENABLED = _get_env_bool('CLAIMCRAFT_SMTP_ENABLED', True)
+CLAIMCRAFT_SMTP_HOST = os.environ.get('CLAIMCRAFT_SMTP_HOST', '').strip()
+CLAIMCRAFT_SMTP_PORT = _get_env_int('CLAIMCRAFT_SMTP_PORT', 587)
+CLAIMCRAFT_SMTP_USERNAME = os.environ.get(
+    'CLAIMCRAFT_SMTP_USERNAME', ''
+).strip()
+CLAIMCRAFT_SMTP_PASSWORD = os.environ.get(
+    'CLAIMCRAFT_SMTP_PASSWORD', ''
+).strip()
+CLAIMCRAFT_SMTP_USE_TLS = _get_env_bool('CLAIMCRAFT_SMTP_USE_TLS', True)
+CLAIMCRAFT_SMTP_USE_SSL = _get_env_bool('CLAIMCRAFT_SMTP_USE_SSL', False)
+
+
+# ===== 邮箱验证码配置 =====
+CLAIMCRAFT_EMAIL_VERIFICATION_CODE_LENGTH = _get_env_int(
+    'CLAIMCRAFT_EMAIL_VERIFICATION_CODE_LENGTH', 6
+)
+CLAIMCRAFT_EMAIL_VERIFICATION_EXPIRES_MINUTES = _get_env_int(
+    'CLAIMCRAFT_EMAIL_VERIFICATION_EXPIRES_MINUTES', 10
+)
+CLAIMCRAFT_EMAIL_VERIFICATION_MAX_ATTEMPTS = _get_env_int(
+    'CLAIMCRAFT_EMAIL_VERIFICATION_MAX_ATTEMPTS', 5
+)
+CLAIMCRAFT_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = _get_env_int(
+    'CLAIMCRAFT_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS', 60
+)
+CLAIMCRAFT_EMAIL_VERIFICATION_MAX_SENDS_PER_HOUR = _get_env_int(
+    'CLAIMCRAFT_EMAIL_VERIFICATION_MAX_SENDS_PER_HOUR', 5
+)

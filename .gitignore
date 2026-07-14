@@ -108,6 +108,8 @@ coverage.xml
 .trae/cache/
 .trae/tmp/
 .trae/documents/
+.agently-home/
+.tmp-agent-mail/
 
 # ========================
 # PaddleOCR cache

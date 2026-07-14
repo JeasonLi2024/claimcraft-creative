@@ -2,7 +2,15 @@
 """Admin 注册。"""
 from django.contrib import admin
 
-from api.models import Case, Evidence, TimelineNode, ComplaintTemplate, RespondTemplate
+from api.models import (
+    Case,
+    ComplaintTemplate,
+    EmailVerificationChallenge,
+    Evidence,
+    RespondTemplate,
+    TimelineNode,
+    UserProfile,
+)
 
 
 @admin.register(Case)
@@ -40,3 +48,33 @@ class RespondTemplateAdmin(admin.ModelAdmin):
     list_display = ('id', 'case', 'template_type', 'title')
     list_filter = ('template_type',)
     search_fields = ('title', 'content')
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'user',
+        'display_name',
+        'email_verified',
+        'avatar_updated_at',
+        'updated_at',
+    )
+    list_filter = ('email_verified', 'locale', 'timezone')
+    search_fields = ('user__username', 'user__email', 'display_name')
+
+
+@admin.register(EmailVerificationChallenge)
+class EmailVerificationChallengeAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'user',
+        'scene',
+        'target_email',
+        'attempt_count',
+        'expires_at',
+        'used_at',
+        'created_at',
+    )
+    list_filter = ('scene', 'used_at', 'created_at')
+    search_fields = ('user__username', 'user__email', 'target_email')

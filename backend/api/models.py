@@ -13,9 +13,14 @@ ClaimCraft 维权材料工坊数据模型。
 """
 
 
+import os
+import uuid
+
+from django.contrib.auth.hashers import check_password, make_password
 from django.db import models
 from django_fsm import FSMField, transition
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 
 def evidence_image_path(instance, filename):
@@ -26,6 +31,23 @@ def evidence_image_path(instance, filename):
 def masked_image_path(instance, filename):
     """打码后图片上传路径：evidences/<case_id>/masked/<filename>。"""
     return f'evidences/{instance.case_id}/masked/{filename}'
+
+
+def _avatar_upload_path(instance, filename, variant):
+    user_id = instance.user_id or 'unassigned'
+    _, ext = os.path.splitext(filename or '')
+    ext = ext.lower() or '.bin'
+    return f'avatar/{user_id}/{variant}/{uuid.uuid4().hex}{ext}'
+
+
+def avatar_original_upload_path(instance, filename):
+    """头像原图上传路径：avatar/<user_id>/original/<filename>。"""
+    return _avatar_upload_path(instance, filename, 'original')
+
+
+def avatar_display_upload_path(instance, filename):
+    """头像展示图上传路径：avatar/<user_id>/display/<filename>。"""
+    return _avatar_upload_path(instance, filename, 'display')
 
 
 class Case(models.Model):
@@ -91,6 +113,264 @@ class Case(models.Model):
     @transition(field=status, source='submitted', target='closed')
     def to_closed(self, by=None):
         pass
+
+
+class UserProfile(models.Model):
+    """用户扩展资料。"""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='profile',
+        verbose_name='用户',
+    )
+    display_name = models.CharField('显示名称', max_length=150, blank=True, default='')
+    bio = models.TextField('个人简介', blank=True, default='')
+    locale = models.CharField('语言地区', max_length=20, default='zh-CN')
+    timezone = models.CharField('时区', max_length=64, default='Asia/Shanghai')
+    email_verified = models.BooleanField('邮箱已验证', default=False)
+    avatar_original = models.ImageField(
+        '头像原图',
+        upload_to=avatar_original_upload_path,
+        blank=True,
+        null=True,
+    )
+    avatar_display = models.ImageField(
+        '头像展示图',
+        upload_to=avatar_display_upload_path,
+        blank=True,
+        null=True,
+    )
+    avatar_updated_at = models.DateTimeField(
+        '头像更新时间',
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '用户资料'
+        verbose_name_plural = '用户资料'
+
+    def __str__(self):
+        return self.display_name or self.user.username
+
+
+class EmailVerificationChallenge(models.Model):
+    """邮箱验证码挑战。"""
+
+    class Scene(models.TextChoices):
+        VERIFY_CURRENT_EMAIL = 'verify_current_email', '验证当前邮箱'
+        CHANGE_EMAIL = 'change_email', '修改邮箱'
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='email_verification_challenges',
+        verbose_name='用户',
+    )
+    scene = models.CharField(
+        '验证场景',
+        max_length=32,
+        choices=Scene.choices,
+    )
+    target_email = models.EmailField('目标邮箱', max_length=254)
+    code_hash = models.CharField('验证码哈希', max_length=255)
+    expires_at = models.DateTimeField('过期时间')
+    used_at = models.DateTimeField('使用时间', null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField('尝试次数', default=0)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '邮箱验证码挑战'
+        verbose_name_plural = '邮箱验证码挑战'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'scene', 'created_at']),
+            models.Index(fields=['target_email', 'scene', 'created_at']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.user.username} {self.scene} {self.target_email}'
+
+    @property
+    def is_used(self):
+        return self.used_at is not None
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    def set_plain_code(self, code: str):
+        self.code_hash = make_password(code)
+
+    def check_plain_code(self, code: str) -> bool:
+        if not self.code_hash:
+            return False
+        return check_password(code, self.code_hash)
+
+    def mark_attempt(self, save: bool = True):
+        self.attempt_count += 1
+        if save:
+            self.save(update_fields=['attempt_count', 'updated_at'])
+
+    def mark_used(self, save: bool = True):
+        self.used_at = timezone.now()
+        if save:
+            self.save(update_fields=['used_at', 'updated_at'])
+
+
+class UserPreference(models.Model):
+    """用户偏好设置。"""
+
+    DEFAULT_TEMPLATE_CHOICES = [
+        ('platform', '平台客服版'),
+        ('regulatory', '监管投诉版'),
+        ('arbitration', '仲裁准备版'),
+    ]
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='preferences',
+        verbose_name='用户',
+    )
+    workflow_reminders = models.BooleanField('工作流提醒', default=True)
+    export_reminder = models.BooleanField('导出安全提醒', default=True)
+    compact_case_cards = models.BooleanField('紧凑案件卡片', default=False)
+    default_case_mode = models.CharField(
+        '默认案件模式',
+        max_length=20,
+        choices=Case.CASE_MODE_CHOICES,
+        default='complain',
+    )
+    default_template_type = models.CharField(
+        '默认模板类型',
+        max_length=20,
+        choices=DEFAULT_TEMPLATE_CHOICES,
+        default='platform',
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '用户偏好'
+        verbose_name_plural = '用户偏好'
+
+    def __str__(self):
+        return f'{self.user.username} 偏好'
+
+
+class UserSession(models.Model):
+    """用户设备会话。"""
+
+    DEVICE_TYPE_CHOICES = [
+        ('web', 'Web'),
+        ('mobile', 'Mobile'),
+        ('tablet', 'Tablet'),
+        ('desktop', 'Desktop'),
+        ('other', 'Other'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='sessions',
+        verbose_name='用户',
+    )
+    refresh_jti = models.CharField(
+        'Refresh Token JTI',
+        max_length=255,
+        unique=True,
+        db_index=True,
+    )
+    device_name = models.CharField('设备名称', max_length=255, blank=True, default='')
+    device_type = models.CharField(
+        '设备类型',
+        max_length=20,
+        choices=DEVICE_TYPE_CHOICES,
+        default='web',
+    )
+    ip_address = models.GenericIPAddressField(
+        'IP 地址',
+        null=True,
+        blank=True,
+        unpack_ipv4=True,
+    )
+    user_agent = models.TextField('User Agent', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    last_seen_at = models.DateTimeField('最近活跃时间', default=timezone.now)
+    expires_at = models.DateTimeField('过期时间')
+    revoked_at = models.DateTimeField('撤销时间', null=True, blank=True)
+
+    class Meta:
+        verbose_name = '用户会话'
+        verbose_name_plural = '用户会话'
+        ordering = ['-last_seen_at', '-created_at']
+        indexes = [
+            models.Index(fields=['user', 'revoked_at']),
+            models.Index(fields=['user', 'expires_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.user.username} {self.device_name or self.device_type}'
+
+
+class AccountAuditLog(models.Model):
+    """账户相关最小审计日志。"""
+
+    ACTION_LOGIN = 'login'
+    ACTION_LOGOUT = 'logout'
+    ACTION_LOGOUT_ALL = 'logout_all'
+    ACTION_CHANGE_PASSWORD = 'change_password'
+    ACTION_REVOKE_SESSION = 'revoke_session'
+    ACTION_CHOICES = [
+        (ACTION_LOGIN, '登录'),
+        (ACTION_LOGOUT, '退出当前设备'),
+        (ACTION_LOGOUT_ALL, '退出全部设备'),
+        (ACTION_CHANGE_PASSWORD, '修改密码'),
+        (ACTION_REVOKE_SESSION, '撤销会话'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='account_audit_logs',
+        verbose_name='用户',
+    )
+    session = models.ForeignKey(
+        UserSession,
+        on_delete=models.SET_NULL,
+        related_name='audit_logs',
+        null=True,
+        blank=True,
+        verbose_name='关联会话',
+    )
+    action = models.CharField('动作', max_length=32, choices=ACTION_CHOICES)
+    ip_address = models.GenericIPAddressField(
+        'IP 地址',
+        null=True,
+        blank=True,
+        unpack_ipv4=True,
+    )
+    user_agent = models.TextField('User Agent', blank=True, default='')
+    metadata = models.JSONField('附加信息', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '账户审计日志'
+        verbose_name_plural = '账户审计日志'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'action']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.user.username} {self.action}'
 
 
 class Evidence(models.Model):

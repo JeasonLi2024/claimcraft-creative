@@ -22,9 +22,9 @@ interface CaseCardProps {
 }
 
 const typeAccent: Record<string, string> = {
-  online_shopping: "from-[#dce9e1] to-[#eef3ef] text-[#315a48]",
-  service_breach: "from-[#ebe5d8] to-[#f5f1e8] text-[#705d39]",
-  second_hand: "from-[#e1e5ea] to-[#f0f2f4] text-[#485665]",
+  shopping: "from-[#dce9e1] to-[#eef3ef] text-[#315a48]",
+  service: "from-[#ebe5d8] to-[#f5f1e8] text-[#705d39]",
+  secondhand: "from-[#e1e5ea] to-[#f0f2f4] text-[#485665]",
   other: "from-[#e8e5ea] to-[#f3f1f4] text-[#62556a]",
 }
 
@@ -40,12 +40,12 @@ export default function CaseCard({ caseData, onDelete, className }: CaseCardProp
 
   return (
     <article className={cn("group relative overflow-hidden rounded-2xl border border-[#d9ddd5] bg-white transition-all duration-300 hover:-translate-y-1 hover:border-[#b8c3ba] hover:shadow-[0_22px_55px_rgba(31,45,38,.10)]", className)}>
-      <div className={`h-1.5 bg-gradient-to-r ${typeAccent[caseData.dispute_type] || typeAccent.other}`} />
+      <div className={`h-1.5 bg-gradient-to-r ${typeAccent[caseData.case_type] || typeAccent.other}`} />
       <Link to={`/cases/${caseData.id}/workspace`} className="block p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#3f6b57] sm:p-6">
         <div className="flex items-start justify-between gap-4 pr-8">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className={`rounded-lg bg-gradient-to-r px-2.5 py-1 text-[11px] font-semibold ${typeAccent[caseData.dispute_type] || typeAccent.other}`}>{disputeLabel(caseData.dispute_type)}</span>
+              <span className={`rounded-lg bg-gradient-to-r px-2.5 py-1 text-[11px] font-semibold ${typeAccent[caseData.case_type] || typeAccent.other}`}>{disputeLabel(caseData.case_type)}</span>
               <StatusTag status={caseData.status} />
               <span className="rounded-lg bg-[#f1f2ee] px-2 py-1 text-[10px] font-medium text-[#69706b]">{caseData.case_mode === "respond" ? "商家反证" : "维权投诉"}</span>
             </div>
