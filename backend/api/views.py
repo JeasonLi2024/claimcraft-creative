@@ -2589,16 +2589,24 @@ class CaseWorkflowStreamView(View):
     async def _authenticate(self, request):
         """手动 JWT 认证，返回 User 或 None。
 
-        SSE 端点用 Django 原生 View，需手动解析 Authorization header。
+        SSE 端点用 Django 原生 View，需手动解析 token。
+        支持两种传递方式：
+          1. Authorization: Bearer <token> header（标准方式）
+          2. ?token=<token> query parameter（EventSource 不支持自定义 header 时的回退）
         """
         from asgiref.sync import sync_to_async
         from rest_framework_simplejwt.tokens import AccessToken
         from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 
+        # 优先从 Authorization header 读取，回退到 query parameter
         auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+        else:
+            token = request.GET.get('token', '')
+
+        if not token:
             return None
-        token = auth_header[7:]
         try:
             access_token = AccessToken(token)
             user_id = access_token['user_id']

@@ -512,18 +512,24 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       workflowSSEClient?.close()
 
       const streamUrl = api.workflowApi.streamUrl(caseId, thread_id)
-      workflowSSEClient = new WorkflowSSEClient(streamUrl, {
-        onEvent: (event) => get().applySSEEvent(event),
-        onConnect: () => set({ connectionState: "connected", reconnectAttempt: 0 }),
-        onReconnect: (attempt) =>
-          set({ connectionState: "reconnecting", reconnectAttempt: attempt }),
-        onFatalError: (message) =>
-          set((s) => ({
-            connectionState: "error",
-            isRunning: false,
-            errors: [...s.errors, { message, recoverable: false }],
-          })),
-      })
+      // JWT token 通过 query parameter 传递（浏览器 EventSource 不支持自定义 header）
+      const token = localStorage.getItem("access_token") || undefined
+      workflowSSEClient = new WorkflowSSEClient(
+        streamUrl,
+        {
+          onEvent: (event) => get().applySSEEvent(event),
+          onConnect: () => set({ connectionState: "connected", reconnectAttempt: 0 }),
+          onReconnect: (attempt) =>
+            set({ connectionState: "reconnecting", reconnectAttempt: attempt }),
+          onFatalError: (message) =>
+            set((s) => ({
+              connectionState: "error",
+              isRunning: false,
+              errors: [...s.errors, { message, recoverable: false }],
+            })),
+        },
+        token,
+      )
       workflowSSEClient.connect()
     } catch (e: any) {
       set({

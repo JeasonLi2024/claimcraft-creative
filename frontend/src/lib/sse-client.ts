@@ -43,13 +43,20 @@ export class WorkflowSSEClient {
   constructor(
     private streamUrl: string,
     private handlers: SSEHandlers,
+    /** JWT access token，通过 query parameter 传递（浏览器 EventSource 不支持自定义 header） */
+    private token?: string,
   ) {}
 
   /** 建立 SSE 连接，注册所有事件类型监听器 */
   connect(): void {
     this.closed = false
     const separator = this.streamUrl.includes("?") ? "&" : "?"
-    const url = `${this.streamUrl}${separator}last_event_id=${this.lastEventId}`
+    const params = new URLSearchParams()
+    params.set("last_event_id", String(this.lastEventId))
+    if (this.token) {
+      params.set("token", this.token)
+    }
+    const url = `${this.streamUrl}${separator}${params.toString()}`
     this.eventSource = new EventSource(url, { withCredentials: true })
 
     EVENT_TYPES.forEach((type) => {
