@@ -48,7 +48,11 @@ interface CaseState {
   fetchEvidences: (caseId: number) => Promise<void>
   addEvidence: (caseId: number, data: Partial<Evidence>) => Promise<Evidence>
   removeEvidence: (id: number) => Promise<void>
-  uploadEvidence: (caseId: number, file: File) => Promise<Evidence>
+  uploadEvidence: (
+    caseId: number,
+    file: File,
+    options?: { isPhysicalEvidence?: boolean; physicalNote?: string }
+  ) => Promise<Evidence>,
   fetchExtractedFields: (evidenceId: number) => Promise<ExtractedField[]>
   updateExtractedField: (id: number, data: { field_value: string }) => Promise<ExtractedField>
 
@@ -239,10 +243,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
     }
   },
 
-  uploadEvidence: async (caseId, file) => {
+  uploadEvidence: async (caseId, file, options) => {
     set({ error: null })
     try {
-      const ev = await api.evidenceApi.upload(caseId, file)
+      const ev = await api.evidenceApi.upload(caseId, file, options)
       set((s) => ({ evidences: [...s.evidences, ev] }))
       return ev
     } catch (e: any) {

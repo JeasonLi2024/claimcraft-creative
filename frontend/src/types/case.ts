@@ -41,6 +41,9 @@ export interface Evidence {
   // v9 新增：视觉预分类+摘要字段
   evidence_category: string  // chat_screenshot/product_order/logistics_tracking/payment_record/invoice/other
   ocr_summary: string        // 100-200字摘要，由 Captioner 生成
+  // v10 新增：纯物证图片支持
+  is_physical_evidence: boolean  // 是否为纯物证图片（无文字内容，跳过 OCR）
+  physical_note: string          // 用户提供的物证说明
   created_at: string
 }
 

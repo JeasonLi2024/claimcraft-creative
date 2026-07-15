@@ -95,6 +95,31 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     # 3. 多证据并发 OCR + 同款模型纠错（策略内部自管）
     # 注：ocr_image_with_strategy 已改为 async，直接 await 即可
+
+    # 3.0 过滤纯物证图片（跳过 OCR，但仍出现在 ocr_results 中）
+    physical_evidences = [e for e in evidences if e.is_physical_evidence]
+    ocr_evidences = [e for e in evidences if not e.is_physical_evidence]
+
+    if physical_evidences:
+        logger.info(f"跳过 {len(physical_evidences)} 条纯物证图片的 OCR")
+
+    # 为物证图片构造跳过结果（保留在 ocr_results 中，让下游节点感知到这些证据存在）
+    skip_results = [
+        {
+            "evidence_id": e.id,
+            "evidence_code": e.code,
+            "image_path": e.image.path if e.image else "",
+            "ocr_raw_text": "",
+            "ocr_corrected_text": "",
+            "ocr_strategy_used": "skipped_physical",
+            "ocr_status": "done",
+            "evidence_category": preclassify_map.get(e.id, ""),
+            "is_physical_evidence": True,
+            "errors": [],
+        }
+        for e in physical_evidences
+    ]
+
     async def _process_one(evidence):
         """处理单条证据的 OCR + 同款模型纠错 + 持久化。"""
         image_path = evidence.image.path
@@ -164,11 +189,12 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
             "ocr_strategy_used": strategy_used,
             "ocr_status": "done",
             "evidence_category": evidence_category,
+            "is_physical_evidence": False,
             "errors": [],
         }
 
-    results = await asyncio.gather(*[_process_one(e) for e in evidences])
-    ocr_results = [r for r in results if isinstance(r, dict)]
+    results = await asyncio.gather(*[_process_one(e) for e in ocr_evidences])
+    ocr_results = [r for r in results if isinstance(r, dict)] + skip_results
 
     return {
         "evidence_ocr_results": ocr_results,

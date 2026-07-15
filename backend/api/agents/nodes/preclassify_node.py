@@ -64,7 +64,7 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
     5. 累积结果到 evidence_preclassify_results
     """
     from api.models import Case, Evidence
-    from api.agents.prompts.templates import PRECLASSIFY_PROMPT
+    from api.agents.prompts.templates import PRECLASSIFY_PROMPT, build_physical_note_section
     from api.services.ocr_strategies import _encode_and_compress_image
     from api.services.ocr_config import get_llm_ocr_max_image_mb
     from langchain_core.messages import HumanMessage
@@ -161,8 +161,13 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
             return _fallback_result(evidence, "图片读取失败")
 
         # 4.2 构造多模态消息 + 调用 captioner LLM
+        # 物证图片：注入 physical_note_section 引导 LLM 输出场景描述
+        physical_note_section = build_physical_note_section(
+            evidence.is_physical_evidence, evidence.physical_note or ""
+        )
+        prompt_text = PRECLASSIFY_PROMPT.format(physical_note_section=physical_note_section)
         message = HumanMessage(content=[
-            {"type": "text", "text": PRECLASSIFY_PROMPT},
+            {"type": "text", "text": prompt_text},
             {"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{image_data}"}},
         ])
         try:

@@ -109,6 +109,25 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
             "errors": ["[抽取] 无 OCR 结果"],
         }
 
+    # 过滤纯物证图片（无文字内容，跳过字段抽取）
+    physical_results = [
+        {
+            "evidence_id": o["evidence_id"],
+            "evidence_code": o["evidence_code"],
+            "fields": [],
+            "needs_human_review": False,
+            "source_hash": "",
+            "cache_hit": False,
+            "skipped_physical": True,
+        }
+        for o in ocr_results
+        if o.get("is_physical_evidence")
+    ]
+    ocr_results = [o for o in ocr_results if not o.get("is_physical_evidence")]
+
+    if physical_results:
+        logger.info(f"跳过 {len(physical_results)} 条纯物证图片的字段抽取")
+
     # 构建 evidence_id → category 映射
     category_map = {
         c["evidence_id"]: c.get("evidence_category", "other")
@@ -234,7 +253,7 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
         }
 
     results = await asyncio.gather(*[_process_one(ocr) for ocr in ocr_results])
-    extract_results = [r for r in results if isinstance(r, dict)]
+    extract_results = [r for r in results if isinstance(r, dict)] + physical_results
 
     return {
         "evidence_extract_results": extract_results,

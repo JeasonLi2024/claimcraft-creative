@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
 import type { ExtractedField } from "@/types/case"
 import {
   Upload, Plus, ChevronDown, ChevronRight, Trash2, ImagePlus,
-  X, Loader2, FileText, Eye, Clock,
+  X, Loader2, FileText, Eye, Clock, Package,
 } from "lucide-react"
 
 // v9: 证据类别 → 中文标签映射（与后端 classify_node 保持一致）
@@ -68,6 +68,11 @@ export default function EvidencePage() {
   const [dragOver, setDragOver] = useState(false)
   const [expandedOcr, setExpandedOcr] = useState<Set<number>>(new Set())
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  // v10: 上传弹窗（物证图片支持）
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [isPhysicalEvidence, setIsPhysicalEvidence] = useState(false)
+  const [physicalNote, setPhysicalNote] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -91,17 +96,39 @@ export default function EvidencePage() {
     })
   }
 
-  async function handleFileUpload(files: FileList | null) {
+  // v10: 拖拽/选择后打开上传弹窗，让用户标记是否为物证图片并填写说明
+  function handleFileSelect(files: FileList | null) {
     if (!files || !caseId) return
+    const imgs = Array.from(files).filter((f) => f.type.startsWith("image/"))
+    if (imgs.length === 0) return
+    setPendingFiles(imgs)
+    setUploadDialogOpen(true)
+  }
+
+  async function handleConfirmUpload() {
+    if (!caseId || pendingFiles.length === 0) return
     setUploading(true)
     try {
-      for (const file of Array.from(files)) {
-        if (file.type.startsWith("image/")) {
-          await uploadEvidence(Number(caseId), file)
-        }
+      const options = isPhysicalEvidence
+        ? { isPhysicalEvidence: true, physicalNote: physicalNote.trim() }
+        : undefined
+      for (const file of pendingFiles) {
+        await uploadEvidence(Number(caseId), file, options)
       }
+      // 关闭弹窗并重置
+      setUploadDialogOpen(false)
+      setPendingFiles([])
+      setIsPhysicalEvidence(false)
+      setPhysicalNote("")
     } catch {}
     finally { setUploading(false) }
+  }
+
+  function handleCancelUpload() {
+    setUploadDialogOpen(false)
+    setPendingFiles([])
+    setIsPhysicalEvidence(false)
+    setPhysicalNote("")
   }
 
   async function handleAddSample() {
@@ -150,7 +177,7 @@ export default function EvidencePage() {
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileUpload(e.dataTransfer.files) }}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileSelect(e.dataTransfer.files) }}
         onClick={() => fileInputRef.current?.click()}
         className={cn(
           "flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 transition-all",
@@ -174,7 +201,7 @@ export default function EvidencePage() {
           accept="image/*"
           multiple
           className="hidden"
-          onChange={(e) => handleFileUpload(e.target.files)}
+          onChange={(e) => handleFileSelect(e.target.files)}
         />
       </div>
 
@@ -226,6 +253,9 @@ export default function EvidencePage() {
                       variant="primary"
                     />
                   )}
+                  {ev.is_physical_evidence && (
+                    <PillTag label="物证" variant="warning" />
+                  )}
                   <PillTag label={ocrStatusLabel(ev.ocr_status)} variant={ocrStatusVariant(ev.ocr_status)} />
                 </div>
                 <button
@@ -255,6 +285,19 @@ export default function EvidencePage() {
                 </p>
               )}
 
+              {/* v10: 物证说明（用户填写） */}
+              {ev.is_physical_evidence && ev.physical_note && (
+                <div className="mt-2 rounded-xl bg-amber-50 p-3">
+                  <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-amber-700">
+                    <Package className="h-3.5 w-3.5" />
+                    物证说明
+                  </div>
+                  <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-wrap">
+                    {ev.physical_note}
+                  </p>
+                </div>
+              )}
+
               {/* Source time */}
               {ev.source_time && (
                 <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
@@ -271,7 +314,7 @@ export default function EvidencePage() {
                     className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
                   >
                     {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                    {"OCR 识别结果"} ({fields.length} {"个字段"})
+                    {ev.is_physical_evidence ? "图片说明" : "OCR 识别结果"} ({fields.length} 个字段)
                   </button>
 
                   {isExpanded && (
@@ -345,6 +388,92 @@ export default function EvidencePage() {
 
       {/* Workflow Stream Panel */}
       {caseId && <WorkflowStreamPanel caseId={Number(caseId)} />}
+
+      {/* v10: 上传弹窗 - 物证图片支持 */}
+      {uploadDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-foreground">上传证据图片</h3>
+              <button
+                onClick={handleCancelUpload}
+                className="rounded-lg p-1 text-muted-foreground hover:bg-accent"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* 文件预览 */}
+            <div className="mb-4 max-h-40 overflow-y-auto rounded-xl bg-muted/30 p-3">
+              {pendingFiles.map((f, i) => (
+                <div key={i} className="flex items-center gap-2 py-1 text-sm text-foreground">
+                  <ImagePlus className="h-4 w-4 text-muted-foreground" />
+                  <span className="flex-1 truncate">{f.name}</span>
+                  <span className="text-xs text-muted-foreground">{(f.size / 1024).toFixed(0)} KB</span>
+                </div>
+              ))}
+            </div>
+
+            {/* 物证勾选 */}
+            <label className="flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-sm">
+              <input
+                type="checkbox"
+                checked={isPhysicalEvidence}
+                onChange={(e) => setIsPhysicalEvidence(e.target.checked)}
+                className="mt-0.5 rounded"
+              />
+              <div>
+                <div className="font-medium text-foreground flex items-center gap-1">
+                  <Package className="h-4 w-4 text-amber-500" />
+                  标记为纯物证图片（无文字内容，跳过 OCR）
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  适用于商品损坏照片、现场环境照、实物对比照等无文字但作为重要证据的图片
+                </p>
+              </div>
+            </label>
+
+            {/* 物证说明 */}
+            {isPhysicalEvidence && (
+              <div className="mt-3">
+                <label className="mb-1.5 block text-sm font-medium text-foreground">
+                  物证说明
+                </label>
+                <textarea
+                  value={physicalNote}
+                  onChange={(e) => setPhysicalNote(e.target.value)}
+                  placeholder="建议描述损坏程度、现场环境、物证特征等，例如：商品收到时屏幕已碎裂，包装完好无损"
+                  rows={3}
+                  maxLength={500}
+                  className="w-full rounded-xl border border-input bg-background px-4 py-2.5 text-sm focus:border-primary focus:outline-none focus:ring-3 focus:ring-primary/20 resize-none"
+                />
+                <p className="mt-1 text-right text-xs text-muted-foreground">
+                  {physicalNote.length}/500
+                </p>
+              </div>
+            )}
+
+            {/* 操作按钮 */}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={handleCancelUpload}
+                disabled={uploading}
+                className="rounded-xl border border-input px-4 py-2 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmUpload}
+                disabled={uploading || (isPhysicalEvidence && !physicalNote.trim())}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {uploading ? "上传中..." : "上传"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Lightbox */}
       {lightboxSrc && (

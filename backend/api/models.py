@@ -440,6 +440,14 @@ class Evidence(models.Model):
         'OCR摘要', blank=True, default='',
         help_text='视觉预分类生成的100-200字摘要'
     )
+    is_physical_evidence = models.BooleanField(
+        '纯物证图片', default=False,
+        help_text='标记为纯物证图片（无文字内容），将跳过 OCR 节点'
+    )
+    physical_note = models.CharField(
+        '物证说明', max_length=500, blank=True, default='',
+        help_text='用户提供的物证说明（损坏程度/现场环境/物证特征等）'
+    )
 
     class Meta:
         verbose_name = '证据'

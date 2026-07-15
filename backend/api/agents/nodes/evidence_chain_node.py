@@ -310,6 +310,7 @@ def _build_evidences_json(
             "ocr_summary": ocr_summary,
             "category": category_map.get(eid, "other"),
             "fields": fields_map.get(eid, []),
+            "is_physical_evidence": o.get("is_physical_evidence", False),
         })
 
     return json.dumps(evidences, ensure_ascii=False, indent=2)

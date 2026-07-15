@@ -1580,6 +1580,9 @@ class EvidenceUploadView(APIView):
         description = data.get('description', f'{image_file.name} OCR 上传')
         source_time = data.get('source_time') or timezone.now()
         has_sensitive_info = data.get('has_sensitive_info', False)
+        # 纯物证图片标记（multipart 表单值为字符串）
+        is_physical_evidence = str(data.get('is_physical_evidence', 'false')).lower() == 'true'
+        physical_note = (data.get('physical_note') or '').strip()[:500]
 
         evidence = Evidence.objects.create(
             case=case,
@@ -1591,24 +1594,32 @@ class EvidenceUploadView(APIView):
             order=max_order + 1,
             image=image_file,
             ocr_status='pending',
+            is_physical_evidence=is_physical_evidence,
+            physical_note=physical_note,
         )
 
-        # OCR 识别
-        try:
-            text = ocr_service.ocr_image(evidence.image.path)
-            evidence.extracted_text = text
+        # 纯物证图片：跳过同步 OCR 与字段抽取
+        if is_physical_evidence:
             evidence.ocr_status = 'done'
-            evidence.save()
-        except Exception:
-            evidence.ocr_status = 'failed'
-            evidence.save()
-            text = ''
+            evidence.extracted_text = ''
+            evidence.save(update_fields=['ocr_status', 'extracted_text'])
+        else:
+            # OCR 识别
+            try:
+                text = ocr_service.ocr_image(evidence.image.path)
+                evidence.extracted_text = text
+                evidence.ocr_status = 'done'
+                evidence.save()
+            except Exception:
+                evidence.ocr_status = 'failed'
+                evidence.save()
+                text = ''
 
-        # 字段抽取（失败也不影响返回）
-        try:
-            extraction_service.extract_fields(evidence)
-        except Exception:
-            pass
+            # 字段抽取（失败也不影响返回）
+            try:
+                extraction_service.extract_fields(evidence)
+            except Exception:
+                pass
 
         serializer = EvidenceSerializer(evidence, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)

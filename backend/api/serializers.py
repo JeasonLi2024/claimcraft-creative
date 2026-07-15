@@ -420,8 +420,9 @@ class EvidenceSerializer(serializers.ModelSerializer):
             'source_time', 'has_sensitive_info', 'order',
             'image', 'extracted_text', 'ocr_status',
             'masked_image', 'mask_status',
+            'is_physical_evidence', 'physical_note',
         ]
-        read_only_fields = ['mask_status']
+        read_only_fields = ['mask_status', 'is_physical_evidence']
 
     def get_image(self, obj):
         if not obj.image:

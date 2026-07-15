@@ -115,9 +115,19 @@ export const evidenceApi = {
     apiClient.post<Evidence>(`/cases/${caseId}/evidences/`, data).then((r) => r.data),
   delete: (id: number) =>
     apiClient.delete(`/evidences/${id}/`).then((r) => r.data),
-  upload: (caseId: number, file: File) => {
+  upload: (
+    caseId: number,
+    file: File,
+    options?: { isPhysicalEvidence?: boolean; physicalNote?: string }
+  ) => {
     const formData = new FormData()
     formData.append("image", file)
+    if (options?.isPhysicalEvidence) {
+      formData.append("is_physical_evidence", "true")
+    }
+    if (options?.physicalNote) {
+      formData.append("physical_note", options.physicalNote)
+    }
     return apiClient.post<Evidence>(`/cases/${caseId}/evidences/upload/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }).then((r) => r.data)
