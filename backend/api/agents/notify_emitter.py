@@ -93,15 +93,17 @@ class NotifyEmitter:
                     cur.execute(f"LISTEN {channel}")
                 while not stop_event.is_set():
                     try:
-                        # 使用上下文管理器创建 Notifies 迭代器，1 秒超时
-                        notifies = conn.notifies()
-                        notifies.settimeout(1.0)
-                        for notify in notifies:
+                        # psycopg3: conn.notifies() 返回生成器，用 timeout 参数设置超时
+                        # 超时后生成器会停止迭代，需重新创建
+                        # 使用 1 秒超时，定期检查 stop_event 以支持优雅取消
+                        gen = conn.notifiers(timeout=1.0)
+                        for notify in gen:
                             if stop_event.is_set():
                                 break
                             callback(notify.pid, notify.channel, notify.payload)
-                    except (StopIteration, TimeoutError):
-                        # 超时后重新进入循环检查 stop_event
+                        # 生成器耗尽（超时）后重新进入循环检查 stop_event
+                        continue
+                    except StopIteration:
                         continue
                     except Exception as e:
                         logger.warning(f"LISTEN 订阅异常 (thread={thread_id}): {e}")

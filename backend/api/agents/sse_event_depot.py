@@ -102,20 +102,26 @@ class EventDepot:
         def _persist_sync() -> int:
             with self.pool.connection() as conn:
                 with conn.cursor() as cur:
-                    # 行锁分配 event_id（同一 thread_id 串行化）
+                    # 使用事务级 advisory lock 串行化同一 thread_id 的事件分配
+                    # pg_advisory_xact_lock 在事务提交/回滚时自动释放，比 FOR UPDATE 灵活
+                    # 且不依赖聚合函数，规避 "FOR UPDATE is not allowed with aggregate functions"
+                    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (thread_id,))
+                    # 在锁保护下查询当前最大 event_id 并分配新值
                     cur.execute(
                         "SELECT COALESCE(MAX(event_id),0)+1 FROM sse_event_depot "
-                        "WHERE thread_id=%s FOR UPDATE",
+                        "WHERE thread_id=%s",
                         (thread_id,)
                     )
                     event_id = cur.fetchone()[0]
                     cur.execute(
                         "INSERT INTO sse_event_depot "
                         "(thread_id, event_id, event_type, payload) "
-                        "VALUES (%s, %s, %s, %s)",
+                        "VALUES (%s, %s, %s, %s) "
+                        "RETURNING event_id",
                         (thread_id, event_id, event_type, Json(payload))
                     )
-                conn.commit()  # 提交事务，释放行锁
+                    event_id = cur.fetchone()[0]
+                conn.commit()  # 提交事务，释放 advisory lock
                 return event_id
 
         return await sync_to_async(_persist_sync)()
