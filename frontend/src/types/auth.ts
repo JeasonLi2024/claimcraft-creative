@@ -33,7 +33,7 @@ export interface UserProfileUpdateDTO {
 }
 
 export interface LoginDTO {
-  username: string
+  account: string
   password: string
 }
 
@@ -84,7 +84,17 @@ export interface AvatarMutationResponse {
   user: User
 }
 
-export type EmailVerificationScene = "verify_current_email" | "change_email"
+export type EmailVerificationScene =
+  | "register_email"
+  | "login_email"
+  | "verify_current_email"
+  | "change_email"
+  | "reset_password"
+  | "change_password_email"
+
+export interface EmailCodeSendDTO {
+  email: string
+}
 
 export interface EmailCodeSendResponse {
   detail: string
@@ -96,6 +106,36 @@ export interface EmailCodeSendResponse {
 
 export interface EmailCodeVerifyDTO {
   code: string
+}
+
+export interface RegisterEmailCodeVerifyDTO extends EmailCodeVerifyDTO {
+  email: string
+}
+
+export interface EmailCodeVerifyResponse {
+  detail: string
+  scene: EmailVerificationScene
+  target_email: string
+  verified_at?: string | null
+}
+
+export interface LoginEmailCodeDTO extends EmailCodeVerifyDTO {
+  email: string
+}
+
+export interface PasswordResetVerifyDTO extends EmailCodeVerifyDTO {
+  email: string
+}
+
+export interface PasswordResetConfirmDTO {
+  email: string
+  new_password: string
+  new_password_confirm: string
+}
+
+export interface PasswordResetConfirmResponse {
+  detail: string
+  revoked_sessions: number
 }
 
 export interface EmailChangeRequestDTO {

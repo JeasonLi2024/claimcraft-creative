@@ -2,12 +2,12 @@
 """
 Django settings for claimcraft project.
 
-为 Demo 开箱即用，默认使用 SQLite3。
-如需切换到 MySQL，请将下方 DATABASES 中的 sqlite3 配置注释掉，
-并启用 MySQL 配置块；同时确保 MySQL 服务可用且已创建 claimcraft 数据库。
+默认使用 MySQL。
+为便于本地测试，在 `manage.py test` 或显式环境变量启用时支持切换到 SQLite。
 """
 
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -147,28 +147,48 @@ ASGI_APPLICATION = 'claimcraft.asgi.application'
 
 
 # Database
-# 默认 MySQL，所有参数支持环境变量（Docker 部署时由 docker-compose 注入）
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'claimcraft'),
-        'USER': os.environ.get('DB_USER', 'root'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'Xx041123@#'),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-        },
-    }
-}
+#
+# 默认仍使用 MySQL，避免影响开发/生产环境。
+# 仅在以下场景切到 SQLite：
+# 1. 显式设置 CLAIMCRAFT_USE_SQLITE=true
+# 2. 运行 `python manage.py test ...` 且未显式要求 MySQL
 
-# --- SQLite3 配置（如需回退，将上方 MySQL 块替换为下方 sqlite3 块即可） ---
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
+
+def _is_manage_py_command(command: str) -> bool:
+    return len(sys.argv) > 1 and sys.argv[1] == command
+
+
+def _should_use_sqlite() -> bool:
+    explicit_choice = os.environ.get('CLAIMCRAFT_USE_SQLITE')
+    if explicit_choice is not None:
+        return _get_env_bool('CLAIMCRAFT_USE_SQLITE', False)
+    return _is_manage_py_command('test')
+
+
+if _should_use_sqlite():
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': os.environ.get(
+                'CLAIMCRAFT_SQLITE_NAME',
+                str(BASE_DIR / 'db.sqlite3'),
+            ),
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('DB_NAME', 'claimcraft'),
+            'USER': os.environ.get('DB_USER', 'root'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'Xx041123@#'),
+            'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('DB_PORT', '3306'),
+            'OPTIONS': {
+                'charset': 'utf8mb4',
+            },
+        }
+    }
 
 
 # Password validation

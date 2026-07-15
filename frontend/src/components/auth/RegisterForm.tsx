@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router"
 import { motion } from "framer-motion"
 import {
   ArrowLeft,
   ArrowRight,
+  Check,
   Eye,
   EyeOff,
   Loader2,
@@ -12,20 +13,109 @@ import {
   ShieldCheck,
   UserRound,
 } from "lucide-react"
+import { authApi } from "@/lib/api"
 import { useAuthStore } from "@/stores/auth-store"
 import { authFocusRing } from "@/components/auth/AuthShell"
+import { AUTH_CODE_LENGTH, buildCodeDeliveryHint, getAuthErrorMessage, isValidEmail } from "@/components/auth/auth-form-utils"
+import type { EmailCodeSendResponse } from "@/types"
 
 export default function RegisterForm() {
   const [username, setUsername] = useState("")
   const [email, setEmail] = useState("")
+  const [verificationCode, setVerificationCode] = useState("")
+  const [verificationMeta, setVerificationMeta] = useState<EmailCodeSendResponse | null>(null)
+  const [verificationMessage, setVerificationMessage] = useState("")
+  const [verificationError, setVerificationError] = useState("")
+  const [verificationSending, setVerificationSending] = useState(false)
+  const [verificationChecking, setVerificationChecking] = useState(false)
+  const [emailVerified, setEmailVerified] = useState(false)
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const lastAutoVerifiedCodeRef = useRef("")
   const navigate = useNavigate()
   const register = useAuthStore((s) => s.register)
+
+  const showVerificationField = verificationMeta !== null
+  const confirmPasswordMatched = !!confirmPassword && password === confirmPassword
+  const confirmPasswordMismatch = !!confirmPassword && password !== confirmPassword
+
+  function resetEmailVerificationState(nextEmail: string) {
+    setEmail(nextEmail)
+    setVerificationCode("")
+    setVerificationMeta(null)
+    setVerificationMessage("")
+    setVerificationError("")
+    setVerificationSending(false)
+    setVerificationChecking(false)
+    setEmailVerified(false)
+    lastAutoVerifiedCodeRef.current = ""
+  }
+
+  async function handleSendVerificationCode() {
+    const trimmedEmail = email.trim()
+    setError("")
+    setVerificationError("")
+    setVerificationMessage("")
+
+    if (!isValidEmail(trimmedEmail)) {
+      setVerificationError("请输入有效的邮箱地址")
+      return
+    }
+
+    setVerificationSending(true)
+    try {
+      const result = await authApi.sendRegisterCode({ email: trimmedEmail })
+      setVerificationMeta(result)
+      setVerificationCode("")
+      setVerificationMessage(buildCodeDeliveryHint(result))
+      setEmailVerified(false)
+      lastAutoVerifiedCodeRef.current = ""
+    } catch (err: any) {
+      setVerificationError(getAuthErrorMessage(err, "发送注册验证码失败"))
+    } finally {
+      setVerificationSending(false)
+    }
+  }
+
+  async function handleVerifyCode(trigger: "auto" | "manual") {
+    if (!showVerificationField || emailVerified || verificationCode.length !== AUTH_CODE_LENGTH) {
+      return
+    }
+
+    if (trigger === "auto") {
+      if (verificationCode === lastAutoVerifiedCodeRef.current) {
+        return
+      }
+      lastAutoVerifiedCodeRef.current = verificationCode
+    }
+
+    setVerificationChecking(true)
+    setVerificationError("")
+    try {
+      const result = await authApi.verifyRegisterCode({
+        email: email.trim(),
+        code: verificationCode,
+      })
+      setEmailVerified(true)
+      setVerificationMessage(result.detail || "邮箱验证成功")
+    } catch (err: any) {
+      setEmailVerified(false)
+      setVerificationError(getAuthErrorMessage(err, "验证码校验失败"))
+    } finally {
+      setVerificationChecking(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!showVerificationField || emailVerified || verificationCode.length !== AUTH_CODE_LENGTH || verificationChecking) {
+      return
+    }
+    void handleVerifyCode("auto")
+  }, [emailVerified, showVerificationField, verificationChecking, verificationCode])
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -33,6 +123,11 @@ export default function RegisterForm() {
 
     if (!username.trim() || !email.trim() || !password.trim()) {
       setError("请填写所有字段")
+      return
+    }
+
+    if (!emailVerified) {
+      setError("请先完成邮箱验证码校验")
       return
     }
 
@@ -56,7 +151,7 @@ export default function RegisterForm() {
       })
       navigate("/cases", { replace: true })
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || "注册失败")
+      setError(getAuthErrorMessage(err, "注册失败"))
     } finally {
       setLoading(false)
     }
@@ -105,18 +200,109 @@ export default function RegisterForm() {
             </label>
             <span className="text-xs text-[#8a908b]">用于账号通知与验证</span>
           </div>
-          <div className="group relative">
-            <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a908b] transition-colors group-focus-within:text-[#3f6b57]" />
-            <input
-              id="register-email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="输入邮箱"
-              autoComplete="email"
-              className={`block w-full rounded-xl border border-[#d9ddd5] bg-white py-3.5 pl-11 pr-4 text-sm text-[#181b1a] shadow-[0_8px_24px_rgba(31,45,38,.035)] transition-[border-color,box-shadow] placeholder:text-[#a0a5a1] focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10 ${authFocusRing}`}
-            />
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="group relative min-w-0 flex-1">
+              <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a908b] transition-colors group-focus-within:text-[#3f6b57]" />
+              <input
+                id="register-email"
+                type="email"
+                value={email}
+                onChange={(event) => {
+                  const nextEmail = event.target.value
+                  if (nextEmail.trim().toLowerCase() !== email.trim().toLowerCase()) {
+                    resetEmailVerificationState(nextEmail)
+                    return
+                  }
+                  setEmail(nextEmail)
+                }}
+                placeholder="输入邮箱"
+                autoComplete="email"
+                className={`block w-full rounded-xl border border-[#d9ddd5] bg-white py-3.5 pl-11 pr-4 text-sm text-[#181b1a] shadow-[0_8px_24px_rgba(31,45,38,.035)] transition-[border-color,box-shadow] placeholder:text-[#a0a5a1] focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10 ${authFocusRing}`}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleSendVerificationCode()}
+              disabled={verificationSending || emailVerified || !isValidEmail(email)}
+              className={`inline-flex shrink-0 items-center justify-center rounded-xl border px-4 py-3.5 text-sm font-semibold transition-colors ${authFocusRing} ${
+                emailVerified
+                  ? "cursor-not-allowed border-[#d9ddd5] bg-[#f1f2ee] text-[#8a908b]"
+                  : "border-[#cfd5cc] bg-white text-[#303431] hover:bg-[#f1f2ee] disabled:cursor-not-allowed disabled:bg-[#f5f6f2] disabled:text-[#9a9f9b]"
+              }`}
+            >
+              {verificationSending ? "发送中..." : emailVerified ? "已验证" : "获取验证码"}
+            </button>
           </div>
+
+          {verificationMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-3 flex items-start gap-3 rounded-xl border border-[#cfe0d3] bg-[#f4fbf5] px-4 py-3 text-sm text-[#2f5947]"
+            >
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#2f5947] text-white">
+                <Check className="h-3.5 w-3.5" />
+              </span>
+              {verificationMessage}
+            </motion.div>
+          )}
+
+          {verificationError && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-3 flex items-start gap-3 rounded-xl border border-[#e8c9c5] bg-[#fff7f5] px-4 py-3 text-sm text-[#a13f34]"
+            >
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#a13f34] text-[10px] font-bold text-white">
+                !
+              </span>
+              {verificationError}
+            </motion.div>
+          )}
+
+          {showVerificationField && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 rounded-2xl border border-[#d9ddd5] bg-[#fcfcfa] p-4"
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <label htmlFor="register-code" className="text-sm font-semibold text-[#303431]">
+                  邮箱验证码
+                </label>
+                <span className={`text-xs ${emailVerified ? "text-[#2f5947]" : "text-[#8a908b]"}`}>
+                  {emailVerified ? "校验通过" : "输入满 6 位后自动校验"}
+                </span>
+              </div>
+              <div className="group relative">
+                <ShieldCheck className={`pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 transition-colors ${emailVerified ? "text-[#2f5947]" : "text-[#8a908b] group-focus-within:text-[#3f6b57]"}`} />
+                <input
+                  id="register-code"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={AUTH_CODE_LENGTH}
+                  value={verificationCode}
+                  onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, AUTH_CODE_LENGTH))}
+                  placeholder="000000"
+                  disabled={emailVerified}
+                  className={`block w-full rounded-xl border py-3.5 pl-11 pr-12 text-sm tracking-[0.32em] shadow-[0_8px_24px_rgba(31,45,38,.035)] transition-[border-color,box-shadow] placeholder:tracking-[0.32em] focus:outline-none ${authFocusRing} ${
+                    emailVerified
+                      ? "border-[#d9ddd5] bg-[#f1f2ee] text-[#6c706b] caret-transparent"
+                      : "border-[#d9ddd5] bg-white text-[#181b1a] placeholder:text-[#a0a5a1] focus:border-[#3f6b57] focus:ring-3 focus:ring-[#3f6b57]/10"
+                  }`}
+                />
+                <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2">
+                  {verificationChecking ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-[#3f6b57]" />
+                  ) : emailVerified ? (
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#2f5947] text-white">
+                      <Check className="h-3.5 w-3.5" />
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+            </motion.div>
+          )}
         </div>
 
         <div>
@@ -153,7 +339,9 @@ export default function RegisterForm() {
             <label htmlFor="register-confirm-password" className="text-sm font-semibold text-[#303431]">
               确认密码
             </label>
-            <span className="text-xs text-[#8a908b]">再次输入以确认</span>
+            <span className={`text-xs ${confirmPasswordMatched ? "text-[#2f5947]" : "text-[#8a908b]"}`}>
+              {confirmPasswordMatched ? "两次密码一致" : "再次输入以确认"}
+            </span>
           </div>
           <div className="group relative">
             <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a908b] transition-colors group-focus-within:text-[#3f6b57]" />
@@ -164,8 +352,21 @@ export default function RegisterForm() {
               onChange={(event) => setConfirmPassword(event.target.value)}
               placeholder="再次输入密码"
               autoComplete="new-password"
-              className={`block w-full rounded-xl border border-[#d9ddd5] bg-white py-3.5 pl-11 pr-12 text-sm text-[#181b1a] shadow-[0_8px_24px_rgba(31,45,38,.035)] transition-[border-color,box-shadow] placeholder:text-[#a0a5a1] focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10 ${authFocusRing}`}
+              className={`block w-full rounded-xl border bg-white py-3.5 pl-11 pr-20 text-sm text-[#181b1a] shadow-[0_8px_24px_rgba(31,45,38,.035)] transition-[border-color,box-shadow] placeholder:text-[#a0a5a1] focus:outline-none focus:ring-3 ${authFocusRing} ${
+                confirmPasswordMismatch
+                  ? "border-[#d67f72] focus:border-[#d67f72] focus:ring-[#d67f72]/10"
+                  : confirmPasswordMatched
+                    ? "border-[#8ec1a0] focus:border-[#3f6b57] focus:ring-[#3f6b57]/10"
+                    : "border-[#d9ddd5] focus:border-[#3f6b57] focus:ring-[#3f6b57]/10"
+              }`}
             />
+            {confirmPasswordMatched && (
+              <span className="pointer-events-none absolute right-12 top-1/2 -translate-y-1/2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#2f5947] text-white">
+                  <Check className="h-3.5 w-3.5" />
+                </span>
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setShowConfirmPassword((value) => !value)}
@@ -175,6 +376,9 @@ export default function RegisterForm() {
               {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {confirmPasswordMismatch && (
+            <p className="mt-2 text-xs text-[#b2483d]">两次输入的密码暂不一致，请继续检查。</p>
+          )}
         </div>
 
         <button

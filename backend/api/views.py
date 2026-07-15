@@ -9,6 +9,7 @@ import threading
 import time
 
 from django.conf import settings
+from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Count, Max, Q
@@ -28,7 +29,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import (
-    TokenObtainPairSerializer,
     TokenRefreshSerializer,
 )
 from rest_framework_simplejwt.settings import api_settings as simplejwt_api_settings
@@ -51,15 +51,21 @@ from api.models import (
 from api.serializers import (
     AvatarUploadSerializer,
     ChangePasswordSerializer,
+    ChangePasswordCodeVerifySerializer,
     CaseSerializer,
     CaseListSerializer,
     CaseStatusLogSerializer,
+    EmailAddressSerializer,
     EmailChangeConfirmSerializer,
     EmailChangeRequestSerializer,
+    EmailCodeWithAddressSerializer,
     EmailCodeVerifySerializer,
     EvidenceSerializer,
     EmailSendCodeSerializer,
     ExtractedFieldSerializer,
+    LoginSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetVerifySerializer,
     TimelineNodeSerializer,
     UserDetailSerializer,
     UserPreferenceSerializer,
@@ -248,7 +254,7 @@ def _build_email_rate_limit_error(detail: str, *, cooldown_seconds=None, hourly_
     return payload
 
 
-def _check_email_send_limits(user, scene):
+def _check_email_send_limits(user, scene, target_email=None):
     now = timezone.now()
     hourly_limit = _get_email_hourly_send_limit()
     cooldown_seconds = _get_email_resend_cooldown_seconds()
@@ -259,6 +265,10 @@ def _check_email_send_limits(user, scene):
         scene=scene,
         created_at__gte=recent_since,
     ).order_by('-created_at', '-id')
+    if target_email is not None:
+        recent_queryset = recent_queryset.filter(
+            target_email=_normalize_email(target_email)
+        )
 
     if recent_queryset.count() >= hourly_limit:
         return _build_email_rate_limit_error(
@@ -277,9 +287,13 @@ def _check_email_send_limits(user, scene):
     return None
 
 
-def _create_and_send_email_challenge(*, user, scene, target_email):
+def _create_and_send_email_challenge(*, user=None, scene, target_email):
     target_email = _normalize_email(target_email)
-    rate_limit_payload = _check_email_send_limits(user, scene)
+    rate_limit_payload = _check_email_send_limits(
+        user,
+        scene,
+        target_email=target_email,
+    )
     if rate_limit_payload is not None:
         return None, rate_limit_payload
 
@@ -321,7 +335,13 @@ def _build_user_detail_response(request):
     ).data
 
 
-def _get_verifiable_challenge_or_response(*, user, scene, target_email):
+def _get_verifiable_challenge_or_response(
+    *,
+    user,
+    scene,
+    target_email,
+    allow_already_verified=False,
+):
     challenge = _get_latest_email_challenge(user, scene, target_email)
     if challenge is None:
         return None, Response(
@@ -333,6 +353,8 @@ def _get_verifiable_challenge_or_response(*, user, scene, target_email):
             {'detail': '验证码已使用，请重新发送'},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if allow_already_verified and challenge.is_verified:
+        return challenge, None
     if challenge.is_expired:
         return None, Response(
             {'detail': '验证码已过期，请重新发送'},
@@ -411,6 +433,122 @@ def _write_account_audit_log(user, action, request, session=None, metadata=None)
     )
 
 
+def _get_verified_email_challenge_or_response(*, user, scene, target_email):
+    challenge = _get_latest_email_challenge(user, scene, target_email)
+    if challenge is None:
+        return None, Response(
+            {'detail': '未找到验证码请求，请先发送验证码'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if challenge.is_used:
+        return None, Response(
+            {'detail': '该邮箱验证码已被消费，请重新发送并校验'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not challenge.is_verified:
+        return None, Response(
+            {'detail': '邮箱验证码尚未校验通过'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return challenge, None
+
+
+def _get_user_by_email(email: str):
+    normalized_email = _normalize_email(email)
+    queryset = User.objects.filter(
+        email__iexact=normalized_email,
+        is_active=True,
+    ).order_by('id')
+    if queryset.count() != 1:
+        return None
+    return queryset.first()
+
+
+def _get_current_email_or_response(user):
+    current_email = _normalize_email(user.email)
+    if current_email:
+        return current_email, None
+    return None, Response(
+        {'detail': '当前账户未绑定邮箱'},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _revoke_active_sessions(*, user, exclude_session_id=None):
+    revoked_count = 0
+    active_sessions = UserSession.objects.filter(
+        user=user,
+        revoked_at__isnull=True,
+    )
+    if exclude_session_id is not None:
+        active_sessions = active_sessions.exclude(id=exclude_session_id)
+
+    for session in active_sessions:
+        _blacklist_refresh_by_jti(session.refresh_jti)
+        session.revoked_at = timezone.now()
+        session.save(update_fields=['revoked_at'])
+        revoked_count += 1
+    return revoked_count
+
+
+def _get_login_user_from_account(account: str):
+    normalized_account = (account or '').strip()
+    if not normalized_account:
+        return None
+
+    user = User.objects.filter(
+        username=normalized_account,
+        is_active=True,
+    ).first()
+    if user is not None:
+        return user
+    return _get_user_by_email(normalized_account)
+
+
+def _build_login_success_payload(request, user):
+    _get_or_create_profile(user)
+    _get_or_create_preferences(user)
+
+    user_agent = _get_user_agent(request)
+    with transaction.atomic():
+        refresh = RefreshToken.for_user(user)
+        session = UserSession.objects.create(
+            user=user,
+            refresh_jti=refresh['jti'],
+            device_name=_build_device_name(user_agent),
+            device_type=_detect_device_type(user_agent),
+            ip_address=_get_client_ip(request),
+            user_agent=user_agent,
+            last_seen_at=timezone.now(),
+            expires_at=_get_refresh_expiry(),
+        )
+        refresh['session_id'] = session.id
+        access = refresh.access_token
+
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        _write_account_audit_log(
+            user=user,
+            action=AccountAuditLog.ACTION_LOGIN,
+            request=request,
+            session=session,
+            metadata={'session_id': session.id},
+        )
+
+    return {
+        'access': str(access),
+        'refresh': str(refresh),
+        'access_expires_in': _get_access_lifetime_seconds(),
+        'refresh_expires_in': _get_refresh_lifetime_seconds(),
+        'session_id': session.id,
+        'user': UserDetailSerializer(
+            user,
+            context={'request': request},
+        ).data,
+    }
+
+
 # ===== 鉴权视图 =====
 
 class RegisterView(APIView):
@@ -421,8 +559,101 @@ class RegisterView(APIView):
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        email = serializer.validated_data['email']
+        challenge, error_response = _get_verified_email_challenge_or_response(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.REGISTER_EMAIL,
+            target_email=email,
+        )
+        if error_response is not None:
+            return error_response
+
+        with transaction.atomic():
+            user = serializer.save()
+            profile = _get_or_create_profile(user)
+            if not profile.email_verified:
+                profile.email_verified = True
+                profile.save(update_fields=['email_verified', 'updated_at'])
+            challenge.mark_used()
+
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
+
+class RegisterSendCodeView(APIView):
+    """注册邮箱发码：POST /auth/register/send-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        if User.objects.filter(email__iexact=email).exists():
+            return Response(
+                {'detail': '该邮箱已被注册'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=None,
+                scene=EmailVerificationChallenge.Scene.REGISTER_EMAIL,
+                target_email=email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class RegisterVerifyCodeView(APIView):
+    """注册邮箱验码：POST /auth/register/verify-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailCodeWithAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        if User.objects.filter(email__iexact=email).exists():
+            return Response(
+                {'detail': '该邮箱已被注册'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.REGISTER_EMAIL,
+            target_email=email,
+            allow_already_verified=True,
+        )
+        if error_response is not None:
+            return error_response
+
+        if not challenge.is_verified:
+            invalid_code_response = _check_email_challenge_code(
+                challenge,
+                serializer.validated_data['code'],
+            )
+            if invalid_code_response is not None:
+                return invalid_code_response
+            challenge.mark_verified()
+
+        return Response(
+            {
+                'detail': '邮箱验证码校验成功',
+                'scene': challenge.scene,
+                'target_email': challenge.target_email,
+                'verified_at': challenge.verified_at,
+            }
+        )
 
 
 class LoginView(APIView):
@@ -431,52 +662,213 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = TokenObtainPairSerializer(
-            data=request.data, context={'request': request}
+        serializer = LoginSerializer(
+            data=request.data,
+            context={'request': request},
         )
         serializer.is_valid(raise_exception=True)
-        user = serializer.user
-        _get_or_create_profile(user)
-        _get_or_create_preferences(user)
+        user = _get_login_user_from_account(serializer.validated_data['account'])
+        if user is None:
+            return Response(
+                {'detail': '账号或密码错误'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
-        user_agent = _get_user_agent(request)
+        authenticated_user = authenticate(
+            request=request,
+            username=user.username,
+            password=serializer.validated_data['password'],
+        )
+        if authenticated_user is None:
+            return Response(
+                {'detail': '账号或密码错误'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        return Response(_build_login_success_payload(request, authenticated_user))
+
+
+class LoginSendCodeView(APIView):
+    """登录邮箱发码：POST /auth/login/send-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        if _get_user_by_email(email) is None:
+            return Response(
+                {'detail': '该邮箱尚未注册'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=None,
+                scene=EmailVerificationChallenge.Scene.LOGIN_EMAIL,
+                target_email=email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class LoginEmailCodeView(APIView):
+    """邮箱验证码登录：POST /auth/login/email-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailCodeWithAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        user = _get_user_by_email(email)
+        if user is None:
+            return Response(
+                {'detail': '该邮箱尚未注册'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.LOGIN_EMAIL,
+            target_email=email,
+        )
+        if error_response is not None:
+            return error_response
+
+        invalid_code_response = _check_email_challenge_code(
+            challenge,
+            serializer.validated_data['code'],
+        )
+        if invalid_code_response is not None:
+            return invalid_code_response
+
         with transaction.atomic():
-            refresh = RefreshToken.for_user(user)
-            session = UserSession.objects.create(
-                user=user,
-                refresh_jti=refresh['jti'],
-                device_name=_build_device_name(user_agent),
-                device_type=_detect_device_type(user_agent),
-                ip_address=_get_client_ip(request),
-                user_agent=user_agent,
-                last_seen_at=timezone.now(),
-                expires_at=_get_refresh_expiry(),
-            )
-            refresh['session_id'] = session.id
-            access = refresh.access_token
+            challenge.mark_used()
+            payload = _build_login_success_payload(request, user)
+        return Response(payload)
 
-            user.last_login = timezone.now()
-            user.save(update_fields=['last_login'])
 
-            _write_account_audit_log(
-                user=user,
-                action=AccountAuditLog.ACTION_LOGIN,
-                request=request,
-                session=session,
-                metadata={'session_id': session.id},
+class PasswordResetSendCodeView(APIView):
+    """重置密码发码：POST /auth/password-reset/send-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = EmailAddressSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        if _get_user_by_email(email) is None:
+            return Response(
+                {'detail': '该邮箱尚未注册'},
+                status=status.HTTP_404_NOT_FOUND,
             )
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=None,
+                scene=EmailVerificationChallenge.Scene.RESET_PASSWORD,
+                target_email=email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class PasswordResetVerifyCodeView(APIView):
+    """重置密码验码：POST /auth/password-reset/verify-code/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        if _get_user_by_email(email) is None:
+            return Response(
+                {'detail': '该邮箱尚未注册'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.RESET_PASSWORD,
+            target_email=email,
+            allow_already_verified=True,
+        )
+        if error_response is not None:
+            return error_response
+
+        if not challenge.is_verified:
+            invalid_code_response = _check_email_challenge_code(
+                challenge,
+                serializer.validated_data['code'],
+            )
+            if invalid_code_response is not None:
+                return invalid_code_response
+            challenge.mark_verified()
 
         return Response(
             {
-                'access': str(access),
-                'refresh': str(refresh),
-                'access_expires_in': _get_access_lifetime_seconds(),
-                'refresh_expires_in': _get_refresh_lifetime_seconds(),
-                'session_id': session.id,
-                'user': UserDetailSerializer(
-                    user,
-                    context={'request': request},
-                ).data,
+                'detail': '邮箱验证码校验成功',
+                'scene': challenge.scene,
+                'target_email': challenge.target_email,
+                'verified_at': challenge.verified_at,
+            }
+        )
+
+
+class PasswordResetConfirmView(APIView):
+    """确认重置密码：POST /auth/password-reset/confirm/。"""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        user = _get_user_by_email(email)
+        if user is None:
+            return Response(
+                {'detail': '该邮箱尚未注册'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        challenge, error_response = _get_verified_email_challenge_or_response(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.RESET_PASSWORD,
+            target_email=email,
+        )
+        if error_response is not None:
+            return error_response
+
+        with transaction.atomic():
+            user.set_password(serializer.validated_data['new_password'])
+            user.save(update_fields=['password'])
+            challenge.mark_used()
+            revoked_count = _revoke_active_sessions(user=user)
+
+        return Response(
+            {
+                'detail': '密码重置成功',
+                'revoked_sessions': revoked_count,
             }
         )
 
@@ -688,6 +1080,73 @@ class UserPreferenceView(APIView):
         return Response(serializer.data)
 
 
+class ChangePasswordSendCodeView(APIView):
+    """修改密码发码：POST /auth/change-password/send-code/。"""
+
+    def post(self, request):
+        serializer = EmailSendCodeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        current_email, error_response = _get_current_email_or_response(request.user)
+        if error_response is not None:
+            return error_response
+
+        try:
+            challenge, payload = _create_and_send_email_challenge(
+                user=request.user,
+                scene=EmailVerificationChallenge.Scene.CHANGE_PASSWORD_EMAIL,
+                target_email=current_email,
+            )
+        except MailDeliveryError as exc:
+            return Response(
+                {'detail': f'验证码发送失败：{exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if challenge is None:
+            return Response(payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        return Response(payload)
+
+
+class ChangePasswordVerifyCodeView(APIView):
+    """修改密码验码：POST /auth/change-password/verify-code/。"""
+
+    def post(self, request):
+        serializer = ChangePasswordCodeVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        current_email, error_response = _get_current_email_or_response(request.user)
+        if error_response is not None:
+            return error_response
+
+        challenge, error_response = _get_verifiable_challenge_or_response(
+            user=request.user,
+            scene=EmailVerificationChallenge.Scene.CHANGE_PASSWORD_EMAIL,
+            target_email=current_email,
+            allow_already_verified=True,
+        )
+        if error_response is not None:
+            return error_response
+
+        if not challenge.is_verified:
+            invalid_code_response = _check_email_challenge_code(
+                challenge,
+                serializer.validated_data['code'],
+            )
+            if invalid_code_response is not None:
+                return invalid_code_response
+            challenge.mark_verified()
+
+        return Response(
+            {
+                'detail': '邮箱验证码校验成功',
+                'scene': challenge.scene,
+                'target_email': challenge.target_email,
+                'verified_at': challenge.verified_at,
+            }
+        )
+
+
 class ChangePasswordView(APIView):
     """修改密码：POST /auth/change-password/。"""
 
@@ -698,24 +1157,19 @@ class ChangePasswordView(APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        request.user.set_password(serializer.validated_data['new_password'])
-        request.user.save(update_fields=['password'])
+        current_email, error_response = _get_current_email_or_response(request.user)
+        if error_response is not None:
+            return error_response
 
-        revoked_count = 0
+        challenge, error_response = _get_verified_email_challenge_or_response(
+            user=request.user,
+            scene=EmailVerificationChallenge.Scene.CHANGE_PASSWORD_EMAIL,
+            target_email=current_email,
+        )
+        if error_response is not None:
+            return error_response
+
         current_session_id = _get_current_session_id(request)
-        if serializer.validated_data.get('logout_other_sessions'):
-            other_sessions = UserSession.objects.filter(
-                user=request.user,
-                revoked_at__isnull=True,
-            )
-            if current_session_id is not None:
-                other_sessions = other_sessions.exclude(id=current_session_id)
-            for session in other_sessions:
-                _blacklist_refresh_by_jti(session.refresh_jti)
-                session.revoked_at = timezone.now()
-                session.save(update_fields=['revoked_at'])
-                revoked_count += 1
-
         current_session = None
         if current_session_id is not None:
             current_session = UserSession.objects.filter(
@@ -723,18 +1177,31 @@ class ChangePasswordView(APIView):
                 user=request.user,
             ).first()
 
-        _write_account_audit_log(
-            user=request.user,
-            action=AccountAuditLog.ACTION_CHANGE_PASSWORD,
-            request=request,
-            session=current_session,
-            metadata={
-                'logout_other_sessions': serializer.validated_data.get(
-                    'logout_other_sessions', False
-                ),
-                'revoked_other_sessions': revoked_count,
-            },
-        )
+        with transaction.atomic():
+            request.user.set_password(serializer.validated_data['new_password'])
+            request.user.save(update_fields=['password'])
+            challenge.mark_used()
+
+            revoked_count = 0
+            if serializer.validated_data.get('logout_other_sessions'):
+                revoked_count = _revoke_active_sessions(
+                    user=request.user,
+                    exclude_session_id=current_session_id,
+                )
+
+            _write_account_audit_log(
+                user=request.user,
+                action=AccountAuditLog.ACTION_CHANGE_PASSWORD,
+                request=request,
+                session=current_session,
+                metadata={
+                    'logout_other_sessions': serializer.validated_data.get(
+                        'logout_other_sessions', False
+                    ),
+                    'revoked_other_sessions': revoked_count,
+                    'challenge_id': challenge.id,
+                },
+            )
 
         return Response(
             {
@@ -828,12 +1295,9 @@ class CurrentEmailSendCodeView(APIView):
         serializer = EmailSendCodeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        current_email = _normalize_email(request.user.email)
-        if not current_email:
-            return Response(
-                {'detail': '当前账户未绑定邮箱'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        current_email, error_response = _get_current_email_or_response(request.user)
+        if error_response is not None:
+            return error_response
 
         try:
             challenge, payload = _create_and_send_email_challenge(
@@ -859,12 +1323,9 @@ class CurrentEmailVerifyView(APIView):
         serializer = EmailCodeVerifySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        current_email = _normalize_email(request.user.email)
-        if not current_email:
-            return Response(
-                {'detail': '当前账户未绑定邮箱'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        current_email, error_response = _get_current_email_or_response(request.user)
+        if error_response is not None:
+            return error_response
 
         challenge, error_response = _get_verifiable_challenge_or_response(
             user=request.user,
@@ -882,8 +1343,7 @@ class CurrentEmailVerifyView(APIView):
             return invalid_code_response
 
         with transaction.atomic():
-            challenge.mark_used(save=False)
-            challenge.save(update_fields=['used_at', 'updated_at'])
+            challenge.mark_used()
             profile = _get_or_create_profile(request.user)
             if not profile.email_verified:
                 profile.email_verified = True
@@ -976,8 +1436,7 @@ class EmailChangeConfirmView(APIView):
             return invalid_code_response
 
         with transaction.atomic():
-            challenge.mark_used(save=False)
-            challenge.save(update_fields=['used_at', 'updated_at'])
+            challenge.mark_used()
             request.user.email = new_email
             request.user.save(update_fields=['email'])
             profile = _get_or_create_profile(request.user)

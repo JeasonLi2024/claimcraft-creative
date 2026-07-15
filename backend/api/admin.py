@@ -73,8 +73,9 @@ class EmailVerificationChallengeAdmin(admin.ModelAdmin):
         'target_email',
         'attempt_count',
         'expires_at',
+        'verified_at',
         'used_at',
         'created_at',
     )
-    list_filter = ('scene', 'used_at', 'created_at')
+    list_filter = ('scene', 'verified_at', 'used_at', 'created_at')
     search_fields = ('user__username', 'user__email', 'target_email')

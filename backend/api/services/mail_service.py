@@ -62,10 +62,15 @@ def build_verification_mail_payload(
     scene: str,
     expires_minutes: int = 10,
 ) -> MailMessagePayload:
-    if scene == 'change_email':
-        action_label = '修改邮箱'
-    else:
-        action_label = '验证当前邮箱'
+    action_label_map = {
+        'register_email': '注册邮箱',
+        'login_email': '邮箱登录',
+        'reset_password': '重置密码',
+        'verify_current_email': '验证当前邮箱',
+        'change_password_email': '修改密码校验',
+        'change_email': '修改邮箱',
+    }
+    action_label = action_label_map.get(scene, '邮箱验证')
 
     subject = f'ClaimCraft 邮箱验证码 - {action_label}'
     text_body = (

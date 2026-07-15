@@ -107,7 +107,18 @@ apiClient.interceptors.response.use(
     const originalRequest = error.config as RetryableRequestConfig | undefined
     const statusCode = error.response?.status
     const url = originalRequest?.url || ""
-    const isAuthBootstrapRequest = ["/auth/login/", "/auth/register/", "/auth/refresh/"].some((path) => url.includes(path))
+    const isAuthBootstrapRequest = [
+      "/auth/login/",
+      "/auth/login/send-code/",
+      "/auth/login/email-code/",
+      "/auth/password-reset/send-code/",
+      "/auth/password-reset/verify-code/",
+      "/auth/password-reset/confirm/",
+      "/auth/register/",
+      "/auth/register/send-code/",
+      "/auth/register/verify-code/",
+      "/auth/refresh/",
+    ].some((path) => url.includes(path))
 
     if (statusCode !== 401 || !originalRequest || originalRequest._retry || isAuthBootstrapRequest) {
       if (statusCode === 401 && isAuthBootstrapRequest) {

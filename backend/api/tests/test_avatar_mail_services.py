@@ -18,6 +18,7 @@ from api.services.mail_service import (
     MailDeliveryError,
     MailDeliveryService,
     MailMessagePayload,
+    build_verification_mail_payload,
 )
 
 
@@ -126,6 +127,25 @@ class EmailVerificationChallengeTests(TestCase):
 
 
 class MailServiceTests(TestCase):
+    def test_build_verification_mail_payload_supports_new_password_scenes(self):
+        reset_payload = build_verification_mail_payload(
+            to_email='user@example.com',
+            code='123456',
+            scene='reset_password',
+            expires_minutes=10,
+        )
+        change_payload = build_verification_mail_payload(
+            to_email='user@example.com',
+            code='654321',
+            scene='change_password_email',
+            expires_minutes=10,
+        )
+
+        self.assertIn('重置密码', reset_payload.subject)
+        self.assertIn('123456', reset_payload.text_body)
+        self.assertIn('修改密码校验', change_payload.subject)
+        self.assertIn('654321', change_payload.html_body)
+
     @override_settings(
         CLAIMCRAFT_AGENT_MAIL_ENABLED=True,
         CLAIMCRAFT_AGENT_MAIL_COMMAND='agently-cli',

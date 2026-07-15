@@ -1,20 +1,34 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
-from api.models import AccountAuditLog, UserPreference, UserProfile, UserSession
+from api.models import (
+    AccountAuditLog,
+    EmailVerificationChallenge,
+    UserPreference,
+    UserProfile,
+    UserSession,
+)
 
 
 class AuthAPITestMixin:
     register_url = '/api/auth/register/'
     login_url = '/api/auth/login/'
+    password_reset_send_code_url = '/api/auth/password-reset/send-code/'
+    password_reset_verify_code_url = '/api/auth/password-reset/verify-code/'
+    password_reset_confirm_url = '/api/auth/password-reset/confirm/'
     refresh_url = '/api/auth/refresh/'
     logout_url = '/api/auth/logout/'
     logout_all_url = '/api/auth/logout-all/'
     me_url = '/api/auth/me/'
     preferences_url = '/api/auth/me/preferences/'
+    change_password_send_code_url = '/api/auth/change-password/send-code/'
+    change_password_verify_code_url = '/api/auth/change-password/verify-code/'
     change_password_url = '/api/auth/change-password/'
     sessions_url = '/api/auth/sessions/'
     default_password = 'ClaimCraftPass123!'
@@ -39,13 +53,39 @@ class AuthAPITestMixin:
         user_agent = user_agent or self.default_user_agent
         response = client.post(
             self.login_url,
-            {'username': user.username, 'password': password},
+            {'account': user.username, 'password': password},
             format='json',
             HTTP_USER_AGENT=user_agent,
             REMOTE_ADDR='127.0.0.1',
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         return client, response.json()
+
+    def create_verified_register_challenge(self, email):
+        challenge = EmailVerificationChallenge.objects.create(
+            user=None,
+            scene=EmailVerificationChallenge.Scene.REGISTER_EMAIL,
+            target_email=email.lower(),
+            code_hash='',
+            expires_at=timezone.now() + timedelta(minutes=10),
+            verified_at=timezone.now(),
+        )
+        challenge.set_plain_code('123456')
+        challenge.save(update_fields=['code_hash', 'verified_at'])
+        return challenge
+
+    def create_verified_email_challenge(self, *, user, scene, email=None, code='123456'):
+        challenge = EmailVerificationChallenge.objects.create(
+            user=user,
+            scene=scene,
+            target_email=(email or user.email).lower(),
+            code_hash='',
+            expires_at=timezone.now() + timedelta(minutes=10),
+            verified_at=timezone.now(),
+        )
+        challenge.set_plain_code(code)
+        challenge.save(update_fields=['code_hash', 'verified_at'])
+        return challenge
 
     def build_authed_client(self, access_token):
         client = APIClient()
@@ -76,6 +116,7 @@ class AuthAPITestMixin:
 
 class AuthenticationFlowTests(AuthAPITestMixin, APITestCase):
     def test_register_uses_password_confirm_and_bootstraps_profile_preferences(self):
+        challenge = self.create_verified_register_challenge('newuser@example.com')
         response = self.client.post(
             self.register_url,
             {
@@ -89,9 +130,53 @@ class AuthenticationFlowTests(AuthAPITestMixin, APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
         user = User.objects.get(username='newuser')
+        challenge.refresh_from_db()
         self.assertTrue(UserProfile.objects.filter(user=user).exists())
         self.assertTrue(UserPreference.objects.filter(user=user).exists())
+        self.assertTrue(UserProfile.objects.get(user=user).email_verified)
+        self.assertIsNotNone(challenge.used_at)
         self.assertEqual(response.json()['email'], 'newuser@example.com')
+
+    def test_register_requires_verified_email_challenge(self):
+        response = self.client.post(
+            self.register_url,
+            {
+                'username': 'plainuser',
+                'email': 'plainuser@example.com',
+                'password': self.default_password,
+                'password_confirm': self.default_password,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND, response.content)
+        self.assertIn('先发送验证码', response.json()['detail'])
+
+    def test_login_accepts_username_or_email_in_account_field(self):
+        user = self.create_user(username='multiway', email='multiway@example.com')
+
+        username_response = self.client.post(
+            self.login_url,
+            {'account': user.username, 'password': self.default_password},
+            format='json',
+        )
+        self.assertEqual(
+            username_response.status_code,
+            status.HTTP_200_OK,
+            username_response.content,
+        )
+
+        email_response = self.client.post(
+            self.login_url,
+            {'account': 'MULTIWAY@example.com', 'password': self.default_password},
+            format='json',
+        )
+        self.assertEqual(
+            email_response.status_code,
+            status.HTTP_200_OK,
+            email_response.content,
+        )
+        self.assertEqual(email_response.json()['user']['id'], user.id)
 
     def test_login_refresh_logout_flow_rotates_tokens_and_revokes_session(self):
         user = self.create_user()
@@ -293,6 +378,10 @@ class AccountCenterTests(AuthAPITestMixin, APITestCase):
         user = self.create_user()
         _, login_payload = self.login_user(user)
         client = self.build_authed_client(login_payload['access'])
+        self.create_verified_email_challenge(
+            user=user,
+            scene=EmailVerificationChallenge.Scene.CHANGE_PASSWORD_EMAIL,
+        )
 
         response = client.post(
             self.change_password_url,
@@ -307,6 +396,24 @@ class AccountCenterTests(AuthAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.content)
         self.assertIn('old_password', response.json())
 
+    def test_change_password_requires_verified_email_challenge(self):
+        user = self.create_user()
+        _, login_payload = self.login_user(user)
+        client = self.build_authed_client(login_payload['access'])
+
+        response = client.post(
+            self.change_password_url,
+            {
+                'old_password': self.default_password,
+                'new_password': self.changed_password,
+                'new_password_confirm': self.changed_password,
+                'logout_other_sessions': False,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND, response.content)
+        self.assertIn('先发送验证码', response.json()['detail'])
+
     def test_change_password_can_revoke_other_sessions_and_keep_current(self):
         user = self.create_user()
         _, other_login = self.login_user(user, client=APIClient())
@@ -314,6 +421,10 @@ class AccountCenterTests(AuthAPITestMixin, APITestCase):
             user,
             client=APIClient(),
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/127.0',
+        )
+        challenge = self.create_verified_email_challenge(
+            user=user,
+            scene=EmailVerificationChallenge.Scene.CHANGE_PASSWORD_EMAIL,
         )
 
         response = self.build_authed_client(current_login['access']).post(
@@ -328,6 +439,8 @@ class AccountCenterTests(AuthAPITestMixin, APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
         self.assertEqual(response.json()['revoked_other_sessions'], 1)
+        challenge.refresh_from_db()
+        self.assertIsNotNone(challenge.used_at)
 
         current_session = UserSession.objects.get(id=current_login['session_id'])
         other_session = UserSession.objects.get(id=other_login['session_id'])
@@ -340,7 +453,7 @@ class AccountCenterTests(AuthAPITestMixin, APITestCase):
 
         old_login_response = self.client.post(
             self.login_url,
-            {'username': user.username, 'password': self.default_password},
+            {'account': user.username, 'password': self.default_password},
             format='json',
         )
         self.assertEqual(
@@ -457,6 +570,8 @@ class SessionPermissionTests(AuthAPITestMixin, APITestCase):
                     'logout_other_sessions': False,
                 },
             ),
+            ('post', self.change_password_send_code_url, {}),
+            ('post', self.change_password_verify_code_url, {'code': '123456'}),
             ('post', self.logout_url, {'refresh': 'fake-token'}),
             ('post', self.logout_all_url, None),
             ('get', self.sessions_url, None),

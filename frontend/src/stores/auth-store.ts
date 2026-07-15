@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import { authApi } from "@/lib/api"
 import { clearStoredAuth, persistTokens } from "@/lib/api-client"
-import type { User, LoginDTO, RegisterDTO } from "@/types"
+import type { AuthResponse, LoginDTO, LoginEmailCodeDTO, RegisterDTO, User } from "@/types"
 
 interface AuthState {
   user: User | null
@@ -17,9 +17,11 @@ interface AuthState {
     refreshToken: string
     sessionId: number | null
   }) => void
+  applyAuthResponse: (payload: AuthResponse) => void
   setUser: (user: User | null) => void
   clearAuth: () => void
   login: (data: LoginDTO) => Promise<void>
+  loginWithEmailCode: (data: LoginEmailCodeDTO) => Promise<void>
   register: (data: RegisterDTO) => Promise<void>
   fetchMe: () => Promise<void>
   initialize: () => Promise<void>
@@ -51,6 +53,15 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   setUser: (user) => set({ user }),
 
+  applyAuthResponse: (payload: AuthResponse) => {
+    get().setAuthSession({
+      user: payload.user,
+      accessToken: payload.access,
+      refreshToken: payload.refresh,
+      sessionId: payload.session_id,
+    })
+  },
+
   clearAuth: () => {
     clearStoredAuth()
     set({
@@ -66,12 +77,17 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     set({ isLoading: true })
     try {
       const res = await authApi.login(data)
-      get().setAuthSession({
-        user: res.user,
-        accessToken: res.access,
-        refreshToken: res.refresh,
-        sessionId: res.session_id,
-      })
+      get().applyAuthResponse(res)
+    } finally {
+      set({ isLoading: false })
+    }
+  },
+
+  loginWithEmailCode: async (data) => {
+    set({ isLoading: true })
+    try {
+      const res = await authApi.loginWithEmailCode(data)
+      get().applyAuthResponse(res)
     } finally {
       set({ isLoading: false })
     }
@@ -81,7 +97,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     set({ isLoading: true })
     try {
       await authApi.register(data)
-      await get().login({ username: data.username, password: data.password })
+      await get().login({ account: data.username, password: data.password })
     } finally {
       set({ isLoading: false })
     }

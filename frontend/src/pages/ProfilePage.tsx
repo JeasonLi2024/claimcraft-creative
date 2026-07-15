@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router"
 import {
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
   UserRound,
 } from "lucide-react"
 import { authApi } from "@/lib/api"
+import { AUTH_CODE_LENGTH, getAuthErrorMessage } from "@/components/auth/auth-form-utils"
 import { useAuthStore } from "@/stores/auth-store"
 import type { EmailCodeSendResponse, UserPreferences, UserSession } from "@/types"
 
@@ -50,7 +51,7 @@ function SettingSwitch({ checked, onChange, label, disabled = false }: { checked
       aria-pressed={checked}
       className={`relative h-6 w-11 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${checked ? "bg-[#3f6b57]" : "bg-[#cfd5cc]"}`}
     >
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${checked ? "translate-x-[22px]" : "translate-x-0.5"}`} />
+      <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${checked ? "translate-x-5" : "translate-x-0"}`} />
     </button>
   )
 }
@@ -109,6 +110,13 @@ export default function ProfilePage() {
   const [currentEmailError, setCurrentEmailError] = useState("")
   const [currentEmailSending, setCurrentEmailSending] = useState(false)
   const [currentEmailVerifying, setCurrentEmailVerifying] = useState(false)
+  const [changePasswordCode, setChangePasswordCode] = useState("")
+  const [changePasswordCodeMeta, setChangePasswordCodeMeta] = useState<EmailCodeSendResponse | null>(null)
+  const [changePasswordCodeMessage, setChangePasswordCodeMessage] = useState("")
+  const [changePasswordCodeError, setChangePasswordCodeError] = useState("")
+  const [changePasswordCodeSending, setChangePasswordCodeSending] = useState(false)
+  const [changePasswordCodeVerifying, setChangePasswordCodeVerifying] = useState(false)
+  const [changePasswordCodeVerified, setChangePasswordCodeVerified] = useState(false)
   const [changeEmailForm, setChangeEmailForm] = useState({
     new_email: "",
     code: "",
@@ -124,6 +132,7 @@ export default function ProfilePage() {
     new_password_confirm: "",
     logout_other_sessions: true,
   })
+  const lastAutoVerifiedChangePasswordCodeRef = useRef("")
 
   useEffect(() => {
     async function bootstrap() {
@@ -158,15 +167,55 @@ export default function ProfilePage() {
     setPreferences(user.preferences || defaultPreferences)
   }, [user])
 
+  useEffect(() => {
+    setChangePasswordCode("")
+    setChangePasswordCodeMeta(null)
+    setChangePasswordCodeMessage("")
+    setChangePasswordCodeError("")
+    setChangePasswordCodeVerified(false)
+    lastAutoVerifiedChangePasswordCodeRef.current = ""
+  }, [user?.email])
+
+  useEffect(() => {
+    if (
+      !changePasswordCodeMeta
+      || changePasswordCodeVerified
+      || changePasswordCode.length !== AUTH_CODE_LENGTH
+      || changePasswordCodeVerifying
+    ) {
+      return
+    }
+    void handleVerifyChangePasswordCode("auto")
+  }, [
+    changePasswordCode,
+    changePasswordCodeMeta,
+    changePasswordCodeVerified,
+    changePasswordCodeVerifying,
+  ])
+
   const initial = user?.display_name?.charAt(0).toUpperCase() || user?.username?.charAt(0).toUpperCase() || "U"
   const currentSession = useMemo(
     () => sessions.find((session) => session.id === currentSessionId) || sessions.find((session) => session.is_current),
     [currentSessionId, sessions],
   )
 
+  const passwordConfirmMatched =
+    !!passwordForm.new_password_confirm && passwordForm.new_password === passwordForm.new_password_confirm
+  const passwordConfirmMismatch =
+    !!passwordForm.new_password_confirm && passwordForm.new_password !== passwordForm.new_password_confirm
+
   function markSaved(section: "profile" | "preferences") {
     setSavedSection(section)
     window.setTimeout(() => setSavedSection(null), 1800)
+  }
+
+  function resetChangePasswordVerificationState() {
+    setChangePasswordCode("")
+    setChangePasswordCodeMeta(null)
+    setChangePasswordCodeMessage("")
+    setChangePasswordCodeError("")
+    setChangePasswordCodeVerified(false)
+    lastAutoVerifiedChangePasswordCodeRef.current = ""
   }
 
   function updatePreference(key: keyof UserPreferences, value?: boolean | UserPreferences["default_case_mode"] | UserPreferences["default_template_type"]) {
@@ -222,6 +271,12 @@ export default function ProfilePage() {
 
   async function handlePasswordChange(e: React.FormEvent) {
     e.preventDefault()
+    if (!changePasswordCodeVerified) {
+      setPasswordError("请先完成当前邮箱验证码校验，再提交修改密码")
+      setPasswordSuccess("")
+      return
+    }
+
     setPasswordSaving(true)
     setPasswordError("")
     setPasswordSuccess("")
@@ -236,6 +291,7 @@ export default function ProfilePage() {
         new_password_confirm: "",
         logout_other_sessions: true,
       })
+      resetChangePasswordVerificationState()
       setPasswordSuccess(
         passwordForm.logout_other_sessions
           ? `密码已更新，已撤销 ${result.revoked_other_sessions} 个其他设备会话`
@@ -254,6 +310,51 @@ export default function ProfilePage() {
       )
     } finally {
       setPasswordSaving(false)
+    }
+  }
+
+  async function handleSendChangePasswordCode() {
+    setChangePasswordCodeSending(true)
+    setChangePasswordCodeError("")
+    setChangePasswordCodeMessage("")
+    setPasswordError("")
+    try {
+      const result = await authApi.sendChangePasswordCode()
+      setChangePasswordCodeMeta(result)
+      setChangePasswordCode("")
+      setChangePasswordCodeVerified(false)
+      setChangePasswordCodeMessage(buildSendCodeSummary(result))
+      lastAutoVerifiedChangePasswordCodeRef.current = ""
+    } catch (err: any) {
+      setChangePasswordCodeError(getAuthErrorMessage(err, "发送修改密码验证码失败"))
+    } finally {
+      setChangePasswordCodeSending(false)
+    }
+  }
+
+  async function handleVerifyChangePasswordCode(trigger: "auto" | "manual") {
+    if (changePasswordCodeVerified || changePasswordCode.length !== AUTH_CODE_LENGTH) {
+      return
+    }
+
+    if (trigger === "auto") {
+      if (changePasswordCode === lastAutoVerifiedChangePasswordCodeRef.current) {
+        return
+      }
+      lastAutoVerifiedChangePasswordCodeRef.current = changePasswordCode
+    }
+
+    setChangePasswordCodeVerifying(true)
+    setChangePasswordCodeError("")
+    try {
+      const result = await authApi.verifyChangePasswordCode({ code: changePasswordCode })
+      setChangePasswordCodeVerified(true)
+      setChangePasswordCodeMessage(result.detail || "邮箱验证码校验成功")
+    } catch (err: any) {
+      setChangePasswordCodeVerified(false)
+      setChangePasswordCodeError(getAuthErrorMessage(err, "修改密码验证码校验失败"))
+    } finally {
+      setChangePasswordCodeVerifying(false)
     }
   }
 
@@ -790,12 +891,99 @@ export default function ProfilePage() {
               </span>
               <div>
                 <h2 className="font-semibold">密码与安全</h2>
-                <p className="text-xs text-muted-foreground">支持旧密码校验，并可让其他设备失效</p>
+                <p className="text-xs text-muted-foreground">修改密码前需先完成当前邮箱验证码校验，并可让其他设备失效</p>
               </div>
             </div>
 
             {passwordError && <div className="mt-5 rounded-xl border border-[#e9c8c3] bg-[#fff6f4] px-4 py-3 text-sm text-[#ad4438]">{passwordError}</div>}
             {passwordSuccess && <div className="mt-5 rounded-xl border border-[#cfe0d3] bg-[#f4fbf5] px-4 py-3 text-sm text-[#2f5947]">{passwordSuccess}</div>}
+
+            <div className="mt-6 rounded-2xl border border-[#d9ddd5] bg-[#fcfcfa] p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-[#26312b]">步骤 1：验证当前邮箱</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    将验证码发送到当前绑定邮箱 `{user?.email || "未绑定邮箱"}`，校验通过后才允许提交新密码。
+                  </p>
+                </div>
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${changePasswordCodeVerified ? "bg-[#e7eee9] text-[#2f5947]" : "bg-[#fff3f0] text-[#b2483d]"}`}>
+                  {changePasswordCodeVerified ? "已通过校验" : "待校验"}
+                </span>
+              </div>
+
+              {changePasswordCodeMessage && (
+                <div className="mt-4 rounded-xl border border-[#cfe0d3] bg-[#f4fbf5] px-4 py-3 text-sm text-[#2f5947]">
+                  {changePasswordCodeMessage}
+                </div>
+              )}
+
+              {changePasswordCodeError && (
+                <div className="mt-4 rounded-xl border border-[#e9c8c3] bg-[#fff6f4] px-4 py-3 text-sm text-[#ad4438]">
+                  {changePasswordCodeError}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <button
+                  type="button"
+                  onClick={() => void handleSendChangePasswordCode()}
+                  disabled={!user?.email || changePasswordCodeSending}
+                  className="rounded-xl border border-[#d9ddd5] px-4 py-2.5 text-sm font-semibold transition-colors hover:bg-[#f5f6f2] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {changePasswordCodeSending ? "发送中..." : changePasswordCodeVerified ? "重新发送验证码" : "发送验证码"}
+                </button>
+                {changePasswordCodeMeta && (
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    已通过 `{changePasswordCodeMeta.provider}` 发送，验证码有效至 {formatDate(changePasswordCodeMeta.expires_at)}。
+                  </p>
+                )}
+              </div>
+
+              {changePasswordCodeMeta && (
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="text-sm font-semibold">6 位验证码</label>
+                    <span className={`text-xs ${changePasswordCodeVerified ? "text-[#2f5947]" : "text-[#8a908b]"}`}>
+                      {changePasswordCodeVerified ? "校验通过" : "输入满 6 位后自动校验"}
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <input
+                      value={changePasswordCode}
+                      maxLength={AUTH_CODE_LENGTH}
+                      disabled={changePasswordCodeVerified}
+                      onChange={(e) => setChangePasswordCode(e.target.value.replace(/\D/g, "").slice(0, AUTH_CODE_LENGTH))}
+                      className={`w-full rounded-xl border px-4 py-3 pr-12 text-sm tracking-[0.3em] focus:outline-none focus:ring-3 ${
+                        changePasswordCodeVerified
+                          ? "border-[#d9ddd5] bg-[#f1f2ee] text-[#6c706b] caret-transparent"
+                          : "border-[#d9ddd5] bg-white focus:border-[#3f6b57] focus:ring-[#3f6b57]/10"
+                      }`}
+                      placeholder="000000"
+                    />
+                    <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2">
+                      {changePasswordCodeVerifying ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-[#3f6b57]" />
+                      ) : changePasswordCodeVerified ? (
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#2f5947] text-white">
+                          <Check className="h-3.5 w-3.5" />
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs leading-5 text-muted-foreground">如未自动校验，可手动再验证一次。</p>
+                    <button
+                      type="button"
+                      onClick={() => void handleVerifyChangePasswordCode("manual")}
+                      disabled={changePasswordCodeVerifying || changePasswordCodeVerified || changePasswordCode.length !== AUTH_CODE_LENGTH}
+                      className="rounded-xl border border-[#d9ddd5] px-4 py-2.5 text-sm font-semibold transition-colors hover:bg-[#f5f6f2] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {changePasswordCodeVerifying ? "验证中..." : "手动验证验证码"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <form onSubmit={handlePasswordChange} className="mt-6 grid gap-4">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -824,8 +1012,23 @@ export default function ProfilePage() {
                   type="password"
                   value={passwordForm.new_password_confirm}
                   onChange={(e) => setPasswordForm((current) => ({ ...current, new_password_confirm: e.target.value }))}
-                  className="w-full rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10"
+                  className={`w-full rounded-xl border bg-white px-4 py-3 text-sm focus:outline-none focus:ring-3 ${
+                    passwordConfirmMismatch
+                      ? "border-[#d67f72] focus:border-[#d67f72] focus:ring-[#d67f72]/10"
+                      : passwordConfirmMatched
+                        ? "border-[#8ec1a0] focus:border-[#3f6b57] focus:ring-[#3f6b57]/10"
+                        : "border-[#d9ddd5] focus:border-[#3f6b57] focus:ring-[#3f6b57]/10"
+                  }`}
                 />
+                {passwordConfirmMismatch && (
+                  <p className="mt-2 text-xs text-[#b2483d]">两次输入的新密码暂不一致，请继续检查。</p>
+                )}
+                {passwordConfirmMatched && (
+                  <p className="mt-2 inline-flex items-center gap-1 text-xs text-[#2f5947]">
+                    <Check className="h-3.5 w-3.5" />
+                    两次输入的新密码一致
+                  </p>
+                )}
               </div>
               <label className="flex items-center gap-3 rounded-xl bg-[#f5f6f2] px-4 py-3 text-sm">
                 <input
@@ -837,7 +1040,11 @@ export default function ProfilePage() {
                 修改密码后让其他设备会话失效
               </label>
               <div className="flex justify-end">
-                <button type="submit" disabled={passwordSaving} className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-[#2b302d] disabled:opacity-60">
+                <button
+                  type="submit"
+                  disabled={passwordSaving || !changePasswordCodeVerified || passwordForm.new_password !== passwordForm.new_password_confirm}
+                  className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-[#2b302d] disabled:opacity-60"
+                >
                   {passwordSaving ? "提交中..." : "更新密码"}
                 </button>
               </div>

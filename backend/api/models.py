@@ -161,7 +161,11 @@ class EmailVerificationChallenge(models.Model):
     """邮箱验证码挑战。"""
 
     class Scene(models.TextChoices):
+        REGISTER_EMAIL = 'register_email', '注册邮箱'
+        LOGIN_EMAIL = 'login_email', '登录邮箱'
+        RESET_PASSWORD = 'reset_password', '重置密码'
         VERIFY_CURRENT_EMAIL = 'verify_current_email', '验证当前邮箱'
+        CHANGE_PASSWORD_EMAIL = 'change_password_email', '修改密码校验'
         CHANGE_EMAIL = 'change_email', '修改邮箱'
 
     user = models.ForeignKey(
@@ -169,6 +173,8 @@ class EmailVerificationChallenge(models.Model):
         on_delete=models.CASCADE,
         related_name='email_verification_challenges',
         verbose_name='用户',
+        null=True,
+        blank=True,
     )
     scene = models.CharField(
         '验证场景',
@@ -178,6 +184,7 @@ class EmailVerificationChallenge(models.Model):
     target_email = models.EmailField('目标邮箱', max_length=254)
     code_hash = models.CharField('验证码哈希', max_length=255)
     expires_at = models.DateTimeField('过期时间')
+    verified_at = models.DateTimeField('验证成功时间', null=True, blank=True)
     used_at = models.DateTimeField('使用时间', null=True, blank=True)
     attempt_count = models.PositiveSmallIntegerField('尝试次数', default=0)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -194,11 +201,16 @@ class EmailVerificationChallenge(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.user.username} {self.scene} {self.target_email}'
+        user_label = self.user.username if self.user_id else 'anonymous'
+        return f'{user_label} {self.scene} {self.target_email}'
 
     @property
     def is_used(self):
         return self.used_at is not None
+
+    @property
+    def is_verified(self):
+        return self.verified_at is not None
 
     @property
     def is_expired(self):
@@ -217,10 +229,22 @@ class EmailVerificationChallenge(models.Model):
         if save:
             self.save(update_fields=['attempt_count', 'updated_at'])
 
-    def mark_used(self, save: bool = True):
-        self.used_at = timezone.now()
+    def mark_verified(self, save: bool = True):
+        if self.verified_at is not None:
+            return
+        self.verified_at = timezone.now()
         if save:
-            self.save(update_fields=['used_at', 'updated_at'])
+            self.save(update_fields=['verified_at', 'updated_at'])
+
+    def mark_used(self, save: bool = True):
+        now = timezone.now()
+        update_fields = ['used_at', 'updated_at']
+        if self.verified_at is None:
+            self.verified_at = now
+            update_fields.insert(0, 'verified_at')
+        self.used_at = now
+        if save:
+            self.save(update_fields=update_fields)
 
 
 class UserPreference(models.Model):

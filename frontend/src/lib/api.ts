@@ -3,7 +3,9 @@ import type {
   User, UserSummary, UserPreferences, UserProfileUpdateDTO, UserSession,
   LoginDTO, RegisterDTO, AuthResponse, RefreshResponse,
   LogoutAllResponse, ChangePasswordDTO, ChangePasswordResponse,
-  AvatarMutationResponse, EmailCodeSendResponse, EmailCodeVerifyDTO,
+  AvatarMutationResponse, EmailCodeSendDTO, EmailCodeSendResponse, EmailCodeVerifyDTO,
+  RegisterEmailCodeVerifyDTO, EmailCodeVerifyResponse, LoginEmailCodeDTO,
+  PasswordResetVerifyDTO, PasswordResetConfirmDTO, PasswordResetConfirmResponse,
   EmailChangeRequestDTO, EmailChangeConfirmDTO, EmailUserMutationResponse,
   Case, CaseCreateDTO, Evidence, TimelineNode,
   ComplaintData, MaskResult, StatusLog,
@@ -15,8 +17,22 @@ import type { Correction } from "@/lib/workflow-events"
 export const authApi = {
   login: (data: LoginDTO) =>
     apiClient.post<AuthResponse>("/auth/login/", data).then((r) => r.data),
+  sendLoginCode: (data: EmailCodeSendDTO) =>
+    apiClient.post<EmailCodeSendResponse>("/auth/login/send-code/", data).then((r) => r.data),
+  loginWithEmailCode: (data: LoginEmailCodeDTO) =>
+    apiClient.post<AuthResponse>("/auth/login/email-code/", data).then((r) => r.data),
+  sendPasswordResetCode: (data: EmailCodeSendDTO) =>
+    apiClient.post<EmailCodeSendResponse>("/auth/password-reset/send-code/", data).then((r) => r.data),
+  verifyPasswordResetCode: (data: PasswordResetVerifyDTO) =>
+    apiClient.post<EmailCodeVerifyResponse>("/auth/password-reset/verify-code/", data).then((r) => r.data),
+  confirmPasswordReset: (data: PasswordResetConfirmDTO) =>
+    apiClient.post<PasswordResetConfirmResponse>("/auth/password-reset/confirm/", data).then((r) => r.data),
   register: (data: RegisterDTO) =>
     apiClient.post<UserSummary>("/auth/register/", data).then((r) => r.data),
+  sendRegisterCode: (data: EmailCodeSendDTO) =>
+    apiClient.post<EmailCodeSendResponse>("/auth/register/send-code/", data).then((r) => r.data),
+  verifyRegisterCode: (data: RegisterEmailCodeVerifyDTO) =>
+    apiClient.post<EmailCodeVerifyResponse>("/auth/register/verify-code/", data).then((r) => r.data),
   refresh: (refresh: string) =>
     apiClient.post<RefreshResponse>("/auth/refresh/", { refresh }).then((r) => r.data),
   me: () =>
@@ -27,6 +43,10 @@ export const authApi = {
     apiClient.get<UserPreferences>("/auth/me/preferences/").then((r) => r.data),
   updatePreferences: (data: Partial<UserPreferences>) =>
     apiClient.patch<UserPreferences>("/auth/me/preferences/", data).then((r) => r.data),
+  sendChangePasswordCode: () =>
+    apiClient.post<EmailCodeSendResponse>("/auth/change-password/send-code/", {}).then((r) => r.data),
+  verifyChangePasswordCode: (data: EmailCodeVerifyDTO) =>
+    apiClient.post<EmailCodeVerifyResponse>("/auth/change-password/verify-code/", data).then((r) => r.data),
   changePassword: (data: ChangePasswordDTO) =>
     apiClient.post<ChangePasswordResponse>("/auth/change-password/", data).then((r) => r.data),
   logout: (refresh: string) =>

@@ -145,10 +145,28 @@ class EmailSendCodeSerializer(serializers.Serializer):
     """当前邮箱验证码发送请求。"""
 
 
+class EmailAddressSerializer(serializers.Serializer):
+    """邮箱地址请求。"""
+
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+
 class EmailCodeVerifySerializer(serializers.Serializer):
     """邮箱验证码校验请求。"""
 
     code = serializers.RegexField(r'^\d{6}$', error_messages={'invalid': '验证码必须为 6 位数字'})
+
+
+class EmailCodeWithAddressSerializer(EmailCodeVerifySerializer):
+    """邮箱验证码校验请求（含邮箱）。"""
+
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        return value.strip().lower()
 
 
 class EmailChangeRequestSerializer(serializers.Serializer):
@@ -169,6 +187,31 @@ class EmailChangeConfirmSerializer(EmailCodeVerifySerializer):
         return value.strip().lower()
 
 
+class PasswordResetVerifySerializer(EmailCodeWithAddressSerializer):
+    """重置密码验证码校验请求。"""
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """重置密码确认请求。"""
+
+    email = serializers.EmailField(required=True)
+    new_password = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+    new_password_confirm = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['new_password_confirm']:
+            raise serializers.ValidationError({'new_password_confirm': '两次新密码输入不一致'})
+        validate_password(attrs['new_password'])
+        return attrs
+
+
+class ChangePasswordCodeVerifySerializer(EmailCodeVerifySerializer):
+    """修改密码验证码校验请求。"""
+
+
 class EmailVerificationChallengeSerializer(serializers.ModelSerializer):
     """邮箱验证码挑战摘要序列化器。"""
 
@@ -180,6 +223,7 @@ class EmailVerificationChallengeSerializer(serializers.ModelSerializer):
             'target_email',
             'expires_at',
             'attempt_count',
+            'verified_at',
             'used_at',
             'created_at',
         ]
@@ -244,6 +288,18 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = ['username', 'email', 'password', 'password_confirm']
 
+    def validate_username(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('用户名不能为空')
+        return value
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError('该邮箱已被注册')
+        return value
+
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({'password_confirm': '两次密码不一致'})
@@ -259,6 +315,19 @@ class RegisterSerializer(serializers.ModelSerializer):
         )
         UserPreference.objects.get_or_create(user=user)
         return user
+
+
+class LoginSerializer(serializers.Serializer):
+    """账号或邮箱密码登录请求。"""
+
+    account = serializers.CharField(write_only=True, required=True, trim_whitespace=True)
+    password = serializers.CharField(write_only=True, required=True, trim_whitespace=False)
+
+    def validate_account(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('账号或邮箱不能为空')
+        return value
 
 
 class CaseSerializer(serializers.ModelSerializer):
