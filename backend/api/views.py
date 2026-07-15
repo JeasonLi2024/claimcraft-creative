@@ -1536,6 +1536,8 @@ class EvidenceListCreateView(APIView):
         serializer = EvidenceSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             serializer.save(case=case)
+            from api.services.case_lifecycle_service import mark_document_stale
+            mark_document_stale(case.id)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1621,6 +1623,8 @@ class EvidenceUploadView(APIView):
             except Exception:
                 pass
 
+        from api.services.case_lifecycle_service import mark_document_stale
+        mark_document_stale(case.id)
         serializer = EvidenceSerializer(evidence, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -1642,6 +1646,8 @@ class EvidenceDeleteView(APIView):
         code = evidence.code
         case = evidence.case
         evidence.delete()
+        from api.services.case_lifecycle_service import mark_document_stale
+        mark_document_stale(case.id)
 
         # 清理时间线节点引用
         if code:
@@ -1690,6 +1696,8 @@ class ExtractedFieldUpdateView(APIView):
         if 'confidence' in data:
             field.confidence = data['confidence']
         field.save()
+        from api.services.case_lifecycle_service import mark_document_stale
+        mark_document_stale(field.evidence.case_id)
         serializer = ExtractedFieldSerializer(field)
         return Response(serializer.data)
 
@@ -1715,6 +1723,8 @@ class TimelineRebuildView(APIView):
     def post(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
         nodes = timeline_service.rebuild_timeline(case)
+        from api.services.case_lifecycle_service import mark_document_stale
+        mark_document_stale(case.id)
         serializer = TimelineNodeSerializer(nodes, many=True)
         return Response(serializer.data)
 
@@ -1735,6 +1745,8 @@ class TimelineNodeUpdateView(APIView):
             if field in data:
                 setattr(node, field, data[field])
         node.save()
+        from api.services.case_lifecycle_service import mark_document_stale
+        mark_document_stale(node.case_id)
         serializer = TimelineNodeSerializer(node)
         return Response(serializer.data)
 
@@ -1903,14 +1915,15 @@ _STATUS_TRANSITION_METHODS = {
 
 
 class CaseStatusTransitionView(APIView):
-    """案件状态转换：POST /cases/<id>/status/transition/。
-
-    接收 {to_status, remark}，根据 FSM 校验并执行转换，
-    成功后写入 CaseStatusLog。
-    """
+    """兼容管理端的状态纠正接口；普通用户不得直接选择案件状态。"""
 
     def post(self, request, pk):
-        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        if not request.user.is_staff:
+            return Response(
+                {'detail': '案件状态由系统流程维护，请使用归档或取消操作'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        case = get_object_or_404(Case, pk=pk)
 
         to_status = request.data.get('to_status')
         remark = request.data.get('remark', '')
@@ -1954,6 +1967,8 @@ class CaseStatusTransitionView(APIView):
             from_status=old_status,
             to_status=to_status,
             remark=remark,
+            trigger='admin_override',
+            actor=request.user,
         )
         return Response({
             'id': case.id,
@@ -1961,6 +1976,36 @@ class CaseStatusTransitionView(APIView):
             'to_status': to_status,
             'status': case.status,
         })
+
+
+class CaseArchiveView(APIView):
+    """用户确认材料无误后归档案件。"""
+
+    def post(self, request, pk):
+        from api.services.case_lifecycle_service import LifecycleError, archive_case
+
+        get_object_or_404(Case, pk=pk, owner=request.user)
+        try:
+            result = archive_case(pk, actor=request.user)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(CaseSerializer(result.case).data)
+
+
+class CaseCancelView(APIView):
+    """用户取消尚未提交或归档的案件。"""
+
+    def post(self, request, pk):
+        from api.services.case_lifecycle_service import LifecycleError, cancel_case
+
+        get_object_or_404(Case, pk=pk, owner=request.user)
+        try:
+            result = cancel_case(
+                pk, actor=request.user, reason=str(request.data.get('reason', '')).strip()
+            )
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(CaseSerializer(result.case).data)
 
 
 class CaseStatusLogView(ListAPIView):
@@ -2190,11 +2235,29 @@ class CaseWorkflowView(APIView):
         evidence_ids = request.data.get('evidence_ids', [])
         resume_value = request.data.get('resume')
 
-        # 1. 获取或生成 thread_id（持久化到 Case 模型）
-        if not case.thread_id:
-            case.thread_id = f"case-{case.id}-{int(time.time())}"
+        # 1. 新运行使用新 thread；HITL 恢复复用现有 thread
+        if resume_value is None:
+            thread_id = f"case-{case.id}-{time.time_ns()}"
+            case.thread_id = thread_id
             case.save(update_fields=['thread_id'])
-        thread_id = case.thread_id
+        else:
+            thread_id = case.thread_id
+            if not thread_id:
+                return Response(
+                    {'detail': '案件尚未启动工作流'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        from api.services.case_lifecycle_service import (
+            LifecycleError, resume_processing, start_processing,
+        )
+        try:
+            if resume_value is None:
+                start_processing(case.id, actor=request.user, thread_id=thread_id)
+            else:
+                resume_processing(case.id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
 
         # 2. 单例 workflow（不再每次重新编译）
         workflow = build_case_workflow()
@@ -2232,6 +2295,8 @@ class CaseWorkflowView(APIView):
                     }
                     result = async_to_sync(workflow.ainvoke)(initial_state, config)
         except Exception as e:
+            from api.services.case_lifecycle_service import fail_processing
+            fail_processing(case.id, str(e))
             logger.error(f"案件 {case.id} 工作流执行失败: {e}", exc_info=True)
             return Response(
                 {
@@ -2260,6 +2325,12 @@ class CaseWorkflowView(APIView):
             except Exception as e:
                 logger.warning(f"序列化 interrupt 失败: {e}", exc_info=True)
                 interrupt_data = [{"error": f"序列化 interrupt 失败: {e}"}]
+
+        from api.services.case_lifecycle_service import complete_processing, mark_waiting_review
+        if interrupted:
+            mark_waiting_review(case.id)
+        else:
+            complete_processing(case.id, thread_id=thread_id)
 
         return Response({
             "status": "interrupted" if interrupted else "completed",
@@ -2368,11 +2439,10 @@ class CaseWorkflowStartView(APIView):
         case = get_object_or_404(Case, pk=pk, owner=request.user)
         evidence_ids = request.data.get('evidence_ids', [])
 
-        # 生成或复用 thread_id（持久化到 Case 模型）
-        if not case.thread_id:
-            case.thread_id = f"case-{case.id}-{int(time.time())}"
-            case.save(update_fields=['thread_id'])
-        thread_id = case.thread_id
+        # 每次完整启动使用新 thread，避免历史终止事件污染重跑；HITL resume 仍复用该 thread
+        thread_id = f"case-{case.id}-{time.time_ns()}"
+        case.thread_id = thread_id
+        case.save(update_fields=['thread_id'])
 
         # 构建初始状态（与 CaseWorkflowView 保持一致）
         initial_state = {
@@ -2389,7 +2459,13 @@ class CaseWorkflowStartView(APIView):
             "errors": [],
         }
 
-        # 启动后台任务（asyncio.create_task，不阻塞响应）
+        # 后端接受任务时原子更新生命周期，再启动后台任务
+        from api.services.case_lifecycle_service import LifecycleError, start_processing
+        try:
+            start_processing(case.id, actor=request.user, thread_id=thread_id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
         runner = WorkflowRunner()
         runner.start_in_background(
             case_id=case.id, thread_id=thread_id, initial_state=initial_state
@@ -2448,11 +2524,16 @@ class CaseWorkflowStreamView(APIView):
             missed = await depot.get_events_after(thread_id, last_event_id)
             for evt in missed:
                 yield _format_sse_event(evt)
-                if evt['event_type'] in ('workflow.complete', 'workflow.error'):
+                if evt['event_type'] in (
+                    'workflow.complete', 'workflow.error', 'workflow.waiting_review'
+                ):
                     return
 
             # 2. 检查工作流是否已结束
             if await depot.is_workflow_completed(thread_id):
+                return
+            current_case = await sync_to_async(Case.objects.get)(pk=pk)
+            if current_case.workflow_status == 'waiting_review':
                 return
 
             # 3. 订阅 NOTIFY（通过线程桥接到 asyncio.Queue）
@@ -2487,7 +2568,8 @@ class CaseWorkflowStreamView(APIView):
                             yield _format_sse_event(evt)
                             current_last = evt['event_id']
                             if evt['event_type'] in (
-                                'workflow.complete', 'workflow.error'
+                                'workflow.complete', 'workflow.error',
+                                'workflow.waiting_review',
                             ):
                                 return
                     except asyncio.TimeoutError:
@@ -2542,6 +2624,12 @@ class CaseWorkflowResumeView(APIView):
             )
 
         thread_id = case.thread_id
+        from api.services.case_lifecycle_service import LifecycleError, resume_processing
+        try:
+            resume_processing(case.id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
         runner = WorkflowRunner()
         runner.start_in_background(
             case_id=case.id,

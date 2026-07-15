@@ -1,224 +1,297 @@
-import { useState, useEffect } from "react"
-import { useParams, useNavigate, Link } from "react-router"
+import { useEffect, useState } from "react"
+import { Link, useParams } from "react-router"
 import { useCaseStore } from "@/stores/case-store"
-import { useStatus, MAIN_FLOW, TRANSITIONS } from "@/composables/useStatus"
+import { MAIN_FLOW, useStatus } from "@/composables/useStatus"
 import StatusTag from "@/components/StatusTag"
-import PillTag from "@/components/PillTag"
 import { cn } from "@/lib/utils"
 import {
-  FileText, Image, Clock, MessageSquare, Shield, Download,
-  ChevronDown, ChevronRight, ArrowRight, Loader2, Briefcase,
+  ArrowLeft,
+  ArrowRight,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleDot,
+  Clock3,
+  FileCheck2,
+  FileText,
+  Gavel,
+  History,
+  Image,
+  Layers3,
+  Loader2,
+  MessageSquareText,
+  ScanText,
+  ShieldCheck,
+  Sparkles,
+  Upload,
 } from "lucide-react"
 
-const STAT_ITEMS = [
-  { key: "evidence_count", label: "证据数量", icon: FileText },
-  { key: "timeline_count", label: "关键节点", icon: Clock },
-  { key: "template_count", label: "投诉版本", icon: MessageSquare },
-  { key: null, label: "当前状态", icon: Briefcase, isStatus: true },
-  { key: "image_evidence_count", label: "图片证据", icon: Image },
-  { key: "extracted_field_count", label: "抽取字段", icon: Shield },
-] as const
+const FLOW_LABELS: Record<string, string> = {
+  draft: "材料准备",
+  processing: "系统处理中",
+  submitted: "文稿已生成",
+  closed: "案件已归档",
+}
 
 export default function WorkspacePage() {
   const { caseId } = useParams<{ caseId: string }>()
-  const navigate = useNavigate()
   const fetchCaseDetail = useCaseStore((s) => s.fetchCaseDetail)
   const fetchStatusLogs = useCaseStore((s) => s.fetchStatusLogs)
-  const transitionCaseStatus = useCaseStore((s) => s.transitionCaseStatus)
   const currentCase = useCaseStore((s) => s.currentCase)
   const statusLogs = useCaseStore((s) => s.statusLogs)
   const loading = useCaseStore((s) => s.loading)
   const error = useCaseStore((s) => s.error)
-  const { statusLabel } = useStatus()
-
+  const { statusLabel, disputeLabel } = useStatus()
   const [showHistory, setShowHistory] = useState(false)
-  const [showTransition, setShowTransition] = useState(false)
-  const [targetStatus, setTargetStatus] = useState("")
-  const [remark, setRemark] = useState("")
-  const [transitioning, setTransitioning] = useState(false)
 
   useEffect(() => {
-    if (caseId) {
-      fetchCaseDetail(Number(caseId))
-      fetchStatusLogs(Number(caseId))
-    }
-  }, [caseId])
+    if (!caseId) return
+    fetchCaseDetail(Number(caseId))
+    fetchStatusLogs(Number(caseId))
+  }, [caseId, fetchCaseDetail, fetchStatusLogs])
 
   const caseData = currentCase
-  if (loading && !caseData) return <div className="flex h-64 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
-  if (!caseData) return <p className="text-muted-foreground">加载案件中...</p>
-
-  const currentStatusIdx = MAIN_FLOW.indexOf(caseData.status as any)
-  const availableTransitions = TRANSITIONS[caseData.status] || []
-
-  async function handleTransition(e: React.FormEvent) {
-    e.preventDefault()
-    if (!targetStatus || !caseId) return
-    setTransitioning(true)
-    try {
-      await transitionCaseStatus(Number(caseId), { to_status: targetStatus, remark: remark.trim() || undefined })
-      setShowTransition(false)
-      setTargetStatus("")
-      setRemark("")
-      await fetchStatusLogs(Number(caseId))
-    } catch {}
-    finally { setTransitioning(false) }
+  if (loading && !caseData) {
+    return <div className="flex h-72 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-secondary" /></div>
   }
+  if (!caseData || !caseId) return <p className="text-muted-foreground">加载案件中...</p>
+
+  const isRespond = caseData.case_mode === "respond"
+  const documentPath = isRespond ? "respond" : "complaint"
+  const documentLabel = isRespond ? "反证答辩" : "投诉文本"
+  const documentDescription = isRespond ? "基于事实与证据生成结构化答辩内容" : "基于事实与证据生成可用的投诉文稿"
+
+  const workflowSteps = [
+    {
+      id: "evidence",
+      title: "上传证据材料",
+      description: "添加订单、聊天记录、付款凭证等，系统会自动识别关键信息。",
+      path: "evidence",
+      icon: Upload,
+      count: caseData.evidence_count,
+      countLabel: `${caseData.evidence_count} 份证据`,
+      complete: caseData.evidence_count > 0,
+    },
+    {
+      id: "timeline",
+      title: "核对事实时间线",
+      description: "按时间顺序整理关键事件，确认事实脉络准确、完整。",
+      path: "timeline",
+      icon: Clock3,
+      count: caseData.timeline_count,
+      countLabel: `${caseData.timeline_count} 个节点`,
+      complete: caseData.timeline_count > 0,
+    },
+    {
+      id: "document",
+      title: `生成${documentLabel}`,
+      description: documentDescription,
+      path: documentPath,
+      icon: isRespond ? Gavel : MessageSquareText,
+      count: caseData.template_count,
+      countLabel: `${caseData.template_count} 个版本`,
+      complete: caseData.template_count > 0,
+    },
+    {
+      id: "export",
+      title: "检查脱敏并导出",
+      description: "检查敏感信息处理结果，整理并下载最终材料。",
+      path: caseData.image_evidence_count > 0 ? "mask" : "export",
+      icon: ShieldCheck,
+      count: 0,
+      countLabel: "最终交付",
+      complete: caseData.status === "closed",
+    },
+  ]
+
+  const nextStepIndex = workflowSteps.findIndex((step) => !step.complete)
+  const activeStepIndex = nextStepIndex === -1 ? workflowSteps.length - 1 : nextStepIndex
+  const nextStep = workflowSteps[activeStepIndex]
+  const completedSteps = workflowSteps.filter((step) => step.complete).length
+  const progress = Math.round((completedSteps / workflowSteps.length) * 100)
+  const currentStatusIdx = MAIN_FLOW.indexOf(caseData.status as (typeof MAIN_FLOW)[number])
+  const isTerminal = caseData.status === "closed" || caseData.status === "cancelled"
 
   return (
-    <div className="space-y-6">
-      {/* Back link */}
-      <Link to="/cases" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary">
-        &larr; 返回案件列表
+    <div className="space-y-5 pb-8">
+      <Link to="/cases" className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="h-4 w-4" />返回案件列表
       </Link>
 
-      {/* Status progress bar */}
-      <div className="flex items-center gap-2 rounded-2xl border border-border/50 bg-card p-4 shadow-[0_10px_30px_rgba(20,35,90,.04)]">
-        <StatusTag status={caseData.status} />
-        <span className="text-sm text-muted-foreground">{"当前状态"}</span>
-        <div className="ml-2 flex flex-1 items-center gap-1">
-          {MAIN_FLOW.map((s, i) => {
-            const done = currentStatusIdx >= i
-            const current = currentStatusIdx === i
-            return (
-              <div key={s} className="flex items-center gap-1">
-                <div className={cn(
-                  "h-3 w-3 rounded-full border-2 transition-all",
-                  done ? "border-transparent bg-primary" : "border-border bg-card",
-                  current && "ring-4 ring-primary/20 animate-pulse"
-                )} title={statusLabel(s)} />
-                {i < MAIN_FLOW.length - 1 && (
-                  <div className={cn("h-0.5 w-8", done ? "bg-secondary" : "bg-border")} />
-                )}
-              </div>
-            )
-          })}
-        </div>
-        {availableTransitions.length > 0 && (
-          <button
-            onClick={() => setShowTransition(true)}
-            className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
-          >
-            {"推进状态"}
-          </button>
-        )}
-      </div>
-
-      {/* Title + Description */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">{caseData.title}</h1>
-        {caseData.description && <p className="mt-2 text-muted-foreground">{caseData.description}</p>}
-        <div className="mt-2 flex flex-wrap gap-2">
-          <PillTag label={caseData.case_type || "未知类型"} variant="primary" />
-        </div>
-      </div>
-
-      {/* 6 stat cards */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {STAT_ITEMS.map((item, i) => {
-          const value = "isStatus" in item && item.isStatus
-            ? statusLabel(caseData.status)
-            : item.key
-              ? (caseData as any)[item.key] ?? 0
-              : 0
-          return (
-            <div key={i} className="rounded-2xl border border-border/50 bg-card p-4 shadow-[0_10px_30px_rgba(20,35,90,.04)]">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">{item.label}</span>
-                <item.icon className="h-4 w-4 text-muted-foreground" />
-              </div>
-              <div className="mt-1 text-2xl font-bold text-foreground">{value}</div>
+      <section className="relative overflow-hidden rounded-[28px] bg-[#17231d] text-white shadow-[0_24px_70px_rgba(26,40,33,.16)]">
+        <div className="absolute -right-16 -top-24 h-64 w-64 rounded-full bg-[#6c9b7f]/20 blur-3xl" />
+        <div className="absolute bottom-0 right-[28%] h-32 w-32 rounded-full bg-[#d4b25c]/10 blur-2xl" />
+        <div className="relative grid gap-8 p-6 sm:p-8 xl:grid-cols-[1fr_340px] xl:p-9">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/8 px-3 py-1 text-xs text-white/75">
+                <Sparkles className="h-3.5 w-3.5 text-[#d4b25c]" />案件工作台
+              </span>
+              <span className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/65">{disputeLabel(caseData.case_type)}</span>
+              <StatusTag status={caseData.status} />
             </div>
-          )
-        })}
-      </div>
+            <h1 className="mt-5 max-w-3xl text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">{caseData.title}</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+              {caseData.description || "在这里按步骤完成证据整理、事实核对与文稿生成。"}
+            </p>
 
-      {/* Status history */}
-      <div className="rounded-2xl border border-border/50 bg-card shadow-[0_10px_30px_rgba(20,35,90,.04)]">
-        <button
-          onClick={() => setShowHistory(!showHistory)}
-          className="flex w-full items-center justify-between p-4 text-sm font-semibold text-foreground"
-        >
-          {"状态变更历史"} ({statusLogs.length})
-          {showHistory ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
-        {showHistory && (
-          <div className="border-t border-border/50 p-4">
-            {statusLogs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{"暂无状态变更记录"}</p>
-            ) : (
-              <div className="relative space-y-4 pl-6">
-                {/* Gradient line */}
-                <div className="absolute bottom-4 left-[11px] top-0 w-0.5 bg-secondary" />
-                {[...statusLogs].reverse().map((log) => (
-                  <div key={log.id} className="relative flex items-start gap-3">
-                    <div className="absolute -left-6 top-0.5 h-3 w-3 rounded-full border-2 border-white bg-secondary shadow-sm" />
-                    <div className="flex-1 rounded-xl bg-muted/50 p-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <StatusTag status={log.from_status} />
-                        <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-                        <StatusTag status={log.to_status} />
-                        {log.timestamp && (
-                          <span className="ml-auto text-xs text-muted-foreground">{log.timestamp}</span>
-                        )}
-                      </div>
-                      {log.remark && <p className="mt-1 text-sm text-muted-foreground">{log.remark}</p>}
-                    </div>
+            <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-3 text-xs text-white/55">
+              <span className="flex items-center gap-1.5"><Image className="h-4 w-4 text-white/75" />{caseData.evidence_count} 份证据</span>
+              <span className="flex items-center gap-1.5"><ScanText className="h-4 w-4 text-white/75" />{caseData.extracted_field_count} 个抽取字段</span>
+              <span className="flex items-center gap-1.5"><Layers3 className="h-4 w-4 text-white/75" />{caseData.timeline_count} 个事实节点</span>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/12 bg-white/8 p-5 backdrop-blur-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-[0.16em] text-white/45">建议下一步</span>
+              <span className="text-xs text-white/45">{completedSteps}/{workflowSteps.length} 已完成</span>
+            </div>
+            <div className="mt-4 flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-[#17231d]">
+                <nextStep.icon className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 className="font-semibold">{isTerminal ? "查看案件材料" : nextStep.title}</h2>
+                <p className="mt-1 text-xs leading-5 text-white/55">{isTerminal ? "案件流程已结束，所有材料仍可随时查看。" : nextStep.description}</p>
+              </div>
+            </div>
+            <Link
+              to={`/cases/${caseId}/${nextStep.path}`}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-[#17231d] transition-all hover:-translate-y-0.5 hover:bg-[#f2f5f1]"
+            >
+              {isTerminal ? "查看材料" : "现在开始"}<ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {error && <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
+
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">推荐流程</p>
+              <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">一步一步完成案件准备</h2>
+              <p className="mt-1 text-sm text-muted-foreground">系统会根据已有材料判断进度，并自动推荐接下来的操作。</p>
+            </div>
+            <div className="min-w-28 text-right">
+              <span className="text-sm font-semibold text-foreground">{progress}%</span>
+              <div className="mt-2 h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-secondary transition-all" style={{ width: `${progress}%` }} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-3 lg:grid-cols-2">
+            {workflowSteps.map((step, index) => {
+              const active = index === activeStepIndex && !isTerminal
+              return (
+                <Link
+                  key={step.id}
+                  to={`/cases/${caseId}/${step.path}`}
+                  className={cn(
+                    "group relative flex min-h-40 flex-col rounded-2xl border p-5 transition-all",
+                    active
+                      ? "border-secondary/35 bg-[#f0f5f1] shadow-[0_12px_30px_rgba(63,107,87,.09)]"
+                      : "border-border bg-white hover:-translate-y-0.5 hover:border-secondary/25 hover:shadow-md"
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <span className={cn("flex h-10 w-10 items-center justify-center rounded-xl", step.complete ? "bg-secondary text-white" : active ? "bg-[#dce8df] text-secondary" : "bg-muted text-muted-foreground")}>
+                      {step.complete ? <Check className="h-5 w-5" /> : <step.icon className="h-5 w-5" />}
+                    </span>
+                    <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", step.complete ? "bg-accent text-secondary" : active ? "bg-secondary text-white" : "bg-muted text-muted-foreground")}>
+                      {step.complete ? "已完成" : active ? "下一步" : step.countLabel}
+                    </span>
                   </div>
-                ))}
+                  <div className="mt-4">
+                    <p className="text-xs font-medium text-muted-foreground">步骤 {index + 1}</p>
+                    <h3 className="mt-0.5 font-semibold text-foreground">{step.title}</h3>
+                    <p className="mt-1.5 text-sm leading-5 text-muted-foreground">{step.description}</p>
+                  </div>
+                  <ArrowRight className="absolute bottom-5 right-5 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-secondary" />
+                </Link>
+              )
+            })}
+          </div>
+        </section>
+
+        <aside className="space-y-5">
+          <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)]">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-secondary"><Bot className="h-5 w-5" /></span>
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">系统流程状态</h2>
+                <p className="text-xs text-muted-foreground">由材料处理结果自动更新</p>
+              </div>
+            </div>
+
+            {caseData.status === "cancelled" ? (
+              <div className="mt-5 rounded-xl bg-destructive/8 p-4">
+                <p className="text-sm font-semibold text-destructive">案件已取消</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">当前案件不再继续流转，已有材料会继续保留。</p>
+              </div>
+            ) : (
+              <div className="relative mt-5 space-y-0">
+                {MAIN_FLOW.map((status, index) => {
+                  const done = currentStatusIdx > index
+                  const current = currentStatusIdx === index
+                  return (
+                    <div key={status} className="relative flex min-h-14 gap-3">
+                      {index < MAIN_FLOW.length - 1 && <div className={cn("absolute left-[9px] top-5 h-[calc(100%-4px)] w-px", done ? "bg-secondary" : "bg-border")} />}
+                      <span className={cn("relative z-10 mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 bg-white", done || current ? "border-secondary" : "border-border")}>
+                        {done ? <Check className="h-3 w-3 text-secondary" /> : current ? <CircleDot className="h-2.5 w-2.5 text-secondary" /> : null}
+                      </span>
+                      <div>
+                        <p className={cn("text-sm font-medium", done || current ? "text-foreground" : "text-muted-foreground")}>{FLOW_LABELS[status]}</p>
+                        {current && <p className="mt-0.5 text-xs text-secondary">当前 · {statusLabel(status)}</p>}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
-          </div>
-        )}
+
+            <div className="mt-2 flex gap-2 rounded-xl bg-muted/70 p-3 text-xs leading-5 text-muted-foreground">
+              <Bot className="mt-0.5 h-4 w-4 shrink-0 text-secondary" />
+              <p>无需手动推进状态。当证据处理、文稿生成或归档完成时，系统将自动更新。</p>
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-[24px] border border-border bg-card shadow-[0_12px_36px_rgba(31,45,38,.05)]">
+            <button onClick={() => setShowHistory((value) => !value)} className="flex w-full items-center justify-between p-5 text-left">
+              <span className="flex items-center gap-2 text-sm font-semibold text-foreground"><History className="h-4 w-4 text-secondary" />状态记录 <span className="font-normal text-muted-foreground">{statusLogs.length}</span></span>
+              {showHistory ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+            </button>
+            {showHistory && (
+              <div className="border-t border-border px-5 py-4">
+                {statusLogs.length === 0 ? (
+                  <div className="py-3 text-center"><FileCheck2 className="mx-auto h-6 w-6 text-muted-foreground/50" /><p className="mt-2 text-xs text-muted-foreground">暂无状态变更记录</p></div>
+                ) : (
+                  <div className="space-y-4">
+                    {[...statusLogs].reverse().map((log) => (
+                      <div key={log.id} className="border-l-2 border-accent pl-3">
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs"><span className="font-medium text-foreground">{statusLabel(log.from_status)}</span><ArrowRight className="h-3 w-3 text-muted-foreground" /><span className="font-medium text-secondary">{statusLabel(log.to_status)}</span></div>
+                        {log.remark && <p className="mt-1 text-xs leading-5 text-muted-foreground">{log.remark}</p>}
+                        {log.timestamp && <p className="mt-1 text-[11px] text-muted-foreground/75">{log.timestamp}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          <Link to={`/cases/${caseId}/export`} className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-4 transition-all hover:border-secondary/30 hover:shadow-md">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted text-muted-foreground"><FileText className="h-4 w-4" /></span>
+            <div className="min-w-0 flex-1"><p className="text-sm font-semibold text-foreground">案件材料总览</p><p className="text-xs text-muted-foreground">预览并导出已整理内容</p></div>
+            <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+          </Link>
+        </aside>
       </div>
-
-      {/* Transition Modal */}
-      {showTransition && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowTransition(false)}>
-          <div className="w-full max-w-md rounded-2xl border border-border/50 bg-white p-6 shadow-[0_30px_80px_rgba(15,22,40,.35)]" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-lg font-bold text-foreground">{"推进状态"}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {"当前："}<StatusTag status={caseData.status} />
-            </p>
-            <form onSubmit={handleTransition} className="mt-4 space-y-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-foreground">{"目标状态"}</label>
-                <select
-                  value={targetStatus}
-                  onChange={(e) => setTargetStatus(e.target.value)}
-                  className="w-full rounded-xl border border-input bg-background px-4 py-2.5 text-sm focus:border-primary focus:outline-none focus:ring-3 focus:ring-primary/20"
-                >
-                  <option value="">{"请选择"}</option>
-                  {availableTransitions.map((s) => (
-                    <option key={s} value={s}>{statusLabel(s)}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-foreground">{"备注（可选）"}</label>
-                <textarea
-                  value={remark}
-                  onChange={(e) => setRemark(e.target.value)}
-                  rows={3}
-                  placeholder="填写状态变更原因..."
-                  className="w-full rounded-xl border border-input bg-background px-4 py-2.5 text-sm focus:border-primary focus:outline-none focus:ring-3 focus:ring-primary/20"
-                />
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <button type="button" onClick={() => setShowTransition(false)} className="rounded-xl border border-input px-4 py-2 text-sm font-medium text-foreground hover:bg-accent">
-                  {"取消"}
-                </button>
-                <button type="submit" disabled={transitioning || !targetStatus} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
-                  {transitioning ? "处理中..." : "确认推进"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Error */}
-      {error && <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
     </div>
   )
 }

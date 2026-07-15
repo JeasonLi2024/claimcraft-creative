@@ -128,7 +128,31 @@ class WorkflowRunner:
                     )
                     await emitter.notify(thread_id, eid)
 
-            # 4. 持久化 workflow.complete 事件
+            # 4. 区分 HITL 中断与图真正结束，避免把等待校正误判为完成
+            snapshot = await workflow.aget_state(config)
+            if snapshot.next:
+                from asgiref.sync import sync_to_async
+                from api.services.case_lifecycle_service import mark_waiting_review
+
+                await sync_to_async(mark_waiting_review, thread_sensitive=True)(case_id)
+                waiting_eid = await depot.persist(thread_id, "workflow.waiting_review", {
+                    "thread_id": thread_id,
+                    "case_id": case_id,
+                    "next_nodes": list(snapshot.next),
+                    "ts": _utcnow_iso(),
+                })
+                await emitter.notify(thread_id, waiting_eid)
+                return
+
+            # 5. 图真正结束后校验数据库中的文稿产物，再推进案件生命周期
+            from asgiref.sync import sync_to_async
+            from api.services.case_lifecycle_service import complete_processing
+
+            completion = await sync_to_async(complete_processing, thread_sensitive=True)(
+                case_id, thread_id=thread_id
+            )
+            if completion.case.workflow_status != 'succeeded':
+                raise RuntimeError(completion.case.workflow_error or '工作流未生成有效文稿')
             total_duration_ms = int(
                 (_utcnow() - workflow_start_time).total_seconds() * 1000
             )
@@ -146,7 +170,13 @@ class WorkflowRunner:
             )
 
         except Exception as e:
-            # 不可恢复的致命错误：写入 workflow.error 事件
+            # 不可恢复的致命错误：同步案件工作流状态并写入事件
+            try:
+                from asgiref.sync import sync_to_async
+                from api.services.case_lifecycle_service import fail_processing
+                await sync_to_async(fail_processing, thread_sensitive=True)(case_id, str(e))
+            except Exception as state_err:
+                logger.error(f"同步工作流失败状态异常 (case={case_id}): {state_err}")
             logger.error(
                 f"工作流运行失败 (thread={thread_id}, case={case_id}): {e}",
                 exc_info=True,

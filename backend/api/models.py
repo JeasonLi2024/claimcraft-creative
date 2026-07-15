@@ -65,6 +65,14 @@ class Case(models.Model):
         ('respond', '商家反证'),
     ]
 
+    WORKFLOW_STATUS_CHOICES = [
+        ('idle', '未启动'),
+        ('running', '处理中'),
+        ('waiting_review', '等待用户校正'),
+        ('succeeded', '处理完成'),
+        ('failed', '处理失败'),
+    ]
+
     title = models.CharField('案件标题', max_length=200)
     description = models.TextField('案件描述', blank=True, default='')
     case_type = models.CharField(
@@ -85,6 +93,16 @@ class Case(models.Model):
         'LangGraph Thread ID', max_length=100, blank=True, default='',
         help_text='LangGraph checkpointer 的 thread_id，用于 HITL 状态恢复'
     )
+    workflow_status = models.CharField(
+        '工作流状态', max_length=20, choices=WORKFLOW_STATUS_CHOICES,
+        default='idle'
+    )
+    workflow_started_at = models.DateTimeField('工作流开始时间', null=True, blank=True)
+    workflow_finished_at = models.DateTimeField('工作流结束时间', null=True, blank=True)
+    workflow_error = models.TextField('工作流错误', blank=True, default='')
+    workflow_revision = models.PositiveIntegerField('工作流版本', default=0)
+    document_stale = models.BooleanField('文稿是否已过期', default=False)
+    archived_at = models.DateTimeField('归档时间', null=True, blank=True)
 
     class Meta:
         verbose_name = '案件'
@@ -629,6 +647,14 @@ class RespondTemplate(models.Model):
 class CaseStatusLog(models.Model):
     """案件状态变更日志。"""
 
+    TRIGGER_CHOICES = [
+        ('workflow_started', '工作流启动'),
+        ('document_generated', '文稿生成'),
+        ('user_archived', '用户归档'),
+        ('user_cancelled', '用户取消'),
+        ('admin_override', '管理员调整'),
+    ]
+
     case = models.ForeignKey(
         Case,
         related_name='status_logs',
@@ -638,6 +664,16 @@ class CaseStatusLog(models.Model):
     from_status = models.CharField('原状态', max_length=20, blank=True, default='')
     to_status = models.CharField('目标状态', max_length=20)
     remark = models.TextField('备注', blank=True, default='')
+    trigger = models.CharField(
+        '触发来源', max_length=40, choices=TRIGGER_CHOICES,
+        blank=True, default=''
+    )
+    actor = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='case_status_actions', verbose_name='操作人'
+    )
+    thread_id = models.CharField('工作流线程 ID', max_length=100, blank=True, default='')
+    metadata = models.JSONField('扩展信息', default=dict, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:

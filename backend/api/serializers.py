@@ -331,7 +331,7 @@ class LoginSerializer(serializers.Serializer):
 
 
 class CaseSerializer(serializers.ModelSerializer):
-    """案件序列化器，含统计字段。"""
+    """案件序列化器，含统计字段与系统计算的工作进度。"""
 
     status = serializers.CharField(read_only=True)
     owner = UserSerializer(read_only=True)
@@ -340,6 +340,7 @@ class CaseSerializer(serializers.ModelSerializer):
     template_count = serializers.SerializerMethodField()
     image_evidence_count = serializers.SerializerMethodField()
     extracted_field_count = serializers.SerializerMethodField()
+    progress = serializers.SerializerMethodField()
 
     class Meta:
         model = Case
@@ -348,8 +349,15 @@ class CaseSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'owner',
             'evidence_count', 'timeline_count', 'template_count',
             'image_evidence_count', 'extracted_field_count',
+            'workflow_status', 'workflow_started_at', 'workflow_finished_at',
+            'workflow_error', 'workflow_revision', 'document_stale', 'archived_at',
+            'progress',
         ]
-        read_only_fields = ['status', 'created_at', 'updated_at', 'owner']
+        read_only_fields = [
+            'status', 'created_at', 'updated_at', 'owner', 'workflow_status',
+            'workflow_started_at', 'workflow_finished_at', 'workflow_error',
+            'workflow_revision', 'document_stale', 'archived_at', 'progress',
+        ]
 
     def get_evidence_count(self, obj):
         return obj.evidences.count()
@@ -358,6 +366,8 @@ class CaseSerializer(serializers.ModelSerializer):
         return obj.timeline_nodes.count()
 
     def get_template_count(self, obj):
+        if obj.case_mode == 'respond':
+            return obj.respond_templates.count()
         return obj.complaint_templates.count()
 
     def get_image_evidence_count(self, obj):
@@ -368,6 +378,10 @@ class CaseSerializer(serializers.ModelSerializer):
         for ev in obj.evidences.all():
             count += ev.extracted_fields.count()
         return count
+
+    def get_progress(self, obj):
+        from api.services.case_lifecycle_service import get_case_progress
+        return get_case_progress(obj)
 
 
 class CaseListSerializer(serializers.ModelSerializer):
@@ -381,12 +395,16 @@ class CaseListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Case
         fields = [
-            'id', 'title', 'description', 'case_type', 'status',
+            'id', 'title', 'description', 'case_type', 'case_mode', 'status',
+            'workflow_status', 'document_stale',
             'created_at', 'updated_at', 'owner',
             'evidence_count', 'image_evidence_count',
             'extracted_field_count',
         ]
-        read_only_fields = ['status', 'created_at', 'updated_at', 'owner']
+        read_only_fields = [
+            'status', 'workflow_status', 'document_stale',
+            'created_at', 'updated_at', 'owner',
+        ]
 
     def get_evidence_count(self, obj):
         return obj.evidences.count()
@@ -495,8 +513,8 @@ class CaseStatusLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = CaseStatusLog
         fields = [
-            'id', 'case', 'from_status', 'to_status',
-            'remark', 'created_at',
+            'id', 'case', 'from_status', 'to_status', 'remark',
+            'trigger', 'actor', 'thread_id', 'metadata', 'created_at',
         ]
 
 
