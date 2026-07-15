@@ -43,7 +43,10 @@ backend/db.sqlite3
 backend/db.sqlite3-journal
 
 # Media uploads (user-uploaded evidence images etc.)
-backend/media/
+# 用 media/* 而非 media/ 以便为 logo 子目录开例外
+backend/media/*
+!backend/media/logo/
+!backend/media/logo/**
 
 # Static files (collected by collectstatic)
 backend/staticfiles/

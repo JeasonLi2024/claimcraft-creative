@@ -27,12 +27,11 @@ const evidenceCards = [
 
 function BrandMark({ inverse = false }: { inverse?: boolean }) {
   return (
-    <span
-      className={`inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm font-bold ${inverse ? "bg-[#f8f8f5] text-[#181b1a]" : "bg-[#181b1a] text-[#f8f8f5]"}`}
-      aria-hidden="true"
-    >
-      C
-    </span>
+    <img
+      src="/media/logo/logo.jpg"
+      alt="ClaimCraft logo"
+      className={`h-9 w-9 rounded-xl object-cover ${inverse ? "ring-1 ring-white/30" : ""}`}
+    />
   )
 }
 

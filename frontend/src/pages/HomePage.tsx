@@ -92,7 +92,7 @@ const safetyItems = [
 ]
 
 function BrandMark({ className = "" }: { className?: string }) {
-  return <span className={`inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#181b1a] text-sm font-semibold text-[#f8f8f5] ${className}`} aria-hidden="true">C</span>
+  return <img src="/media/logo/logo.jpg" alt="ClaimCraft logo" className={`h-8 w-8 rounded-lg object-cover ${className}`} />
 }
 
 function PrimaryCta({ compact = false, authenticated = false }: { compact?: boolean; authenticated?: boolean }) {
