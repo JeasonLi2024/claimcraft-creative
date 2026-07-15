@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mysql:
     image: mysql:8.0
@@ -83,7 +81,11 @@ services:
       - OCR_RETRY_MAX_ATTEMPTS=${OCR_RETRY_MAX_ATTEMPTS:-3}
       - OCR_RETRY_WAIT_MIN=${OCR_RETRY_WAIT_MIN:-1}
       - OCR_RETRY_WAIT_MAX=${OCR_RETRY_WAIT_MAX:-8}
-      - TESSERACT_CMD=${TESSERACT_CMD:-}
+      - TESSERACT_CMD=${TESSERACT_CMD:-/usr/bin/tesseract}
+      - SIMSUN_PATH=${SIMSUN_PATH:-/usr/share/fonts/truetype/wqy/wqy-microhei.ttc}
+      - PADDLE_PDX_CACHE_HOME=${PADDLE_PDX_CACHE_HOME:-/app/.paddlex_cache}
+      - FLAGS_enable_pir_in_executor=${FLAGS_enable_pir_in_executor:-0}
+      - FLAGS_enable_pir_api=${FLAGS_enable_pir_api:-0}
       # LangGraph Checkpointer 持久化（PostgreSQL，独立于业务 MySQL）
       - CHECKPOINTER_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
       - CHECKPOINTER_POOL_SIZE=${CHECKPOINTER_POOL_SIZE:-20}
@@ -100,6 +102,22 @@ services:
       # v3 新增：LangSmith 区域与 Workspace
       - LANGSMITH_REGION=${LANGSMITH_REGION:-}
       - LANGSMITH_WORKSPACE_ID=${LANGSMITH_WORKSPACE_ID:-}
+      # 邮件发送配置（Agent Mail CLI 优先，SMTP 兜底）
+      - CLAIMCRAFT_MAIL_PROVIDER_ORDER=${CLAIMCRAFT_MAIL_PROVIDER_ORDER:-agent_cli,smtp}
+      - CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME=${CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME:-ClaimCraft}
+      - CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL=${CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL:-}
+      - CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS=${CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS:-30}
+      - CLAIMCRAFT_AGENT_MAIL_ENABLED=${CLAIMCRAFT_AGENT_MAIL_ENABLED:-true}
+      - CLAIMCRAFT_AGENT_MAIL_COMMAND=${CLAIMCRAFT_AGENT_MAIL_COMMAND:-/usr/local/bin/agently-cli}
+      - CLAIMCRAFT_AGENT_MAIL_HOME=${CLAIMCRAFT_AGENT_MAIL_HOME:-/app/.agently-home}
+      - CLAIMCRAFT_LOG_DIR=${CLAIMCRAFT_LOG_DIR:-/app/logs}
+      - CLAIMCRAFT_SMTP_ENABLED=${CLAIMCRAFT_SMTP_ENABLED:-true}
+      - CLAIMCRAFT_SMTP_HOST=${CLAIMCRAFT_SMTP_HOST:-smtp.qq.com}
+      - CLAIMCRAFT_SMTP_PORT=${CLAIMCRAFT_SMTP_PORT:-465}
+      - CLAIMCRAFT_SMTP_USERNAME=${CLAIMCRAFT_SMTP_USERNAME:-}
+      - CLAIMCRAFT_SMTP_PASSWORD=${CLAIMCRAFT_SMTP_PASSWORD:-}
+      - CLAIMCRAFT_SMTP_USE_TLS=${CLAIMCRAFT_SMTP_USE_TLS:-false}
+      - CLAIMCRAFT_SMTP_USE_SSL=${CLAIMCRAFT_SMTP_USE_SSL:-true}
       # v10 新增：Embedding 服务（RAG 知识库向量检索）
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
@@ -120,13 +138,22 @@ services:
       postgres-checkpointer:
         condition: service_healthy
     command: >
-      sh -c "python manage.py migrate &&
-             python manage.py shell -c \"from django.contrib.auth.models import User; User.objects.get_or_create(username='admin', defaults={'password':'admin123','is_staff':True,'is_superuser':True})\" &&
+      sh -c "mkdir -p /app/logs &&
+             python manage.py migrate &&
+             python manage.py shell -c \"from django.contrib.auth.models import User; user, created = User.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True, 'email': ''}); user.is_staff = True; user.is_superuser = True; user.set_password('admin123'); user.save(); print('admin user ready')\" &&
              python manage.py loaddata seed_data.json || true &&
-             gunicorn claimcraft.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+             exec uvicorn claimcraft.asgi:application --host 0.0.0.0 --port 8000 --workers 2 --log-config /app/logging_uvicorn.json"
     volumes:
       - media_data:/app/media
+      - /srv/claimcraft/.agently-home:/app/.agently-home
+      - paddlex_cache:/app/.paddlex_cache
+      - /home/ubuntu/claimcraft-creative/logs/backend:/app/logs
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
 
   postgres-checkpointer:
     image: postgres:16-alpine
@@ -153,9 +180,17 @@ services:
       - "80:80"
     depends_on:
       - backend
+    volumes:
+      - /home/ubuntu/claimcraft-creative/logs/frontend:/var/log/nginx
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
 
 volumes:
   mysql_data:
   media_data:
   pg_checkpoints_data:
+  paddlex_cache:

@@ -118,6 +118,7 @@ coverage.xml
 # PaddleOCR cache
 # ========================
 .paddlex_cache/
+logs/
 
 # ========================
 # LangGraph dev server runtime

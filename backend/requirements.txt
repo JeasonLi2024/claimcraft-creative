@@ -32,6 +32,6 @@ tenacity>=8.0
 # ===== LangExtract（字段抽取，Google 出品，通过 OpenAI 兼容接口调用 Qwen3）=====
 # [openai] 可选依赖：启用 OpenAI 兼容 provider（Qwen3 / GPT / DeepSeek 等通用）
 langextract[openai]>=0.1.0
-# ===== OCR 多引擎（C1 新增，可选）=====
-paddleocr>=2.7
-paddlepaddle>=2.6
+# ===== OCR 多引擎（本地 PaddleOCR 为可选重依赖，容器部署默认关闭）=====
+paddleocr>=3.0.0
+paddlepaddle>=3.0.0

@@ -238,6 +238,11 @@ MEDIA_URL = '/media/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# 运行日志目录（Docker 生产环境建议挂载到宿主机）
+CLAIMCRAFT_LOG_DIR = Path(os.environ.get('CLAIMCRAFT_LOG_DIR', '/app/logs'))
+CLAIMCRAFT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
 # CORS 配置（开发环境简化）
 CORS_ORIGIN_ALLOW_ALL = True
 CORS_ALLOW_ALL_ORIGINS = True
@@ -337,3 +342,61 @@ CLAIMCRAFT_EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = _get_env_int(
 CLAIMCRAFT_EMAIL_VERIFICATION_MAX_SENDS_PER_HOUR = _get_env_int(
     'CLAIMCRAFT_EMAIL_VERIFICATION_MAX_SENDS_PER_HOUR', 5
 )
+
+
+# ===== 日志配置 =====
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s %(message)s',
+        },
+        'simple': {
+            'format': '%(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        'app_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(CLAIMCRAFT_LOG_DIR / 'backend-app.log'),
+            'maxBytes': 10 * 1024 * 1024,
+            'backupCount': 5,
+            'encoding': 'utf-8',
+            'formatter': 'verbose',
+        },
+        'error_file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': str(CLAIMCRAFT_LOG_DIR / 'backend-error.log'),
+            'maxBytes': 10 * 1024 * 1024,
+            'backupCount': 5,
+            'encoding': 'utf-8',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'app_file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'app_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console', 'error_file'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'api': {
+            'handlers': ['console', 'app_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
