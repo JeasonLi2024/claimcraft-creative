@@ -1,16 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useParams } from "react-router"
 import { useCaseStore } from "@/stores/case-store"
 import { useFormat } from "@/composables/useFormat"
 import { useStatus } from "@/composables/useStatus"
 import PillTag from "@/components/PillTag"
-import EmptyState from "@/components/EmptyState"
 import { WorkflowStreamPanel } from "@/components/workflow/WorkflowStreamPanel"
 import { cn } from "@/lib/utils"
 import type { ExtractedField } from "@/types/case"
 import {
-  Upload, Plus, ChevronDown, ChevronRight, Trash2, ImagePlus,
-  X, Loader2, FileText, Eye, Clock, Package,
+  Upload, ChevronDown, ChevronRight, Trash2, ImagePlus, X, Loader2,
+  Clock, Package, Images, ScanText, CheckCircle2, Sparkles, ShieldCheck,
+  Search, Layers3,
 } from "lucide-react"
 
 // v9: 证据类别 → 中文标签映射（与后端 classify_node 保持一致）
@@ -52,7 +52,6 @@ export default function EvidencePage() {
   const fetchCaseDetail = useCaseStore((s) => s.fetchCaseDetail)
   const fetchEvidences = useCaseStore((s) => s.fetchEvidences)
   const uploadEvidence = useCaseStore((s) => s.uploadEvidence)
-  const addEvidence = useCaseStore((s) => s.addEvidence)
   const removeEvidence = useCaseStore((s) => s.removeEvidence)
   const fetchExtractedFields = useCaseStore((s) => s.fetchExtractedFields)
   const updateExtractedField = useCaseStore((s) => s.updateExtractedField)
@@ -166,17 +165,6 @@ export default function EvidencePage() {
     setPendingFiles([])
   }
 
-  async function handleAddSample() {
-    if (!caseId) return
-    try {
-      await addEvidence(Number(caseId), {
-        description: "示例证据 - 聊天截图",
-        evidence_type: "screenshot",
-        source_time: new Date().toISOString(),
-      })
-    } catch {}
-  }
-
   async function handleDelete(evId: number) {
     try { await removeEvidence(evId) } catch {}
   }
@@ -199,86 +187,105 @@ export default function EvidencePage() {
     return "未识别"
   }
 
+  const imageCount = evidences.filter((ev) => !!ev.image).length
+  const physicalCount = evidences.filter((ev) => ev.is_physical_evidence).length
+  const recognizedCount = evidences.filter((ev) => ev.ocr_status === "done").length
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">{"证据管理"}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {"上传截图、文本等证据材料，系统将自动进行 OCR 识别和信息抽取"}
-        </p>
-      </div>
+    <div className="space-y-5 pb-8">
+      <section className="relative overflow-hidden rounded-[28px] bg-[#17231d] text-white shadow-[0_22px_65px_rgba(23,35,29,.14)]">
+        <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-[#6f9f83]/20 blur-3xl" />
+        <div className="relative grid gap-7 p-6 sm:p-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs text-white/70"><Sparkles className="h-3.5 w-3.5 text-[#d8b967]" />智能材料整理</div>
+            <h1 className="mt-5 text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">证据管理</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">集中上传订单、沟通记录、支付凭证与实物照片。系统会自动识别文字、提取关键信息，并用于构建案件时间线。</p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">{currentCase?.title || "当前案件"}</span>
+              {currentCase?.case_type && <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">{disputeLabel(currentCase.case_type)}</span>}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 self-end">
+            {[
+              { label: "全部材料", value: evidences.length, icon: Layers3 },
+              { label: "图片证据", value: imageCount, icon: Images },
+              { label: "识别完成", value: recognizedCount, icon: CheckCircle2 },
+              { label: "物证照片", value: physicalCount, icon: Package },
+            ].map((item) => (
+              <div key={item.label} className="rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-sm">
+                <div className="flex items-center justify-between text-white/45"><span className="text-xs">{item.label}</span><item.icon className="h-4 w-4" /></div>
+                <div className="mt-2 text-2xl font-semibold">{item.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
-      {/* Upload zone */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileSelect(e.dataTransfer.files) }}
-        onClick={() => fileInputRef.current?.click()}
-        className={cn(
-          "flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-8 transition-all",
-          dragOver
-            ? "border-primary bg-primary/5"
-            : "border-border/50 hover:border-primary/30 hover:bg-accent/30"
-        )}
-      >
-        {uploading ? (
-          <Loader2 className="mb-2 h-8 w-8 animate-spin text-primary" />
-        ) : (
-          <Upload className="mb-2 h-8 w-8 text-muted-foreground" />
-        )}
-        <p className="text-sm font-medium text-foreground">
-          {uploading ? "正在上传并识别..." : "拖拽图片到此处上传"}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">{"支持 JPG、PNG、WEBP 格式"}</p>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          multiple
-          className="hidden"
-          onChange={(e) => handleFileSelect(e.target.files)}
-        />
-      </div>
-
-      <button
-        onClick={handleAddSample}
-        className="inline-flex items-center gap-1.5 rounded-xl border border-input px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-      >
-        <Plus className="h-4 w-4" />
-        {"添加示例证据"}
-      </button>
-
-      {/* Error */}
       {error && <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
 
-      {/* Loading */}
-      {loading && evidences.length === 0 && (
-        <div className="flex h-48 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <section className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFileSelect(e.dataTransfer.files) }}
+          onClick={() => fileInputRef.current?.click()}
+          className={cn(
+            "group flex min-h-56 cursor-pointer flex-col items-start gap-5 rounded-[24px] border-2 border-dashed p-6 transition-all sm:flex-row sm:items-center sm:p-8",
+            dragOver ? "border-secondary bg-accent shadow-[0_16px_40px_rgba(63,107,87,.10)]" : "border-[#cdd5ce] bg-card hover:-translate-y-0.5 hover:border-secondary/50 hover:bg-[#fafcf9] hover:shadow-md"
+          )}
+        >
+          <span className={cn("flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl transition-colors", dragOver ? "bg-secondary text-white" : "bg-accent text-secondary group-hover:bg-secondary group-hover:text-white")}>
+            {uploading ? <Loader2 className="h-7 w-7 animate-spin" /> : <Upload className="h-7 w-7" />}
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">添加案件材料</p>
+            <h2 className="mt-1 text-lg font-semibold text-foreground">{uploading ? "正在上传并识别" : "拖拽图片到这里，或点击选择文件"}</h2>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">支持批量上传 JPG、PNG、WEBP；实物照片可在下一步标记为纯物证。</p>
+            <div className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[#17231d] px-4 py-2 text-sm font-semibold text-white">选择图片<ChevronRight className="h-4 w-4" /></div>
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleFileSelect(e.target.files); e.currentTarget.value = "" }} />
+        </div>
+
+        <div className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_32px_rgba(31,45,38,.05)]">
+          <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-secondary"><ScanText className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">上传后自动处理</h2><p className="text-xs text-muted-foreground">无需逐项手工录入</p></div></div>
+          <div className="mt-5 space-y-4">
+            {["识别图片中的文字与日期", "归类订单、支付和沟通信息", "提取字段并关联案件时间线"].map((text, index) => (
+              <div key={text} className="flex items-start gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-secondary">{index + 1}</span><p className="pt-0.5 text-sm leading-5 text-muted-foreground">{text}</p></div>
+            ))}
+          </div>
+          <div className="mt-5 rounded-xl bg-muted/60 p-3 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mb-1.5 h-4 w-4 text-secondary" />原图和识别结果仅用于当前案件材料整理。</div>
+        </div>
+      </section>
+
+      {loading && evidences.length === 0 && <div className="flex h-36 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-secondary" /></div>}
+
+      {!loading && evidences.length === 0 && (
+        <section className="rounded-[24px] border border-border bg-card px-6 py-12 text-center shadow-[0_12px_32px_rgba(31,45,38,.04)]">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground"><ImagePlus className="h-6 w-6" /></span>
+          <h2 className="mt-4 text-lg font-semibold">从第一份真实材料开始</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-muted-foreground">建议优先上传订单页、付款记录和关键沟通截图，清晰完整的图片能获得更准确的识别结果。</p>
+          <button onClick={() => fileInputRef.current?.click()} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90"><Upload className="h-4 w-4" />上传第一份证据</button>
+        </section>
+      )}
+
+      {evidences.length > 0 && (
+        <div className="flex flex-wrap items-end justify-between gap-3 pt-2">
+          <div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">证据清单</p><h2 className="mt-1 text-xl font-semibold tracking-tight">已整理 {evidences.length} 份材料</h2></div>
+          <div className="flex items-center gap-2 rounded-xl bg-muted/60 px-3 py-2 text-xs text-muted-foreground"><Search className="h-3.5 w-3.5" />点击图片可查看原图，展开卡片可核对识别结果</div>
         </div>
       )}
 
-      {/* Empty state */}
-      {!loading && evidences.length === 0 && (
-        <EmptyState
-          icon={<ImagePlus className="h-8 w-8" />}
-          title="还没有证据"
-          description="上传截图或添加文本证据，系统将自动进行 OCR 识别"
-        />
-      )}
-
-      {/* Evidence grid */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2">
         {evidences.map((ev) => {
           const isExpanded = expandedOcr.has(ev.id)
           const fields = extractedFieldsMap[ev.id] || []
 
           return (
-            <div key={ev.id} className="rounded-[18px] border border-border/50 bg-card p-5 shadow-[0_10px_30px_rgba(20,35,90,.04)]">
+            <article key={ev.id} className="group/card rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_34px_rgba(31,45,38,.055)] transition-all hover:-translate-y-0.5 hover:border-secondary/25 hover:shadow-[0_18px_44px_rgba(31,45,38,.09)] sm:p-6">
               {/* Header: code + type + OCR + delete */}
               <div className="flex items-start justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center rounded-lg bg-gradient-to-r from-[#2f6bff]/10 to-[#11b981]/10 px-2.5 py-0.5 text-xs font-bold text-primary">
+                  <span className="inline-flex items-center rounded-lg bg-[#17231d] px-2.5 py-1 text-xs font-bold text-white">
                     {ev.code}
                   </span>
                   <PillTag label={ev.evidence_type || "未知"} variant="default" />
@@ -295,7 +302,8 @@ export default function EvidencePage() {
                 </div>
                 <button
                   onClick={() => handleDelete(ev.id)}
-                  className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  className="rounded-xl border border-transparent p-2 text-muted-foreground transition-colors hover:border-destructive/15 hover:bg-destructive/8 hover:text-destructive"
+                  aria-label={`删除证据 ${ev.code}`}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -304,18 +312,19 @@ export default function EvidencePage() {
               {/* Image or text */}
               {ev.image ? (
                 <div
-                  className="mt-3 cursor-pointer overflow-hidden rounded-xl"
+                  className="relative mt-4 cursor-zoom-in overflow-hidden rounded-2xl bg-muted"
                   onClick={() => setLightboxSrc(ev.image)}
                 >
                   <img
                     src={ev.image}
                     alt={ev.code}
                     loading="lazy"
-                    className="h-40 w-full rounded-xl object-cover transition-transform hover:scale-[1.02]"
+                    className="h-52 w-full object-cover transition-transform duration-500 group-hover/card:scale-[1.025]"
                   />
+                  <span className="pointer-events-none absolute bottom-3 right-3 rounded-lg bg-black/55 px-2 py-1 text-[11px] font-medium text-white backdrop-blur">查看原图</span>
                 </div>
               ) : (
-                <p className="mt-3 line-clamp-3 rounded-xl bg-muted/50 p-3 text-sm text-muted-foreground">
+                <p className="mt-4 line-clamp-3 rounded-2xl bg-muted/60 p-4 text-sm leading-6 text-muted-foreground">
                   {ev.description || "无文本内容"}
                 </p>
               )}
@@ -346,10 +355,10 @@ export default function EvidencePage() {
                 <div className="mt-3">
                   <button
                     onClick={() => toggleOcr(ev.id)}
-                    className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    className="flex w-full items-center justify-between rounded-xl bg-muted/55 px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
                   >
-                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                    {ev.is_physical_evidence ? "图片说明" : "OCR 识别结果"} ({fields.length} 个字段)
+                    <span className="flex items-center gap-2"><ScanText className="h-4 w-4 text-secondary" />{ev.is_physical_evidence ? "图片说明" : "识别与抽取结果"}<span className="text-xs font-normal text-muted-foreground">{fields.length} 个字段</span></span>
+                    {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                   </button>
 
                   {isExpanded && (
@@ -416,7 +425,7 @@ export default function EvidencePage() {
                   )}
                 </div>
               )}
-            </div>
+            </article>
           )
         })}
       </div>
@@ -426,18 +435,20 @@ export default function EvidencePage() {
 
       {/* v10: 上传弹窗 - 每张图片独立标记物证 */}
       {uploadDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-card p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" onClick={handleCancelUpload}>
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-[24px] border border-border bg-card p-6 shadow-[0_28px_90px_rgba(20,30,25,.28)]" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">上传证据图片</h3>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">添加案件材料</p>
+                <h3 className="mt-1 text-lg font-semibold text-foreground">确认上传证据</h3>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   共 {pendingFiles.length} 张图片，可分别为每张图片标记是否为纯物证
                 </p>
               </div>
               <button
                 onClick={handleCancelUpload}
-                className="rounded-lg p-1 text-muted-foreground hover:bg-accent"
+                className="rounded-xl p-2 text-muted-foreground hover:bg-accent"
+                aria-label="关闭上传弹窗"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -554,7 +565,7 @@ export default function EvidencePage() {
       {/* Lightbox */}
       {lightboxSrc && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
           onClick={() => setLightboxSrc(null)}
         >
           <button className="absolute right-4 top-4 rounded-lg bg-white/10 p-2 text-white hover:bg-white/20">
