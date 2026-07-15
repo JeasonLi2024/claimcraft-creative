@@ -28,7 +28,7 @@ const evidenceCards = [
 function BrandMark({ inverse = false }: { inverse?: boolean }) {
   return (
     <img
-      src="/media/logo/logo.jpg"
+      src="/logo.jpg"
       alt="ClaimCraft logo"
       className={`h-9 w-9 rounded-xl object-cover ${inverse ? "ring-1 ring-white/30" : ""}`}
     />

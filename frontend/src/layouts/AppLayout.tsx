@@ -88,7 +88,7 @@ export default function AppLayout() {
       <header className="sticky top-0 z-20 border-b border-border bg-background">
         <div className="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-4 lg:px-8">
           <Link to={isAuthenticated ? "/cases" : "/login"} className="flex items-center gap-2">
-            <img src="/media/logo/logo.jpg" alt="ClaimCraft logo" className="h-8 w-8 rounded-lg object-cover" />
+            <img src="/logo.jpg" alt="ClaimCraft logo" className="h-8 w-8 rounded-lg object-cover" />
             <span className="text-lg font-bold tracking-tight text-foreground">ClaimCraft</span>
           </Link>
 
