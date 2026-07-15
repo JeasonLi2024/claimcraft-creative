@@ -68,11 +68,15 @@ export default function EvidencePage() {
   const [dragOver, setDragOver] = useState(false)
   const [expandedOcr, setExpandedOcr] = useState<Set<number>>(new Set())
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
-  // v10: 上传弹窗（物证图片支持）
+  // v10: 上传弹窗（物证图片支持，每张图片独立标记）
+  interface PendingFile {
+    file: File
+    previewUrl: string
+    isPhysicalEvidence: boolean
+    physicalNote: string
+  }
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
-  const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [isPhysicalEvidence, setIsPhysicalEvidence] = useState(false)
-  const [physicalNote, setPhysicalNote] = useState("")
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -96,39 +100,70 @@ export default function EvidencePage() {
     })
   }
 
-  // v10: 拖拽/选择后打开上传弹窗，让用户标记是否为物证图片并填写说明
+  // v10: 拖拽/选择后打开上传弹窗，让用户为每张图片独立标记是否为物证并填写说明
   function handleFileSelect(files: FileList | null) {
     if (!files || !caseId) return
     const imgs = Array.from(files).filter((f) => f.type.startsWith("image/"))
     if (imgs.length === 0) return
-    setPendingFiles(imgs)
+    const items: PendingFile[] = imgs.map((file) => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+      isPhysicalEvidence: false,
+      physicalNote: "",
+    }))
+    setPendingFiles(items)
     setUploadDialogOpen(true)
+  }
+
+  // 切换某张图片的物证标记
+  function togglePhysical(idx: number) {
+    setPendingFiles((prev) =>
+      prev.map((item, i) =>
+        i === idx ? { ...item, isPhysicalEvidence: !item.isPhysicalEvidence } : item
+      )
+    )
+  }
+
+  // 更新某张图片的物证说明
+  function updatePhysicalNote(idx: number, note: string) {
+    setPendingFiles((prev) =>
+      prev.map((item, i) =>
+        i === idx ? { ...item, physicalNote: note } : item
+      )
+    )
+  }
+
+  // 删除某张待上传图片
+  function removePendingFile(idx: number) {
+    setPendingFiles((prev) => {
+      const target = prev[idx]
+      if (target) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((_, i) => i !== idx)
+    })
   }
 
   async function handleConfirmUpload() {
     if (!caseId || pendingFiles.length === 0) return
     setUploading(true)
     try {
-      const options = isPhysicalEvidence
-        ? { isPhysicalEvidence: true, physicalNote: physicalNote.trim() }
-        : undefined
-      for (const file of pendingFiles) {
-        await uploadEvidence(Number(caseId), file, options)
+      for (const item of pendingFiles) {
+        const options = item.isPhysicalEvidence
+          ? { isPhysicalEvidence: true, physicalNote: item.physicalNote.trim() }
+          : undefined
+        await uploadEvidence(Number(caseId), item.file, options)
       }
-      // 关闭弹窗并重置
+      // 关闭弹窗并释放预览 URL
+      pendingFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl))
       setUploadDialogOpen(false)
       setPendingFiles([])
-      setIsPhysicalEvidence(false)
-      setPhysicalNote("")
     } catch {}
     finally { setUploading(false) }
   }
 
   function handleCancelUpload() {
+    pendingFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl))
     setUploadDialogOpen(false)
     setPendingFiles([])
-    setIsPhysicalEvidence(false)
-    setPhysicalNote("")
   }
 
   async function handleAddSample() {
@@ -389,12 +424,17 @@ export default function EvidencePage() {
       {/* Workflow Stream Panel */}
       {caseId && <WorkflowStreamPanel caseId={Number(caseId)} />}
 
-      {/* v10: 上传弹窗 - 物证图片支持 */}
+      {/* v10: 上传弹窗 - 每张图片独立标记物证 */}
       {uploadDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-xl">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-card p-6 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-foreground">上传证据图片</h3>
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">上传证据图片</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  共 {pendingFiles.length} 张图片，可分别为每张图片标记是否为纯物证
+                </p>
+              </div>
               <button
                 onClick={handleCancelUpload}
                 className="rounded-lg p-1 text-muted-foreground hover:bg-accent"
@@ -403,58 +443,90 @@ export default function EvidencePage() {
               </button>
             </div>
 
-            {/* 文件预览 */}
-            <div className="mb-4 max-h-40 overflow-y-auto rounded-xl bg-muted/30 p-3">
-              {pendingFiles.map((f, i) => (
-                <div key={i} className="flex items-center gap-2 py-1 text-sm text-foreground">
-                  <ImagePlus className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1 truncate">{f.name}</span>
-                  <span className="text-xs text-muted-foreground">{(f.size / 1024).toFixed(0)} KB</span>
+            {/* 文件列表（每张图片独立配置） */}
+            <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+              {pendingFiles.map((item, idx) => (
+                <div
+                  key={idx}
+                  className={cn(
+                    "rounded-xl border p-3 transition-colors",
+                    item.isPhysicalEvidence
+                      ? "border-amber-300 bg-amber-50/50"
+                      : "border-border/50 bg-muted/20"
+                  )}
+                >
+                  <div className="flex gap-3">
+                    {/* 图片缩略图 */}
+                    <img
+                      src={item.previewUrl}
+                      alt={item.file.name}
+                      className="h-20 w-20 flex-shrink-0 rounded-lg object-cover"
+                    />
+
+                    <div className="flex-1 min-w-0">
+                      {/* 文件名 + 删除按钮 */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {item.file.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {(item.file.size / 1024).toFixed(0)} KB
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => removePendingFile(idx)}
+                          className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      {/* 物证勾选 */}
+                      <label className="mt-2 flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={item.isPhysicalEvidence}
+                          onChange={() => togglePhysical(idx)}
+                          className="mt-0.5 rounded"
+                        />
+                        <div className="flex items-center gap-1">
+                          <Package className="h-3.5 w-3.5 text-amber-500" />
+                          <span className="font-medium text-foreground">标记为纯物证图片</span>
+                          <span className="text-xs text-muted-foreground">（无文字内容，跳过 OCR）</span>
+                        </div>
+                      </label>
+
+                      {/* 物证说明（仅勾选时显示） */}
+                      {item.isPhysicalEvidence && (
+                        <div className="mt-2">
+                          <textarea
+                            value={item.physicalNote}
+                            onChange={(e) => updatePhysicalNote(idx, e.target.value)}
+                            placeholder="描述此物证的损坏程度、现场环境、物证特征等，例如：商品收到时屏幕已碎裂，包装完好无损"
+                            rows={2}
+                            maxLength={500}
+                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-xs focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none"
+                          />
+                          <p className="mt-0.5 text-right text-[10px] text-muted-foreground">
+                            {item.physicalNote.length}/500
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ))}
+
+              {pendingFiles.length === 0 && (
+                <div className="py-8 text-center text-sm text-muted-foreground">
+                  已无待上传图片
+                </div>
+              )}
             </div>
 
-            {/* 物证勾选 */}
-            <label className="flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-sm">
-              <input
-                type="checkbox"
-                checked={isPhysicalEvidence}
-                onChange={(e) => setIsPhysicalEvidence(e.target.checked)}
-                className="mt-0.5 rounded"
-              />
-              <div>
-                <div className="font-medium text-foreground flex items-center gap-1">
-                  <Package className="h-4 w-4 text-amber-500" />
-                  标记为纯物证图片（无文字内容，跳过 OCR）
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  适用于商品损坏照片、现场环境照、实物对比照等无文字但作为重要证据的图片
-                </p>
-              </div>
-            </label>
-
-            {/* 物证说明 */}
-            {isPhysicalEvidence && (
-              <div className="mt-3">
-                <label className="mb-1.5 block text-sm font-medium text-foreground">
-                  物证说明
-                </label>
-                <textarea
-                  value={physicalNote}
-                  onChange={(e) => setPhysicalNote(e.target.value)}
-                  placeholder="建议描述损坏程度、现场环境、物证特征等，例如：商品收到时屏幕已碎裂，包装完好无损"
-                  rows={3}
-                  maxLength={500}
-                  className="w-full rounded-xl border border-input bg-background px-4 py-2.5 text-sm focus:border-primary focus:outline-none focus:ring-3 focus:ring-primary/20 resize-none"
-                />
-                <p className="mt-1 text-right text-xs text-muted-foreground">
-                  {physicalNote.length}/500
-                </p>
-              </div>
-            )}
-
             {/* 操作按钮 */}
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="mt-4 flex justify-end gap-2 border-t border-border/50 pt-4">
               <button
                 onClick={handleCancelUpload}
                 disabled={uploading}
@@ -464,11 +536,15 @@ export default function EvidencePage() {
               </button>
               <button
                 onClick={handleConfirmUpload}
-                disabled={uploading || (isPhysicalEvidence && !physicalNote.trim())}
+                disabled={
+                  uploading ||
+                  pendingFiles.length === 0 ||
+                  pendingFiles.some((f) => f.isPhysicalEvidence && !f.physicalNote.trim())
+                }
                 className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                {uploading ? "上传中..." : "上传"}
+                {uploading ? "上传中..." : `上传 ${pendingFiles.length} 张`}
               </button>
             </div>
           </div>
