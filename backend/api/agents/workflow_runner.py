@@ -6,9 +6,10 @@
 - 每次 astream_events 产生输出 → SSEEventMapper 过滤映射 → EventDepot.persist → NotifyEmitter.notify
 - SSE 端点作为消费者从 EventDepot 读取事件推送给前端
 
-后台任务执行方式（spec 选项 A）：asyncio.create_task + 全局任务注册表
-- 适合单进程 ASGI 部署（uvicorn workers）
-- _task_registry: dict[thread_id, asyncio.Task] 管理运行中的任务
+后台任务执行方式：优先复用当前事件循环；若调用方在同步线程中，
+则投递到专用后台事件循环线程。
+- 适合 DRF 同步视图 + ASGI/SSE 混合部署
+- _task_registry: dict[thread_id, Future] 管理运行中的后台任务
 - 进程崩溃则任务丢失，依赖 checkpointer 恢复
 
 HITL 流程：
@@ -18,6 +19,8 @@ HITL 流程：
 """
 import asyncio
 import logging
+import threading
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from typing import Any
 
@@ -59,8 +62,37 @@ class WorkflowRunner:
                                     resume={"corrections": [...]})
     """
 
-    # 类级任务注册表：thread_id → asyncio.Task（运行中的后台任务）
-    _task_registry: dict[str, asyncio.Task] = {}
+    # 类级任务注册表：thread_id → Future（运行中的后台任务）
+    _task_registry: dict[str, Future[Any]] = {}
+    _background_loop: asyncio.AbstractEventLoop | None = None
+    _background_loop_thread: threading.Thread | None = None
+    _background_loop_lock = threading.Lock()
+
+    @classmethod
+    def _run_background_loop(cls, loop: asyncio.AbstractEventLoop) -> None:
+        """在线程内启动专用事件循环。"""
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    @classmethod
+    def _ensure_background_loop(cls) -> asyncio.AbstractEventLoop:
+        """确保存在可投递协程的后台事件循环。"""
+        with cls._background_loop_lock:
+            if cls._background_loop is not None and cls._background_loop.is_running():
+                return cls._background_loop
+
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=cls._run_background_loop,
+                args=(loop,),
+                name="workflow-runner-loop",
+                daemon=True,
+            )
+            thread.start()
+            cls._background_loop = loop
+            cls._background_loop_thread = thread
+            logger.info("已启动 WorkflowRunner 后台事件循环线程")
+            return loop
 
     async def run_and_persist(
         self,
@@ -202,7 +234,7 @@ class WorkflowRunner:
         thread_id: str,
         initial_state: dict | None = None,
         resume: dict | None = None,
-    ) -> asyncio.Task:
+    ) -> Future[Any]:
         """启动后台任务（不阻塞调用方）。
 
         若同一 thread_id 已有运行中的任务，先取消旧任务（避免重复运行）。
@@ -214,7 +246,7 @@ class WorkflowRunner:
             resume: HITL 恢复的校正数据（与 initial_state 互斥）
 
         Returns:
-            asyncio.Task 对象
+            Future 对象
         """
         # 取消同 thread_id 的旧任务（如有）
         old_task = self._task_registry.get(thread_id)
@@ -222,25 +254,32 @@ class WorkflowRunner:
             old_task.cancel()
             logger.warning(f"取消同 thread_id 旧任务 (thread={thread_id})")
 
-        task = asyncio.create_task(
-            self.run_and_persist(
-                case_id=case_id,
-                thread_id=thread_id,
-                initial_state=initial_state,
-                resume=resume,
-            )
+        coro = self.run_and_persist(
+            case_id=case_id,
+            thread_id=thread_id,
+            initial_state=initial_state,
+            resume=resume,
         )
+        try:
+            loop = asyncio.get_running_loop()
+            task: Future[Any] = loop.create_task(coro)
+        except RuntimeError:
+            loop = self._ensure_background_loop()
+            task = asyncio.run_coroutine_threadsafe(
+                coro,
+                loop,
+            )
         self._task_registry[thread_id] = task
 
         # 任务结束回调：确保从注册表清理
-        def _on_done(t: asyncio.Task) -> None:
+        def _on_done(t: Future[Any]) -> None:
             self._task_registry.pop(thread_id, None)
             if t.cancelled():
                 logger.debug(f"后台任务已取消 (thread={thread_id})")
-            elif t.exception():
-                logger.error(
-                    f"后台任务异常退出 (thread={thread_id}): {t.exception()}"
-                )
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(f"后台任务异常退出 (thread={thread_id}): {exc}")
 
         task.add_done_callback(_on_done)
         return task

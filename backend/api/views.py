@@ -90,8 +90,6 @@ from api.services import (
     complaint_service,
     mask_service,
     export_service,
-    ocr_service,
-    extraction_service,
     image_mask_service,
     pdf_service,
 )
@@ -1595,33 +1593,17 @@ class EvidenceUploadView(APIView):
             has_sensitive_info=bool(has_sensitive_info),
             order=max_order + 1,
             image=image_file,
-            ocr_status='pending',
+            # 物证无需识别，直接 done；其余保持 pending，由工作流统一 OCR + LLM 抽取
+            ocr_status='done' if is_physical_evidence else 'pending',
             is_physical_evidence=is_physical_evidence,
             physical_note=physical_note,
         )
 
-        # 纯物证图片：跳过同步 OCR 与字段抽取
-        if is_physical_evidence:
-            evidence.ocr_status = 'done'
-            evidence.extracted_text = ''
-            evidence.save(update_fields=['ocr_status', 'extracted_text'])
-        else:
-            # OCR 识别
-            try:
-                text = ocr_service.ocr_image(evidence.image.path)
-                evidence.extracted_text = text
-                evidence.ocr_status = 'done'
-                evidence.save()
-            except Exception:
-                evidence.ocr_status = 'failed'
-                evidence.save()
-                text = ''
-
-            # 字段抽取（失败也不影响返回）
-            try:
-                extraction_service.extract_fields(evidence)
-            except Exception:
-                pass
+        # 上传阶段不再同步执行 OCR / 字段抽取：
+        #   1) 正则抽取准确率约 60%，容易给用户错误预期；
+        #   2) PaddleOCR-VL + LLM 调用阻塞 5-10s，严重影响上传体验；
+        #   3) 工作流（LangGraph 6 节点）会重新做更准确的语义抽取，是唯一权威源。
+        # 物证图片天然不需要识别。
 
         from api.services.case_lifecycle_service import mark_document_stale
         mark_document_stale(case.id)

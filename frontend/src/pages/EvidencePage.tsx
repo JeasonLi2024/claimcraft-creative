@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { useParams } from "react-router"
+import { useParams, Link } from "react-router"
 import { useCaseStore } from "@/stores/case-store"
 import { useFormat } from "@/composables/useFormat"
 import { useStatus } from "@/composables/useStatus"
@@ -145,12 +145,16 @@ export default function EvidencePage() {
     if (!caseId || pendingFiles.length === 0) return
     setUploading(true)
     try {
-      for (const item of pendingFiles) {
-        const options = item.isPhysicalEvidence
-          ? { isPhysicalEvidence: true, physicalNote: item.physicalNote.trim() }
-          : undefined
-        await uploadEvidence(Number(caseId), item.file, options)
-      }
+      // 并行提交：每张图片独立调用一次 /evidences/upload/ 接口，
+      // 避免单次 multipart 请求体超过 Nginx client_max_body_size 限制
+      await Promise.all(
+        pendingFiles.map((item) => {
+          const options = item.isPhysicalEvidence
+            ? { isPhysicalEvidence: true, physicalNote: item.physicalNote.trim() }
+            : undefined
+          return uploadEvidence(Number(caseId), item.file, options)
+        })
+      )
       // 关闭弹窗并释放预览 URL
       pendingFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl))
       setUploadDialogOpen(false)
@@ -292,7 +296,16 @@ export default function EvidencePage() {
                   {ev.is_physical_evidence && (
                     <PillTag label="物证" variant="warning" />
                   )}
-                  <PillTag label={ocrStatusLabel(ev.ocr_status)} variant={ocrStatusVariant(ev.ocr_status)} />
+                  {/* OCR 状态徽标：
+                      - 物证无 OCR 概念，不显示；
+                      - pending（新建后、工作流前）不显示，避免误以为"处理中"；
+                      - done / failed 才展示。 */}
+                  {!ev.is_physical_evidence && ev.ocr_status !== "pending" && (
+                    <PillTag
+                      label={ocrStatusLabel(ev.ocr_status)}
+                      variant={ocrStatusVariant(ev.ocr_status)}
+                    />
+                  )}
                 </div>
                 <button
                   onClick={() => handleDelete(ev.id)}
@@ -344,80 +357,147 @@ export default function EvidencePage() {
                 </div>
               )}
 
-              {/* OCR expandable section */}
-              {(ev.ocr_status === "done" || fields.length > 0 || !!ev.ocr_summary) && (
+              {/* 物证图片：直接展示说明，不需要折叠头/字段表 */}
+              {ev.is_physical_evidence ? (
                 <div className="mt-3">
-                  <button
-                    onClick={() => toggleOcr(ev.id)}
-                    className="flex w-full items-center justify-between rounded-xl bg-muted/55 px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-                  >
-                    <span className="flex items-center gap-2"><ScanText className="h-4 w-4 text-secondary" />{ev.is_physical_evidence ? "图片说明" : "识别与抽取结果"}<span className="text-xs font-normal text-muted-foreground">{fields.length} 个字段</span></span>
-                    {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                  </button>
+                  {ev.physical_note ? (
+                    <p className="rounded-xl bg-warning/5 p-3 text-xs text-foreground/80 whitespace-pre-wrap border border-warning/15">
+                      {ev.physical_note}
+                    </p>
+                  ) : (
+                    <p className="rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground">
+                      暂无物证说明，可在上传弹窗中补充。
+                    </p>
+                  )}
+                </div>
+              ) : (
+                /* 非物证：OCR/抽取结果可折叠 */
+                (() => {
+                  const isPending = ev.ocr_status === "pending"
+                  const isFailed = ev.ocr_status === "failed"
+                  const headerLabel = isPending
+                    ? "暂未识别"
+                    : isFailed
+                      ? "识别失败"
+                      : "识别与抽取结果"
+                  return (
+                    <div className="mt-3">
+                      <button
+                        onClick={() => toggleOcr(ev.id)}
+                        className="flex w-full items-center justify-between rounded-xl bg-muted/55 px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                      >
+                        <span className="flex items-center gap-2">
+                          <ScanText className="h-4 w-4 text-secondary" />
+                          {headerLabel}
+                          {!isPending && !isFailed && (
+                            <span className="text-xs font-normal text-muted-foreground">
+                              {fields.length} 个字段
+                            </span>
+                          )}
+                        </span>
+                        {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                      </button>
 
-                  {isExpanded && (
-                    <div className="mt-2 space-y-2">
-                      {/* v9: 视觉摘要（Captioner 生成，100-200字） */}
-                      {ev.ocr_summary && (
-                        <div className="rounded-xl bg-primary/5 p-3">
-                          <div className="mb-1 text-xs font-semibold text-primary">{"视觉摘要"}</div>
-                          <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-wrap">
-                            {ev.ocr_summary}
-                          </p>
-                        </div>
-                      )}
-
-                      {ev.extracted_text && (
-                        <p className="rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap">
-                          {ev.extracted_text}
-                        </p>
-                      )}
-
-                      {/* v9: 字段表 - 按 field_category 分组展示 */}
-                      {fields.length > 0 && (
-                        <div className="space-y-3">
-                          {groupFieldsByCategory(fields).map((group) => (
-                            <div key={group.category} className="overflow-hidden rounded-xl border border-border/50">
-                              <div className="border-b border-border/50 bg-muted/40 px-3 py-1.5 text-xs font-semibold text-foreground/80">
-                                {group.category}{" "}
-                                <span className="ml-1 text-muted-foreground">({group.fields.length})</span>
-                              </div>
-                              <div className="overflow-x-auto">
-                                <table className="w-full text-sm">
-                                  <thead>
-                                    <tr className="border-b border-border/30 bg-muted/20">
-                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"字段名"}</th>
-                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"值"}</th>
-                                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"置信度"}</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {group.fields.map((field, i) => (
-                                      <tr key={field.id} className={cn("border-b border-border/30", i % 2 === 0 && "bg-muted/10")}>
-                                        <td className="px-3 py-2 font-medium text-foreground">{field.field_name}</td>
-                                        <td className="px-3 py-2">
-                                          <input
-                                            type="text"
-                                            defaultValue={field.field_value}
-                                            onBlur={(e) => handleFieldBlur(field.id, e.target.value)}
-                                            className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-foreground focus:border-primary focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
-                                          />
-                                        </td>
-                                        <td className="px-3 py-2 text-muted-foreground">
-                                          {field.confidence !== null ? (field.confidence * 100).toFixed(1) + "%" : "-"}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
+                      {isExpanded && (
+                        <div className="mt-2 space-y-2">
+                          {/* 未识别：引导去工作流 */}
+                          {isPending && (
+                            <div className="rounded-xl border border-dashed border-secondary/30 bg-secondary/5 p-4 text-center">
+                              <p className="text-sm text-foreground/80">
+                                上传时已跳过同步 OCR / 字段抽取，避免 5-10s 阻塞与正则误识别。
+                              </p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                点击下方按钮，由 LangGraph 工作流统一做 AI 识别与抽取。
+                              </p>
+                              <Link
+                                to={`/cases/${caseId}/workspace`}
+                                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-secondary px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-secondary/90"
+                              >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                前往工作流分析
+                              </Link>
                             </div>
-                          ))}
+                          )}
+
+                          {/* 识别失败 */}
+                          {isFailed && (
+                            <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+                              识别失败，请检查图片后重试，或前往工作流重新分析。
+                            </div>
+                          )}
+
+                          {/* 已识别：展示 OCR 文本 + 字段表 */}
+                          {!isPending && !isFailed && (
+                            <>
+                              {ev.ocr_summary && (
+                                <div className="rounded-xl bg-primary/5 p-3">
+                                  <div className="mb-1 text-xs font-semibold text-primary">{"视觉摘要"}</div>
+                                  <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-wrap">
+                                    {ev.ocr_summary}
+                                  </p>
+                                </div>
+                              )}
+
+                              {ev.extracted_text && (
+                                <p className="rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap">
+                                  {ev.extracted_text}
+                                </p>
+                              )}
+
+                              {fields.length > 0 && (
+                                <div className="space-y-3">
+                                  {groupFieldsByCategory(fields).map((group) => (
+                                    <div key={group.category} className="overflow-hidden rounded-xl border border-border/50">
+                                      <div className="border-b border-border/50 bg-muted/40 px-3 py-1.5 text-xs font-semibold text-foreground/80">
+                                        {group.category}{" "}
+                                        <span className="ml-1 text-muted-foreground">({group.fields.length})</span>
+                                      </div>
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-sm">
+                                          <thead>
+                                            <tr className="border-b border-border/30 bg-muted/20">
+                                              <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"字段名"}</th>
+                                              <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"值"}</th>
+                                              <th className="px-3 py-2 text-left font-medium text-muted-foreground">{"置信度"}</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {group.fields.map((field, i) => (
+                                              <tr key={field.id} className={cn("border-b border-border/30", i % 2 === 0 && "bg-muted/10")}>
+                                                <td className="px-3 py-2 font-medium text-foreground">{field.field_name}</td>
+                                                <td className="px-3 py-2">
+                                                  <input
+                                                    type="text"
+                                                    defaultValue={field.field_value}
+                                                    onBlur={(e) => handleFieldBlur(field.id, e.target.value)}
+                                                    className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-foreground focus:border-primary focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                                  />
+                                                </td>
+                                                <td className="px-3 py-2 text-muted-foreground">
+                                                  {field.confidence !== null ? (field.confidence * 100).toFixed(1) + "%" : "-"}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {fields.length === 0 && !ev.extracted_text && !ev.ocr_summary && (
+                                <p className="rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground">
+                                  工作流已跑过但未抽取到字段，可手动补充证据描述。
+                                </p>
+                              )}
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
+                  )
+                })()
               )}
             </article>
           )

@@ -11,6 +11,7 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
+  Sparkles,
   UserRound,
 } from "lucide-react"
 import { authApi } from "@/lib/api"
@@ -41,6 +42,7 @@ export default function LoginForm() {
   const [showPassword, setShowPassword] = useState(false)
   const [passwordError, setPasswordError] = useState("")
   const [passwordLoading, setPasswordLoading] = useState(false)
+  const [guestLoading, setGuestLoading] = useState(false)
 
   const [email, setEmail] = useState("")
   const [emailCode, setEmailCode] = useState("")
@@ -128,6 +130,19 @@ export default function LoginForm() {
       setPasswordError(getAuthErrorMessage(err, "登录失败，请检查账号信息"))
     } finally {
       setPasswordLoading(false)
+    }
+  }
+
+  async function handleGuestLogin() {
+    setPasswordError("")
+    setGuestLoading(true)
+    try {
+      await login({ account: "admin", password: "admin123" })
+      navigate("/cases", { replace: true })
+    } catch (err: any) {
+      setPasswordError(getAuthErrorMessage(err, "游客体验登录失败，请稍后再试"))
+    } finally {
+      setGuestLoading(false)
     }
   }
 
@@ -427,6 +442,38 @@ export default function LoginForm() {
                 </>
               )}
             </button>
+
+            <div className="relative my-5 flex items-center gap-3">
+              <div className="h-px flex-1 bg-[#d9ddd5]" />
+              <span className="text-[11px] uppercase tracking-[0.18em] text-[#9a9f9b]">or</span>
+              <div className="h-px flex-1 bg-[#d9ddd5]" />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleGuestLogin()}
+              disabled={passwordLoading || guestLoading}
+              className={`group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl bg-gradient-to-r from-[#3f6b57] via-[#4f8068] to-[#3f6b57] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_14px_30px_rgba(63,107,87,.32)] ring-1 ring-inset ring-white/15 transition-[transform,box-shadow,filter] hover:-translate-y-0.5 hover:shadow-[0_20px_42px_rgba(63,107,87,.42)] active:translate-y-0 disabled:pointer-events-none disabled:opacity-60 ${authFocusRing}`}
+            >
+              <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_0%,rgba(255,255,255,.25),transparent_55%)]" aria-hidden="true" />
+              {guestLoading ? (
+                <>
+                  <Loader2 className="relative h-4 w-4 animate-spin" />
+                  正在进入体验空间...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="relative h-4 w-4 transition-transform group-hover:rotate-12 group-hover:scale-110" />
+                  游客免登录体验
+                  <span className="relative ml-1 inline-flex items-center rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold tracking-wide text-white/95">
+                    一键直达
+                  </span>
+                </>
+              )}
+            </button>
+            <p className="mt-2 text-center text-[11px] text-[#8a908b]">
+              以演示账号 <span className="font-mono font-semibold text-[#3f6b57]">admin</span> 身份进入工作区，无需注册即可浏览全部功能。
+            </p>
           </form>
 
           {resetPanelOpen && (
