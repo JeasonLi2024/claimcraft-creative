@@ -21,12 +21,18 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from asgiref.sync import sync_to_async
 from langgraph.types import Command
 
 from api.agents.graph import build_case_workflow
 from api.agents.notify_emitter import NotifyEmitter
 from api.agents.sse_event_depot import EventDepot
 from api.agents.sse_event_mapper import SSEEventMapper
+from api.services.case_lifecycle_service import (
+    complete_processing,
+    fail_processing,
+    mark_waiting_review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +137,6 @@ class WorkflowRunner:
             # 4. 区分 HITL 中断与图真正结束，避免把等待校正误判为完成
             snapshot = await workflow.aget_state(config)
             if snapshot.next:
-                from asgiref.sync import sync_to_async
-                from api.services.case_lifecycle_service import mark_waiting_review
-
                 await sync_to_async(mark_waiting_review, thread_sensitive=True)(case_id)
                 waiting_eid = await depot.persist(thread_id, "workflow.waiting_review", {
                     "thread_id": thread_id,
@@ -145,9 +148,6 @@ class WorkflowRunner:
                 return
 
             # 5. 图真正结束后校验数据库中的文稿产物，再推进案件生命周期
-            from asgiref.sync import sync_to_async
-            from api.services.case_lifecycle_service import complete_processing
-
             completion = await sync_to_async(complete_processing, thread_sensitive=True)(
                 case_id, thread_id=thread_id
             )
@@ -172,8 +172,6 @@ class WorkflowRunner:
         except Exception as e:
             # 不可恢复的致命错误：同步案件工作流状态并写入事件
             try:
-                from asgiref.sync import sync_to_async
-                from api.services.case_lifecycle_service import fail_processing
                 await sync_to_async(fail_processing, thread_sensitive=True)(case_id, str(e))
             except Exception as state_err:
                 logger.error(f"同步工作流失败状态异常 (case={case_id}): {state_err}")

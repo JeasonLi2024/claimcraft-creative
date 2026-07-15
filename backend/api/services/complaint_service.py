@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 """投诉文本生成相关业务逻辑。"""
-from jinja2 import Template
+import logging
+
+from jinja2 import Template, TemplateError
 
 from api.models import ComplaintTemplateRule, ComplaintTemplate, RespondTemplate
 from api.services.timeline_service import get_sorted_timeline
+
+
+logger = logging.getLogger(__name__)
 
 
 def _build_context(case):
@@ -26,50 +31,57 @@ def _build_context(case):
     }
 
 
-def generate_complaint(case, template_type):
-    """动态生成投诉文本。优先用 ComplaintTemplateRule (Jinja2)，回退 ComplaintTemplate 静态。"""
-    context = _build_context(case)
-
-    # 优先用案件级 Rule
+def _render_rule(rule, context, template_type):
+    """安全渲染规则；材料尚不完整或模板本身错误时返回 None 以触发降级。"""
     try:
-        rule = ComplaintTemplateRule.objects.get(template_type=template_type, case=case)
-        title_tmpl = Template(rule.rule_title)
-        content_tmpl = Template(rule.rule_content)
         return {
-            'title': title_tmpl.render(**context),
-            'content': content_tmpl.render(**context),
+            'title': Template(rule.rule_title).render(**context),
+            'content': Template(rule.rule_content).render(**context),
             'template_type': template_type,
         }
-    except ComplaintTemplateRule.DoesNotExist:
-        # 查全局 Rule（case=null）
-        try:
-            rule = ComplaintTemplateRule.objects.get(
-                template_type=template_type, case__isnull=True
-            )
-            title_tmpl = Template(rule.rule_title)
-            content_tmpl = Template(rule.rule_content)
-            return {
-                'title': title_tmpl.render(**context),
-                'content': content_tmpl.render(**context),
-                'template_type': template_type,
-            }
-        except ComplaintTemplateRule.DoesNotExist:
-            pass
+    except (TemplateError, TypeError, ValueError, AttributeError, IndexError) as exc:
+        logger.warning(
+            '投诉模板渲染失败，已降级 (case=%s, rule=%s, type=%s): %s',
+            context['case'].id,
+            rule.id,
+            template_type,
+            exc,
+            exc_info=True,
+        )
+        return None
 
-    # 回退静态 ComplaintTemplate
-    try:
-        tmpl = ComplaintTemplate.objects.get(case=case, template_type=template_type)
+
+def generate_complaint(case, template_type):
+    """动态生成投诉文本，规则不可用时依次降级到静态模板和空态文案。"""
+    context = _build_context(case)
+
+    # 案件级规则优先；显式拼接查询结果，避免不同数据库的 NULL 排序差异。
+    rules = list(ComplaintTemplateRule.objects.filter(
+        template_type=template_type, case=case,
+    ).order_by('id'))
+    rules.extend(ComplaintTemplateRule.objects.filter(
+        template_type=template_type, case__isnull=True,
+    ).order_by('id'))
+    for rule in rules:
+        result = _render_rule(rule, context, template_type)
+        if result is not None:
+            return result
+
+    # 回退静态 ComplaintTemplate。使用 first 避免历史重复数据导致 500。
+    tmpl = ComplaintTemplate.objects.filter(
+        case=case, template_type=template_type
+    ).order_by('-id').first()
+    if tmpl is not None:
         return {
             'title': tmpl.title,
             'content': tmpl.content,
             'template_type': template_type,
         }
-    except ComplaintTemplate.DoesNotExist:
-        return {
-            'title': '投诉标题',
-            'content': '暂无模板',
-            'template_type': template_type,
-        }
+    return {
+        'title': '投诉标题',
+        'content': '材料尚未完整，完成证据上传与时间线整理后即可生成投诉文本。',
+        'template_type': template_type,
+    }
 
 
 def get_respond_template(case, template_type):
