@@ -17,6 +17,7 @@ from django.db.models.functions import TruncDate
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.views import View
 from django_fsm import can_proceed
 from datetime import timedelta
 from rest_framework import status
@@ -2461,7 +2462,7 @@ class CaseWorkflowStartView(APIView):
         })
 
 
-class CaseWorkflowStreamView(APIView):
+class CaseWorkflowStreamView(View):
     """SSE 流式端点：GET /api/cases/<id>/workflow/stream/
 
     从 EventDepot 读取事件推送给前端，支持断连续传。
@@ -2473,24 +2474,35 @@ class CaseWorkflowStreamView(APIView):
         5. 每 15s 心跳保活
 
     需要 ASGI 部署（uvicorn），Django 4.2+ 支持异步生成器。
+    继承 Django 原生 View（非 DRF APIView）以支持 async def get。
     """
 
     async def get(self, request, pk):
         from asgiref.sync import sync_to_async
         from api.agents import EventDepot, NotifyEmitter
 
-        case = await sync_to_async(get_object_or_404)(Case, pk=pk, owner=request.user)
-        thread_id = request.query_params.get('thread_id') or case.thread_id
+        # 手动 JWT 认证（DRF APIView 在 ASGI 下不支持 async）
+        user = await self._authenticate(request)
+        if user is None:
+            return HttpResponse(
+                json.dumps({'detail': '认证失败'}),
+                content_type='application/json',
+                status=401,
+            )
+
+        case = await sync_to_async(get_object_or_404)(Case, pk=pk, owner=user)
+        thread_id = request.GET.get('thread_id') or case.thread_id
         if not thread_id:
-            return Response(
-                {'detail': '案件尚未启动工作流'},
-                status=status.HTTP_404_NOT_FOUND,
+            return HttpResponse(
+                json.dumps({'detail': '案件尚未启动工作流'}),
+                content_type='application/json',
+                status=404,
             )
 
         # 读取 last_event_id（兼容 Last-Event-ID header 和 ?last_event_id= query）
         last_event_id_str = (
             request.headers.get('Last-Event-ID')
-            or request.query_params.get('last_event_id', '0')
+            or request.GET.get('last_event_id', '0')
         )
         try:
             last_event_id = int(last_event_id_str)
@@ -2573,6 +2585,26 @@ class CaseWorkflowStreamView(APIView):
         response['X-Accel-Buffering'] = 'no'
         response['Connection'] = 'keep-alive'
         return response
+
+    async def _authenticate(self, request):
+        """手动 JWT 认证，返回 User 或 None。
+
+        SSE 端点用 Django 原生 View，需手动解析 Authorization header。
+        """
+        from asgiref.sync import sync_to_async
+        from rest_framework_simplejwt.tokens import AccessToken
+        from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return None
+        token = auth_header[7:]
+        try:
+            access_token = AccessToken(token)
+            user_id = access_token['user_id']
+            return await sync_to_async(User.objects.get)(pk=user_id)
+        except (TokenError, InvalidToken, User.DoesNotExist):
+            return None
 
 
 class CaseWorkflowResumeView(APIView):
