@@ -8,7 +8,7 @@ import { WorkflowStreamPanel } from "@/components/workflow/WorkflowStreamPanel"
 import { cn } from "@/lib/utils"
 import type { ExtractedField } from "@/types/case"
 import {
-  Upload, ChevronDown, ChevronRight, Trash2, ImagePlus, X, Loader2,
+  Upload, ChevronDown, ChevronRight, Trash2, X, Loader2,
   Clock, Package, Images, ScanText, CheckCircle2, Sparkles, ShieldCheck,
   Search, Layers3,
 } from "lucide-react"
@@ -257,16 +257,10 @@ export default function EvidencePage() {
         </div>
       </section>
 
-      {loading && evidences.length === 0 && <div className="flex h-36 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-secondary" /></div>}
+      {/* 关键操作紧邻材料上传区，启动后在原位展示实时分析结果 */}
+      {caseId && <WorkflowStreamPanel caseId={Number(caseId)} />}
 
-      {!loading && evidences.length === 0 && (
-        <section className="rounded-[24px] border border-border bg-card px-6 py-12 text-center shadow-[0_12px_32px_rgba(31,45,38,.04)]">
-          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground"><ImagePlus className="h-6 w-6" /></span>
-          <h2 className="mt-4 text-lg font-semibold">从第一份真实材料开始</h2>
-          <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-muted-foreground">建议优先上传订单页、付款记录和关键沟通截图，清晰完整的图片能获得更准确的识别结果。</p>
-          <button onClick={() => fileInputRef.current?.click()} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90"><Upload className="h-4 w-4" />上传第一份证据</button>
-        </section>
-      )}
+      {loading && evidences.length === 0 && <div className="flex h-36 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-secondary" /></div>}
 
       {evidences.length > 0 && (
         <div className="flex flex-wrap items-end justify-between gap-3 pt-2">
@@ -429,9 +423,6 @@ export default function EvidencePage() {
           )
         })}
       </div>
-
-      {/* Workflow Stream Panel */}
-      {caseId && <WorkflowStreamPanel caseId={Number(caseId)} />}
 
       {/* v10: 上传弹窗 - 每张图片独立标记物证 */}
       {uploadDialogOpen && (
