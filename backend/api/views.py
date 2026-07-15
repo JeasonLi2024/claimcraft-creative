@@ -42,7 +42,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from api.models import (
     AccountAuditLog,
     Case, Evidence, ExtractedField, TimelineNode, CaseStatusLog,
-    CaseTypePreset, ComplaintTemplateRule,
+    CaseTypePreset, ComplaintTemplate, ComplaintTemplateRule,
     EmailVerificationChallenge,
     UserPreference,
     UserProfile,
@@ -1735,7 +1735,11 @@ class TimelineNodeUpdateView(APIView):
 # ===== 投诉视图 =====
 
 class ComplaintView(APIView):
-    """投诉文本：GET /cases/<id>/complaints/?template_type=<type>。"""
+    """投诉文本：GET /cases/<id>/complaints/?template_type=<type>。
+
+    返回 {title, content, template_type, tone}。
+    tone 从 ComplaintTemplate 表读取（工作流生成时存储），无则不返回。
+    """
 
     def get(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
@@ -1747,23 +1751,81 @@ class ComplaintView(APIView):
                 {'detail': f'未找到模板类型：{template_type}'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        # 补充 tone（从 ComplaintTemplate 读取）
+        try:
+            tmpl = ComplaintTemplate.objects.get(case=case, template_type=template_type)
+            result['tone'] = tmpl.tone if hasattr(tmpl, 'tone') else ''
+        except ComplaintTemplate.DoesNotExist:
+            pass
         return Response(result)
 
 
 class ComplaintRegenerateView(APIView):
     """投诉文本重新生成：POST /cases/<id>/complaints/regenerate/。
 
-    接收 {template_type}（默认 platform），返回 {title, content, template_type}。
+    接收 {template_type, tone?}，返回 {title, content, template_type}。
+    tone 可选，指定后会存储到 ComplaintTemplate 记录中。
     """
 
     def post(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         template_type = request.data.get('template_type', 'platform')
+        tone = request.data.get('tone', '')
+
         result = complaint_service.generate_complaint(case, template_type)
         if result is None:
             return Response(
                 {'detail': f'未找到模板类型：{template_type}'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        # 如果指定了 tone，更新 ComplaintTemplate 记录
+        if tone:
+            try:
+                tmpl = ComplaintTemplate.objects.get(case=case, template_type=template_type)
+                if hasattr(tmpl, 'tone'):
+                    tmpl.tone = tone
+                    tmpl.save(update_fields=['tone'])
+            except ComplaintTemplate.DoesNotExist:
+                pass
+            result['tone'] = tone
+        return Response(result)
+
+
+class RespondTemplateView(APIView):
+    """反证答辩书：GET /cases/<id>/respond-templates/?template_type=<type>。
+
+    优先从 RespondTemplate 表读取工作流产物，无则回退投诉模板预览。
+    """
+
+    def get(self, request, case_id):
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+
+        template_type = request.query_params.get('template_type', 'platform')
+        result = complaint_service.generate_respond_complaint(case, template_type)
+        if result is None:
+            return Response(
+                {'detail': f'未找到答辩模板类型：{template_type}'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(result)
+
+
+class RespondTemplateRegenerateView(APIView):
+    """反证答辩书重新生成：POST /cases/<id>/respond-templates/regenerate/。
+
+    接收 {template_type}，返回 {title, content, template_type}。
+    注意：实际 LLM 重写需通过工作流触发，此接口仅重新渲染 Jinja2 模板。
+    """
+
+    def post(self, request, case_id):
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+
+        template_type = request.data.get('template_type', 'platform')
+        result = complaint_service.generate_respond_complaint(case, template_type)
+        if result is None:
+            return Response(
+                {'detail': f'未找到答辩模板类型：{template_type}'},
                 status=status.HTTP_404_NOT_FOUND
             )
         return Response(result)
@@ -1921,14 +1983,15 @@ class MaskImageView(APIView):
 
 
 class ExportPackageView(APIView):
-    """证据包导出：GET /cases/<id>/export/package/ 返回 ZIP 文件流。"""
+    """证据包导出：GET /cases/<id>/export/package/?template_type=<type> 返回 ZIP 文件流。"""
 
     def get(self, request, pk):
         case = get_object_or_404(Case, pk=pk, owner=request.user)
-        buf = export_service.export_evidence_package(case)
+        template_type = request.query_params.get('template_type', 'platform')
+        buf = export_service.export_evidence_package(case, template_type=template_type)
         resp = HttpResponse(buf.read(), content_type='application/zip')
         resp['Content-Disposition'] = (
-            f'attachment; filename="case_{case.id}_package.zip"'
+            f'attachment; filename="case_{case.id}_{template_type}_package.zip"'
         )
         return resp
 

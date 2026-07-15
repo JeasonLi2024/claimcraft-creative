@@ -27,6 +27,7 @@ interface CaseState {
   timelineNodes: TimelineNode[]
   currentTemplate: string
   complaintData: ComplaintData | null
+  respondData: ComplaintData | null
   maskResults: MaskResult[]
   masked: boolean
   statusLogs: StatusLog[]
@@ -57,13 +58,15 @@ interface CaseState {
 
   fetchComplaint: (caseId: number, templateType: string) => Promise<void>
   regenerateComplaint: (caseId: number, templateType: string) => Promise<void>
+  fetchRespond: (caseId: number, templateType: string) => Promise<void>
+  regenerateRespond: (caseId: number, templateType: string) => Promise<void>
 
   fetchMaskResults: (caseId: number) => Promise<void>
   toggleMasked: () => void
   maskImages: (caseId: number) => Promise<void>
 
   exportText: (caseId: number, params: { template_type: string; masked: boolean }) => Promise<{ content: string; filename: string }>
-  exportPackage: (caseId: number) => Promise<Blob>
+  exportPackage: (caseId: number, templateType: string) => Promise<Blob>
   exportPDF: (caseId: number, templateType: string) => Promise<Blob>
 
   fetchStats: () => Promise<void>
@@ -97,6 +100,7 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
   timelineNodes: [],
   currentTemplate: "platform",
   complaintData: null,
+  respondData: null,
   maskResults: [],
   masked: false,
   statusLogs: [],
@@ -352,6 +356,32 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
     }
   },
 
+  fetchRespond: async (caseId, templateType) => {
+    set({ loading: true, error: null })
+    try {
+      const data = await api.respondApi.get(caseId, templateType)
+      set({ respondData: data })
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "获取反证答辩书失败" })
+      throw e
+    } finally {
+      set({ loading: false })
+    }
+  },
+
+  regenerateRespond: async (caseId, templateType) => {
+    set({ loading: true, error: null })
+    try {
+      const data = await api.respondApi.regenerate(caseId, templateType)
+      set({ respondData: data })
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "重新生成反证答辩书失败" })
+      throw e
+    } finally {
+      set({ loading: false })
+    }
+  },
+
   fetchMaskResults: async (caseId) => {
     set({ loading: true, error: null })
     try {
@@ -402,10 +432,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
     }
   },
 
-  exportPackage: async (caseId) => {
+  exportPackage: async (caseId, templateType) => {
     set({ error: null })
     try {
-      return await api.exportApi.exportPackage(caseId)
+      return await api.exportApi.exportPackage(caseId, templateType)
     } catch (e: any) {
       set({ error: e.response?.data?.detail || e.message || "导出证据包失败" })
       throw e

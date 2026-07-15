@@ -58,6 +58,7 @@ export interface ComplaintData {
   title: string
   content: string
   template_type: string
+  tone?: string
 }
 
 export interface RespondData {
@@ -69,6 +70,7 @@ export interface RespondData {
 
 export interface MaskResult {
   evidence_code: string
+  type: string
   original: string
   masked: string
 }

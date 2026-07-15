@@ -67,8 +67,13 @@ def generate_export_text(case, template_type='platform', masked=False):
     return '\n'.join(lines)
 
 
-def export_evidence_package(case):
-    """生成证据包 ZIP，返回 BytesIO。"""
+def export_evidence_package(case, template_type='platform'):
+    """生成证据包 ZIP，返回 BytesIO。
+
+    Args:
+        case: 案件实例
+        template_type: 模板类型（platform/regulatory/arbitration）
+    """
     from api.services.complaint_service import generate_complaint
     from api.services.timeline_service import get_sorted_timeline
 
@@ -76,7 +81,7 @@ def export_evidence_package(case):
     zf = zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED)
 
     # complaint.txt
-    complaint = generate_complaint(case, 'platform')
+    complaint = generate_complaint(case, template_type)
     zf.writestr(
         'complaint.txt',
         f"{complaint['title']}\n\n{complaint['content']}",

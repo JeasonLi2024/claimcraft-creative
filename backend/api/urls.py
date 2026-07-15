@@ -49,6 +49,8 @@ from api.views import (
     TimelineNodeUpdateView,
     ComplaintView,
     ComplaintRegenerateView,
+    RespondTemplateView,
+    RespondTemplateRegenerateView,
     MaskView,
     ExportView,
     ExportPackageView,
@@ -111,6 +113,8 @@ urlpatterns = [
     path('timeline-nodes/<int:pk>/', TimelineNodeUpdateView.as_view()),
     path('cases/<int:case_id>/complaints/', ComplaintView.as_view()),
     path('cases/<int:case_id>/complaints/regenerate/', ComplaintRegenerateView.as_view()),
+    path('cases/<int:case_id>/respond-templates/', RespondTemplateView.as_view()),
+    path('cases/<int:case_id>/respond-templates/regenerate/', RespondTemplateRegenerateView.as_view()),
     path('cases/<int:case_id>/mask/', MaskView.as_view()),
     path('cases/<int:case_id>/export/', ExportView.as_view()),
     # Task 27：案件模板预设

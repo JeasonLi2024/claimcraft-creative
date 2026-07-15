@@ -43,17 +43,38 @@ def mask_text(text):
     return text
 
 
+def detect_sensitive_type(text):
+    """检测文本中包含的敏感信息类型。
+
+    优先级：身份证号 > 手机号 > 地址（身份证号正则覆盖手机号前缀）
+
+    Returns:
+        'id_card' | 'phone' | 'address' | 'unknown'
+    """
+    if not text:
+        return 'unknown'
+    if _ID_CARD_PATTERN.search(text):
+        return 'id_card'
+    if _PHONE_PATTERN.search(text):
+        return 'phone'
+    if _ADDRESS_PATTERN.search(text):
+        return 'address'
+    return 'unknown'
+
+
 def mask_case_sensitive_info(case):
     """收集该案件所有含敏感信息的证据描述，返回打码结果列表。
 
-    返回 [{"evidence_code": ..., "original": ..., "masked": ...}]
+    返回 [{"evidence_code": ..., "type": ..., "original": ..., "masked": ...}]
     """
     result = []
     evidences = case.evidences.filter(has_sensitive_info=True).order_by('order', 'id')
     for ev in evidences:
+        original = ev.description or ''
         result.append({
             'evidence_code': ev.code,
-            'original': ev.description,
-            'masked': mask_text(ev.description),
+            'type': detect_sensitive_type(original),
+            'original': original,
+            'masked': mask_text(original),
         })
     return result

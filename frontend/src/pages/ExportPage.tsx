@@ -50,7 +50,7 @@ export default function ExportPage() {
         const data = await exportText(Number(caseId), { template_type: selectedTemplate, masked })
         setResult({ type: "text", filename: data.filename, content: data.content })
       } else if (selectedFormat === "zip") {
-        const blob = await exportPackage(Number(caseId))
+        const blob = await exportPackage(Number(caseId), selectedTemplate)
         triggerDownload(blob, `case-${caseId}-evidence.zip`)
         setResult({ type: "zip", filename: `case-${caseId}-evidence.zip` })
       } else if (selectedFormat === "pdf") {
@@ -138,10 +138,23 @@ export default function ExportPage() {
       )}
 
       {selectedFormat === "zip" && (
-        <div className="rounded-2xl border border-border/50 bg-card p-5 shadow-[0_10px_30px_rgba(20,35,90,.04)]">
+        <div className="space-y-4 rounded-2xl border border-border/50 bg-card p-5 shadow-[0_10px_30px_rgba(20,35,90,.04)]">
+          <h3 className="text-sm font-semibold text-foreground">ZIP 选项</h3>
           <p className="text-sm text-muted-foreground">
             ZIP 证据包将包含所有证据图片和 OCR 识别结果，适合提交给平台或监管部门。
           </p>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-foreground">投诉模板</label>
+            <select
+              value={selectedTemplate}
+              onChange={(e) => setSelectedTemplate(e.target.value)}
+              className="w-full max-w-xs rounded-xl border border-input bg-background px-4 py-2.5 text-sm focus:border-primary focus:outline-none focus:ring-3 focus:ring-primary/20"
+            >
+              {TEMPLATES.map((t) => (
+                <option key={t.type} value={t.type}>{t.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
 

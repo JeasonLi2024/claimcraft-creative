@@ -101,7 +101,7 @@ export default function MaskPage() {
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
-                    <PillTag label={TYPE_STYLES[r.original]?.label || "未知"} variant={TYPE_STYLES[r.original]?.variant || "default"} />
+                    <PillTag label={TYPE_STYLES[r.type]?.label || "未知"} variant={TYPE_STYLES[r.type]?.variant || "default"} />
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
                     {masked ? r.masked : r.original}

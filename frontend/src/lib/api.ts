@@ -142,8 +142,16 @@ export const timelineApi = {
 export const complaintApi = {
   get: (caseId: number, templateType: string) =>
     apiClient.get<ComplaintData>(`/cases/${caseId}/complaints/`, { params: { template_type: templateType } }).then((r) => r.data),
+  regenerate: (caseId: number, templateType: string, tone?: string) =>
+    apiClient.post<ComplaintData>(`/cases/${caseId}/complaints/regenerate/`, { template_type: templateType, ...(tone ? { tone } : {}) }).then((r) => r.data),
+}
+
+// Respond Template (反证答辩书)
+export const respondApi = {
+  get: (caseId: number, templateType: string) =>
+    apiClient.get<ComplaintData>(`/cases/${caseId}/respond-templates/`, { params: { template_type: templateType } }).then((r) => r.data),
   regenerate: (caseId: number, templateType: string) =>
-    apiClient.post<ComplaintData>(`/cases/${caseId}/complaints/regenerate/`, { template_type: templateType }).then((r) => r.data),
+    apiClient.post<ComplaintData>(`/cases/${caseId}/respond-templates/regenerate/`, { template_type: templateType }).then((r) => r.data),
 }
 
 // Mask
@@ -158,8 +166,8 @@ export const maskApi = {
 export const exportApi = {
   exportText: (caseId: number, params: { template_type: string; masked: boolean }) =>
     apiClient.post<{ content: string; filename: string }>(`/cases/${caseId}/export/`, params, { responseType: "json" }).then((r) => r.data),
-  exportPackage: (caseId: number) =>
-    apiClient.get(`/cases/${caseId}/export/package/`, { responseType: "blob" }).then((r) => r.data),
+  exportPackage: (caseId: number, templateType: string) =>
+    apiClient.get(`/cases/${caseId}/export/package/`, { params: { template_type: templateType }, responseType: "blob" }).then((r) => r.data),
   exportPDF: (caseId: number, templateType: string) =>
     apiClient.get(`/cases/${caseId}/export/pdf/`, { params: { template_type: templateType }, responseType: "blob" }).then((r) => r.data),
 }

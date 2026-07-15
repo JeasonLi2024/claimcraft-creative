@@ -518,10 +518,12 @@ class ComplaintTemplate(models.Model):
     PLATFORM = 'platform'
     REGULATORY = 'regulatory'
     ARBITRATION = 'arbitration'
+    LEGAL = 'legal'
     TEMPLATE_TYPE_CHOICES = [
         (PLATFORM, '平台客服版'),
         (REGULATORY, '监管投诉版'),
         (ARBITRATION, '仲裁准备版'),
+        (LEGAL, '法律诉讼版'),
     ]
 
     case = models.ForeignKey(
@@ -536,6 +538,10 @@ class ComplaintTemplate(models.Model):
     )
     title = models.CharField('标题', max_length=200)
     content = models.TextField('内容')
+    tone = models.CharField(
+        '语气', max_length=20, blank=True, default='',
+        help_text='LLM 生成的语气（firm/restrained/neutral），由工作流写入'
+    )
 
     class Meta:
         verbose_name = '投诉模板'
@@ -552,10 +558,12 @@ class ComplaintTemplateRule(models.Model):
     PLATFORM = 'platform'
     REGULATORY = 'regulatory'
     ARBITRATION = 'arbitration'
+    LEGAL = 'legal'
     TEMPLATE_TYPES = [
         (PLATFORM, '平台客服版'),
         (REGULATORY, '监管投诉版'),
         (ARBITRATION, '仲裁准备版'),
+        (LEGAL, '法律诉讼版'),
     ]
 
     case = models.ForeignKey(
@@ -590,7 +598,12 @@ class RespondTemplate(models.Model):
     )
     template_type = models.CharField(
         '答辩类型', max_length=20,
-        choices=[('platform', '平台申诉版'), ('regulatory', '监管申诉版'), ('legal', '法律答辩版')],
+        choices=[
+            ('platform', '平台申诉版'),
+            ('regulatory', '监管申诉版'),
+            ('arbitration', '仲裁答辩版'),
+            ('legal', '法律答辩版'),
+        ],
         default='platform'
     )
     title = models.CharField('标题', max_length=200)

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import { useParams, useNavigate, Link } from "react-router"
+import { useParams, Link } from "react-router"
 import { useCaseStore } from "@/stores/case-store"
 import EmptyState from "@/components/EmptyState"
 import PillTag from "@/components/PillTag"
@@ -26,15 +26,17 @@ const TONE_LABELS: Record<string, string> = {
 
 export default function RespondPage() {
   const { caseId } = useParams<{ caseId: string }>()
-  const navigate = useNavigate()
   const fetchCaseDetail = useCaseStore((s) => s.fetchCaseDetail)
-  const complaintDraft = useCaseStore((s) => s.complaintDraft)
+  const fetchRespond = useCaseStore((s) => s.fetchRespond)
+  const regenerateRespond = useCaseStore((s) => s.regenerateRespond)
+  const respondData = useCaseStore((s) => s.respondData)
   const currentCase = useCaseStore((s) => s.currentCase)
   const loading = useCaseStore((s) => s.loading)
   const error = useCaseStore((s) => s.error)
 
   const [activeTab, setActiveTab] = useState(RESPOND_TEMPLATES[0].type)
   const [copied, setCopied] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
   const [monoFont, setMonoFont] = useState(false)
 
   useEffect(() => {
@@ -43,16 +45,28 @@ export default function RespondPage() {
     }
   }, [caseId])
 
+  useEffect(() => {
+    if (caseId) {
+      fetchRespond(Number(caseId), activeTab)
+    }
+  }, [caseId, activeTab])
+
+  async function handleRegenerate() {
+    if (!caseId) return
+    setRegenerating(true)
+    try { await regenerateRespond(Number(caseId), activeTab) } catch {}
+    finally { setRegenerating(false) }
+  }
+
   async function handleCopy() {
-    if (!complaintDraft) return
+    if (!respondData) return
     try {
-      await navigator.clipboard.writeText(complaintDraft.content)
+      await navigator.clipboard.writeText(respondData.content)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {}
   }
 
-  const respondData = complaintDraft
   const isRespondMode = currentCase?.case_mode === "respond"
 
   return (
@@ -112,11 +126,12 @@ export default function RespondPage() {
           {copied ? "已复制" : "复制全文"}
         </button>
         <button
-          onClick={() => navigate(`/cases/${caseId}/workspace`)}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-input px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          onClick={handleRegenerate}
+          disabled={regenerating}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-input px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
         >
-          <RefreshCw className="h-4 w-4" />
-          重新生成
+          <RefreshCw className={cn("h-4 w-4", regenerating && "animate-spin")} />
+          {regenerating ? "生成中..." : "重新生成"}
         </button>
         <button
           onClick={() => setMonoFont(!monoFont)}
