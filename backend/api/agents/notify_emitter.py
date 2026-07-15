@@ -50,13 +50,12 @@ class NotifyEmitter:
 
         def _notify_sync() -> None:
             channel = self._channel_name(thread_id)
+            # 通道名已通过 _channel_name 规范化（仅字母数字下划线），可安全拼接
+            # NOTIFY payload 不支持参数绑定（Postgres 语法限制），用单引号字面量转义
+            payload_str = str(int(event_id))  # 纯数字，无需转义
             with self.pool.connection() as conn:
                 with conn.cursor() as cur:
-                    # NOTIFY payload 必须是字符串字面量，使用参数绑定
-                    cur.execute(
-                        f"NOTIFY {channel}, %s",
-                        (str(event_id),)
-                    )
+                    cur.execute(f"NOTIFY {channel}, '{payload_str}'")
                 conn.commit()  # 提交事务，确保 NOTIFY 被投递
 
         await sync_to_async(_notify_sync)()
@@ -93,16 +92,14 @@ class NotifyEmitter:
                     cur.execute(f"LISTEN {channel}")
                 while not stop_event.is_set():
                     try:
-                        # psycopg3: conn.notifies() 返回生成器，用 timeout 参数设置超时
-                        # 超时后生成器会停止迭代，需重新创建
+                        # psycopg3: conn.notifies(timeout=) 返回生成器
+                        # 每次调用创建新生成器，超时后生成器结束迭代
                         # 使用 1 秒超时，定期检查 stop_event 以支持优雅取消
-                        gen = conn.notifiers(timeout=1.0)
-                        for notify in gen:
+                        for notify in conn.notifies(timeout=1.0):
                             if stop_event.is_set():
                                 break
                             callback(notify.pid, notify.channel, notify.payload)
                         # 生成器耗尽（超时）后重新进入循环检查 stop_event
-                        continue
                     except StopIteration:
                         continue
                     except Exception as e:
