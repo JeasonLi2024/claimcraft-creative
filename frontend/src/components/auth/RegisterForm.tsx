@@ -16,6 +16,7 @@ import {
 import { authApi } from "@/lib/api"
 import { useAuthStore } from "@/stores/auth-store"
 import { authFocusRing } from "@/components/auth/AuthShell"
+import PasswordRuleChecklist from "@/components/auth/PasswordRuleChecklist"
 import { AUTH_CODE_LENGTH, buildCodeDeliveryHint, getAuthErrorMessage, isValidEmail } from "@/components/auth/auth-form-utils"
 import type { EmailCodeSendResponse } from "@/types"
 
@@ -136,8 +137,8 @@ export default function RegisterForm() {
       return
     }
 
-    if (password.length < 6) {
-      setError("密码至少需要 6 个字符")
+    if (password.length < 8) {
+      setError("密码至少需要 8 个字符")
       return
     }
 
@@ -310,7 +311,7 @@ export default function RegisterForm() {
             <label htmlFor="register-password" className="text-sm font-semibold text-[#303431]">
               密码
             </label>
-            <span className="text-xs text-[#8a908b]">至少 6 个字符</span>
+            <span className="text-xs text-[#8a908b]">至少 8 个字符</span>
           </div>
           <div className="group relative">
             <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a908b] transition-colors group-focus-within:text-[#3f6b57]" />
@@ -332,6 +333,12 @@ export default function RegisterForm() {
               {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {password && (
+            <div className="mt-3 rounded-xl border border-[#e6e8e2] bg-[#f7f8f4] px-4 py-3">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#7a817c]">密码要求</p>
+              <PasswordRuleChecklist password={password} username={username} email={email} />
+            </div>
+          )}
         </div>
 
         <div>

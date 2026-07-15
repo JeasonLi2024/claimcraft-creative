@@ -23,6 +23,7 @@ import {
 } from "lucide-react"
 import { authApi } from "@/lib/api"
 import { AUTH_CODE_LENGTH, getAuthErrorMessage } from "@/components/auth/auth-form-utils"
+import PasswordRuleChecklist from "@/components/auth/PasswordRuleChecklist"
 import { useAuthStore } from "@/stores/auth-store"
 import type { EmailCodeSendResponse, UserPreferences, UserSession } from "@/types"
 
@@ -1004,6 +1005,16 @@ export default function ProfilePage() {
                     onChange={(e) => setPasswordForm((current) => ({ ...current, new_password: e.target.value }))}
                     className="w-full rounded-xl border border-[#d9ddd5] bg-white px-4 py-3 text-sm focus:border-[#3f6b57] focus:outline-none focus:ring-3 focus:ring-[#3f6b57]/10"
                   />
+                  {passwordForm.new_password && (
+                    <div className="mt-3 rounded-xl border border-[#e6e8e2] bg-[#f7f8f4] px-4 py-3">
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[#7a817c]">密码要求</p>
+                      <PasswordRuleChecklist
+                        password={passwordForm.new_password}
+                        username={user?.username || ""}
+                        email={user?.email || ""}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
               <div>
