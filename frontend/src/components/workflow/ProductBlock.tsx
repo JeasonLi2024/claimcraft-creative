@@ -50,6 +50,7 @@ interface ChainNode {
   category: string
   evidence_codes: string[]
   chain_order: number
+  summary?: string
 }
 
 interface ToolCallLog {
@@ -125,9 +126,8 @@ function NodeProductsDetail({
               </span>
               <span className="text-xs text-[#787774]">{r.ocr_strategy_used}</span>
             </div>
-            <p className="text-xs text-[#111111] line-clamp-3 whitespace-pre-wrap">
-              {r.ocr_corrected_text?.slice(0, 200) || ""}
-              {r.ocr_corrected_text?.length > 200 ? "..." : ""}
+            <p className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-[#111111]">
+              {r.ocr_corrected_text || "未识别到文字"}
             </p>
           </div>
         ))}
@@ -207,7 +207,8 @@ function NodeProductsDetail({
           {nodes.map((n, i) => (
             <div key={i} className="relative pb-2 last:pb-0">
               <span className="absolute -left-3 top-1 w-2 h-2 rounded-full bg-[#111111]" />
-              <div className="text-xs font-medium text-[#111111]">{n.event}</div>
+              <div className="flex items-center gap-2 text-xs font-medium text-[#111111]"><span>{n.event}</span>{n.category && <span className="rounded-full bg-[#E7EEE9] px-2 py-0.5 text-[10px] text-[#3F6B57]">{n.category}</span>}</div>
+              {n.summary && <div className="mt-1 whitespace-pre-wrap text-xs leading-5 text-[#565652]">{n.summary}</div>}
               <div className="text-xs text-[#787774]">
                 {n.datetime} · {(n.evidence_codes || []).join(", ")}
               </div>
@@ -248,10 +249,9 @@ function NodeProductsDetail({
             <div className="text-xs font-semibold text-[#111111] mb-1">
               {draft.title || (node === "respond_complaint" ? "反证答辩书" : "投诉书")}
             </div>
-            <p className="text-xs text-[#111111] line-clamp-4 whitespace-pre-wrap">
-              {draft.content?.slice(0, 300) || ""}
-              {draft.content && draft.content.length > 300 ? "..." : ""}
-            </p>
+            <div className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-[#111111]">
+              {draft.content || ""}
+            </div>
             {draft.tone && (
               <span className="inline-block mt-1 text-xs text-[#787774]">
                 语气: {draft.tone}

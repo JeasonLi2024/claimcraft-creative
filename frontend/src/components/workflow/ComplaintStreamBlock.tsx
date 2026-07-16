@@ -3,8 +3,13 @@
 import { useState, useEffect, useRef } from "react"
 import { Link } from "react-router"
 import { useCaseStore } from "@/stores/case-store"
+import { cn } from "@/lib/utils"
 import { TONE_LABELS } from "@/lib/workflow-events"
 import type { ProductBlock } from "@/lib/workflow-events"
+
+function MarkdownPreview({ content }: { content: string }) {
+  return <div className="space-y-2 text-sm leading-7 text-[#111111]">{content.split(/\n{2,}/).map((block, index) => block.startsWith("## ") ? <h5 key={index} className="border-b border-blue-100 pb-1 pt-2 font-semibold">{block.slice(3)}</h5> : <p key={index} className="whitespace-pre-wrap">{block}</p>)}</div>
+}
 
 interface ComplaintDraft {
   title: string
@@ -86,10 +91,8 @@ export function ComplaintStreamBlock({
             <h4 className="text-center font-semibold mb-2 text-[#111111]">
               {draft?.title || "投诉书"}
             </h4>
-            <div
-              ref={contentRef}
-              className="whitespace-pre-wrap text-sm text-[#111111] leading-relaxed"
-            />
+            <div ref={contentRef} className={cn("hidden", isStreaming && "block whitespace-pre-wrap text-sm leading-relaxed text-[#111111]")} />
+            {!isStreaming && draft?.content && <MarkdownPreview content={draft.content} />}
             {isStreaming && (
               <span className="inline-block w-0.5 h-4 bg-blue-500 animate-pulse ml-0.5 align-middle" />
             )}

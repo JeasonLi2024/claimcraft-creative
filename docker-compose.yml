@@ -121,8 +121,9 @@ services:
       # v10 新增：Embedding 服务（RAG 知识库向量检索）
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen/Qwen3-VL-Embedding-8B}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1024}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-large-zh-v1.5}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-0}
+      - EMBEDDING_VECTOR_DIM=${EMBEDDING_VECTOR_DIM:-1024}
       # v10 新增：RAG 检索配置
       - RAG_ENABLED=${RAG_ENABLED:-true}
       - RAG_TOP_K=${RAG_TOP_K:-5}
@@ -156,7 +157,7 @@ services:
         max-file: "5"
 
   postgres-checkpointer:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: claimcraft_checkpoints
       POSTGRES_USER: claimcraft

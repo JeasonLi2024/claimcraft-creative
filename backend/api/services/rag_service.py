@@ -60,7 +60,7 @@ class LawVectorStore:
         category + law_name 复合索引（预过滤）
 
     维度说明：
-        Qwen3-VL-Embedding-8B 原生维度 4096（SiliconFlow 免费版不支持降维）。
+        默认使用 BAAI/bge-large-zh-v1.5 原生 1024 维。
         如切换模型，请同步修改 .env 中 EMBEDDING_VECTOR_DIM。
     """
 
@@ -76,8 +76,8 @@ class LawVectorStore:
 
     @staticmethod
     def _get_vector_dim() -> int:
-        """获取向量维度（从 .env 读取，默认 4096）。"""
-        return int(os.environ.get('EMBEDDING_VECTOR_DIM', '4096'))
+        """获取向量维度（从 .env 读取，默认 1024）。"""
+        return int(os.environ.get('EMBEDDING_VECTOR_DIM', '1024'))
 
     async def ensure_table(self):
         """确保表和索引存在（幂等，首次导入时自动创建）。
@@ -130,7 +130,8 @@ class LawVectorStore:
                     async with conn.cursor() as cur:
                         await cur.execute(stmt)
                 except Exception as e:
-                    logger.warning(f'执行 SQL 失败（忽略，可能已存在）: {e}')
+                    logger.error(f'初始化法律向量库失败，SQL={stmt.strip()[:120]}: {e}')
+                    raise RuntimeError(f'初始化法律向量库失败: {e}') from e
 
     async def exists(self, law_name: str, article_number: str) -> bool:
         """检查指定法条是否已有向量。"""

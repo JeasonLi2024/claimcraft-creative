@@ -1751,7 +1751,8 @@ class ComplaintView(APIView):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
         template_type = request.query_params.get('template_type', 'platform')
-        result = complaint_service.generate_complaint(case, template_type)
+        saved = ComplaintTemplate.objects.filter(case=case, template_type=template_type).order_by("-id").first()
+        result = ({"title": saved.title, "content": saved.content, "template_type": template_type, "tone": saved.tone} if saved else complaint_service.generate_complaint(case, template_type))
         if result is None:
             return Response(
                 {'detail': f'未找到模板类型：{template_type}'},

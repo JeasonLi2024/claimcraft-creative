@@ -1,4 +1,4 @@
-// 左侧步进轨道：8 节点垂直列表 + 连接状态指示 + 里程碑进度
+// 顶部横向步进轨道：节点状态、连接状态与当前里程碑
 // 参考 spec 第 6.6 节
 import { useCaseStore } from "@/stores/case-store"
 import { NODE_ORDER, NODE_LABELS } from "@/lib/workflow-events"
@@ -37,9 +37,9 @@ function NodeTrackItem({
   const stageLabel = progressStage ? STAGE_LABELS[progressStage] || progressStage : ""
 
   return (
-    <li className="relative pl-5 pb-3 last:pb-0">
+    <li className="relative min-w-[124px] flex-1 px-2 pt-7 text-center">
       <span
-        className={`absolute left-0 top-0.5 w-3 h-3 rounded-full ${dotClass[status]}`}
+        className={`absolute left-1/2 top-1.5 z-10 h-3.5 w-3.5 -translate-x-1/2 rounded-full ring-4 ring-slate-900 ${dotClass[status]}`}
       />
       <div
         className={`text-xs ${
@@ -76,12 +76,12 @@ export function NodeTrack() {
             : "未连接"
 
   return (
-    <aside className="w-32 flex-shrink-0 bg-slate-900 text-slate-100 p-3 rounded-lg">
+    <aside className="overflow-x-auto rounded-2xl bg-slate-900 px-4 py-3 text-slate-100 shadow-sm">
       <div className="text-xs font-semibold mb-3 text-slate-400">
         节点轨道 · {connectionLabel}
       </div>
-      <ol className="relative">
-        <div className="absolute left-1.5 top-2 bottom-2 w-0.5 bg-slate-700" />
+      <ol className="relative flex min-w-[980px]">
+        <div className="absolute left-[6.25%] right-[6.25%] top-3 h-0.5 bg-slate-700" />
         {NODE_ORDER.map((node) => {
           const ns: NodeStatus | undefined = nodeStates[node]
           return (

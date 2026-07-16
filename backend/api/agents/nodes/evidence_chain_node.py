@@ -158,6 +158,14 @@ async def evidence_chain_node(state: CaseWorkflowState) -> dict[str, Any]:
         errors.append("[证据链] LLM 输出 JSON 解析失败，回退到基础时间线")
         chain = await _build_fallback_chain(case)
 
+    # 工作流与 /cases/<id>/timeline/ 共用同一份增强时间线数据。
+    try:
+        from api.services.timeline_service import persist_evidence_chain
+        await sync_to_async(persist_evidence_chain)(case, chain)
+    except Exception as e:
+        logger.error(f"增强时间线持久化失败: {e}", exc_info=True)
+        errors.append(f"增强时间线持久化失败: {e}")
+
     logger.info(f"证据链构造完成（LLM + 工具），共 {len(chain)} 个节点，工具调用 {len(tool_call_log)} 次")
 
     return {

@@ -5,6 +5,20 @@ import { TEMPLATES, useStatus } from "@/composables/useStatus"
 import { cn } from "@/lib/utils"
 import { Copy, RefreshCw, Loader2, FileText, Check, Sparkles, WandSparkles, Type, Quote } from "lucide-react"
 
+function MarkdownDocument({ content, mono }: { content: string; mono: boolean }) {
+  return (
+    <div className={cn("space-y-3 text-sm leading-7 text-foreground", mono && "font-mono text-xs leading-6")}>
+      {content.split(/\n{2,}/).map((block, index) => {
+        const lines = block.split("\n")
+        if (block.startsWith("## ")) return <section key={index}><h2 className="mb-2 mt-6 border-b border-border pb-2 text-lg font-semibold">{lines[0].slice(3)}</h2>{lines.slice(1).map((line, lineIndex) => <p key={lineIndex} className="whitespace-pre-wrap">{line}</p>)}</section>
+        if (block.startsWith("# ")) return <h1 key={index} className="text-xl font-semibold">{block.slice(2)}</h1>
+        if (lines.every((line) => line.trim().startsWith("- "))) return <ul key={index} className="list-disc space-y-2 pl-6">{lines.map((line, lineIndex) => <li key={lineIndex}>{line.replace(/^- /, "").split(/(E\d+)/).map((part, partIndex) => /^E\d+$/.test(part) ? <span key={partIndex} className="rounded-md bg-accent px-1.5 py-0.5 font-semibold text-secondary">{part}</span> : part)}</li>)}</ul>
+        return <p key={index} className="whitespace-pre-wrap">{block.split(/(E\d+)/).map((part, partIndex) => /^E\d+$/.test(part) ? <span key={partIndex} className="rounded-md bg-accent px-1.5 py-0.5 font-semibold text-secondary">{part}</span> : part)}</p>
+      })}
+    </div>
+  )
+}
+
 export default function ComplaintPage() {
   const { caseId } = useParams<{ caseId: string }>()
   const fetchCaseDetail = useCaseStore((s) => s.fetchCaseDetail)
@@ -72,7 +86,7 @@ export default function ComplaintPage() {
             <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">文书预览</p><h2 className="mt-1 text-xl font-semibold tracking-tight">{complaintData?.title || "等待生成投诉文本"}</h2><p className="mt-1 text-sm text-muted-foreground">当前模板：{activeTemplate?.label}</p></div><div className="flex flex-wrap gap-2"><button onClick={handleCopy} disabled={!complaintData} className="inline-flex items-center gap-2 rounded-xl border border-input px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{copied ? <Check className="h-4 w-4 text-secondary" /> : <Copy className="h-4 w-4" />}{copied ? "已复制" : "复制全文"}</button><button onClick={handleRegenerate} disabled={regenerating} className="inline-flex items-center gap-2 rounded-xl bg-[#17231d] px-3.5 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"><RefreshCw className={cn("h-4 w-4", regenerating && "animate-spin")} />{regenerating ? "生成中..." : "重新生成"}</button></div></div>
           </div>
 
-          {loading && !complaintData ? <div className="flex h-72 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-secondary" /></div> : complaintData ? <div className="p-5 sm:p-7"><pre className={cn("whitespace-pre-wrap break-words text-sm leading-8 text-foreground", monoFont && "font-mono text-xs leading-7")}>{complaintData.content.split(/(E\d+)/).map((part, index) => /^E\d+$/.test(part) ? <span key={index} className="rounded-md bg-accent px-1.5 py-0.5 font-semibold text-secondary">{part}</span> : <span key={index}>{part}</span>)}</pre></div> : <div className="px-6 py-16 text-center"><FileText className="mx-auto h-8 w-8 text-muted-foreground" /><h3 className="mt-3 font-semibold">暂无投诉文本</h3><p className="mt-1 text-sm text-muted-foreground">完善证据和时间线后，点击重新生成创建文稿。</p></div>}
+          {loading && !complaintData ? <div className="flex h-72 items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-secondary" /></div> : complaintData ? <div className="p-5 sm:p-7"><MarkdownDocument content={complaintData.content} mono={monoFont} /></div> : <div className="px-6 py-16 text-center"><FileText className="mx-auto h-8 w-8 text-muted-foreground" /><h3 className="mt-3 font-semibold">暂无投诉文本</h3><p className="mt-1 text-sm text-muted-foreground">完善证据和时间线后，点击重新生成创建文稿。</p></div>}
         </div>
 
         <aside className="space-y-5">

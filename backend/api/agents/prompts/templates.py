@@ -261,11 +261,11 @@ OCR_PROMPT_BY_CATEGORY = {
 
 # ===== 视觉预分类+摘要 prompt（v9 新增）=====
 PRECLASSIFY_PROMPT = """请分析这张维权证据图片，输出 JSON：
-{
+{{
   "evidence_category": "chat_screenshot|product_order|logistics_tracking|payment_record|invoice|service_contract|work_record|communication_record|contract_document|medical_record|other",
   "summary": "100-200字的图片内容摘要，包含关键信息（人物/时间/金额/事件）",
   "confidence": 0.0-1.0
-}
+}}
 
 分类说明：
 - chat_screenshot：聊天截图（电商/服务通用，即时通讯对话、客服沟通记录）

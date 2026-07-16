@@ -53,9 +53,11 @@ export function WorkflowStreamPanel({ caseId }: { caseId: number }) {
           {connectionState === "error" && " · 连接异常"}
         </span>
       </div>
-      <div className="flex gap-4 h-[calc(100vh-200px)] min-h-[600px]">
+      <div className="flex min-h-[600px] flex-col gap-4">
         <NodeTrack />
-        <ProductStream caseId={caseId} />
+        <div className="h-[calc(100vh-330px)] min-h-[480px]">
+          <ProductStream caseId={caseId} />
+        </div>
       </div>
     </div>
   )

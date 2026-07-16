@@ -483,7 +483,7 @@ class TimelineNodeSerializer(serializers.ModelSerializer):
         model = TimelineNode
         fields = [
             'id', 'case', 'datetime', 'event',
-            'related_evidence_codes', 'order', 'auto_generated',
+            'related_evidence_codes', 'category', 'order', 'auto_generated',
         ]
 
 

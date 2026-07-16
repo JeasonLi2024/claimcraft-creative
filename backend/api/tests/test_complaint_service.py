@@ -73,3 +73,13 @@ class ComplaintServiceTests(TestCase):
         result = generate_complaint(self.case, 'platform')
 
         self.assertEqual(result['content'], '发现商品损坏')
+
+    def test_context_exposes_username_as_signer(self):
+        ComplaintTemplateRule.objects.create(
+            case=None, template_type="platform",
+            rule_title="投诉书", rule_content="## 署名\n{{ signer_name }}",
+        )
+
+        result = generate_complaint(self.case, "platform")
+
+        self.assertEqual(result["content"], "## 署名\ncomplaint-owner")

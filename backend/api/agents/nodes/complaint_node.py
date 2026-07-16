@@ -109,6 +109,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
     # 5. LLM 重写（若可用）
     final_content = skeleton.get("content", "")
     tool_call_log = []
+    legal_references = []
     if llm_service.is_llm_available() and final_content.strip():
         try:
             await emit_progress(stage="skeleton_ready", message="投诉书骨架已生成，准备 LLM 重写...")
@@ -132,6 +133,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             case_keywords = _extract_complaint_keywords(case, all_fields)
             law_articles = await pre_retrieve_law_articles(case_keywords, top_k=5)
             law_articles_section = _format_complaint_law_section(law_articles)
+            legal_references = [_serialize_law_reference(article) for article in law_articles]
             await emit_progress(
                 stage="rag_done",
                 message=f"法条检索完成，命中 {len(law_articles)} 条",
@@ -183,7 +185,12 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             logger.warning(f"LLM 投诉重写失败，使用骨架: {e}")
             errors.append(f"LLM 投诉重写失败: {e}")
 
-    # 6. 持久化到 ComplaintTemplate 表（upsert）
+    # 6. 统一追加可核验的法律文件说明和用户名署名，保证工作流与详情页一致。
+    final_content = _finalize_complaint_content(
+        final_content, legal_references, case.owner.username or "投诉人"
+    )
+
+    # 7. 持久化到 ComplaintTemplate 表（upsert）
     try:
         await sync_to_async(lambda c=case, tt=template_type, sk=skeleton, fc=final_content:
             ComplaintTemplate.objects.update_or_create(
@@ -205,6 +212,7 @@ async def complaint_node(state: CaseWorkflowState) -> dict[str, Any]:
             "content": final_content,
             "template_type": template_type,
             "tone": tone,
+            "legal_references": legal_references,
         },
         "complaint_tool_calls": tool_call_log,
         "errors": errors,
@@ -265,6 +273,32 @@ def _extract_complaint_keywords(case, all_fields: list[dict]) -> list[str]:
     keywords.extend(type_keywords_map.get(case_type, []))
 
     return keywords
+
+
+def _finalize_complaint_content(content: str, references: list[dict], signer_name: str) -> str:
+    text = (content or "").strip()
+    if references and "## 参考法律文件" not in text:
+        lines = ["## 参考法律文件"]
+        for ref in references:
+            title = "《{}》{}".format(ref.get("law_name", ""), ref.get("article_number", ""))
+            summary = ref.get("summary") or ref.get("content") or ""
+            source = ref.get("source_url") or "本地法律文献数据库"
+            lines.append(f"- **{title}**：{summary}（来源：{source}）")
+        text = f"{text}\n\n" + "\n".join(lines)
+    if "## 署名" not in text:
+        text = f"{text}\n\n## 署名\n{signer_name}"
+    return text.strip()
+
+
+def _serialize_law_reference(article: dict) -> dict:
+    """保留前端展示和溯源所需的本地法律文献字段。"""
+    return {
+        "law_name": article.get("law_name", ""),
+        "article_number": article.get("article_number", ""),
+        "summary": article.get("summary", ""),
+        "content": article.get("content", ""),
+        "source_url": article.get("source_url", ""),
+    }
 
 
 def _format_complaint_law_section(law_articles: list[dict]) -> str:

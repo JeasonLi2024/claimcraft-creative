@@ -54,7 +54,8 @@ export interface TimelineNode {
   event: string
   auto_generated: boolean
   related_evidence_codes: string
-  sort_order: number
+  category: string
+  order: number
 }
 
 export interface ComplaintData {

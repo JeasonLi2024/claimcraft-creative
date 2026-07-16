@@ -28,6 +28,7 @@ def _build_context(case):
         'evidences': evidences,
         'timeline_nodes': timeline_nodes,
         'extracted_fields': extracted_fields,
+        'signer_name': case.owner.username or '投诉人',
     }
 
 

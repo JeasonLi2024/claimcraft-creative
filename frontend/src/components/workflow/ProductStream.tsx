@@ -22,7 +22,7 @@ export function ProductStream({ caseId }: { caseId: number }) {
   }, [productBlocks.length, contentLength, reviewInterrupt, errors.length])
 
   return (
-    <div className="flex-1 overflow-y-auto pr-2 space-y-2">
+    <div className="h-full overflow-y-auto pr-2 space-y-3">
       {errors.length > 0 && (
         <div className="rounded-md border border-[#FDEBEC] bg-[#FDEBEC] px-3 py-2 text-sm text-red-700">
           {errors.map((err, i) => (

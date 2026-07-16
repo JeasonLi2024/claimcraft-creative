@@ -154,7 +154,7 @@ def generate_complaint_pdf(case, template_type='platform'):
                 logger.warning(f"图片嵌入失败 {ev.code}: {e}")
     story.append(Spacer(1, 1 * cm))
     # 签名区
-    story.append(Paragraph('投诉人签名：________________', body_style))
+    story.append(Paragraph(f'投诉人签名：{case.owner.username or "投诉人"}', body_style))
     story.append(Paragraph('日期：________________', body_style))
 
     # 页眉页脚

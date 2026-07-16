@@ -45,6 +45,11 @@ export default function TimelinePage() {
 
   const autoCount = timelineNodes.filter((node) => node.auto_generated).length
   const linkedCount = timelineNodes.filter((node) => Boolean(node.related_evidence_codes)).length
+  const timelineGroups = timelineNodes.reduce<Record<string, typeof timelineNodes>>((groups, node) => {
+    const key = node.datetime ? new Date(node.datetime).toLocaleDateString("zh-CN", { year: "numeric", month: "long" }) : "时间待确认"
+    ;(groups[key] ||= []).push(node)
+    return groups
+  }, {})
 
   return (
     <div className="space-y-5 pb-8">
@@ -89,19 +94,22 @@ export default function TimelinePage() {
           ) : (
             <div className="relative mt-7 pl-9">
               <div className="absolute bottom-3 left-[14px] top-3 w-px bg-gradient-to-b from-secondary via-secondary/60 to-border" />
-              {timelineNodes.map((node, index) => (
+              {Object.entries(timelineGroups).flatMap(([stage, nodes]) => [
+                <div key={`stage-${stage}`} className="relative mb-3 mt-1"><span className="rounded-full bg-[#17231d] px-3 py-1.5 text-xs font-semibold text-white">{stage}</span></div>,
+                ...nodes.map((node) => { const index = timelineNodes.findIndex((item) => item.id === node.id); return (
                 <article key={node.id} className="relative pb-5 last:pb-0">
                   <div className="absolute -left-9 top-5 flex h-7 w-7 items-center justify-center rounded-full border-4 border-card bg-secondary text-[10px] font-semibold text-white shadow-sm">{index + 1}</div>
                   <div className="rounded-2xl border border-border bg-white p-4 transition-all hover:border-secondary/25 hover:shadow-md sm:p-5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-mono text-xs font-medium text-secondary">{formatTime(node.datetime)}</span>
-                      <PillTag label={node.auto_generated ? "系统整理" : "手动添加"} variant={node.auto_generated ? "primary" : "default"} />
+                      <div className="flex items-center gap-2">{node.category && <span className="rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">{node.category}</span>}<PillTag label={node.auto_generated ? "系统整理" : "手动添加"} variant={node.auto_generated ? "primary" : "default"} /></div>
                     </div>
-                    <div className="mt-3 flex items-start gap-2 rounded-xl bg-muted/45 p-3"><Edit3 className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" /><input type="text" defaultValue={node.event} onBlur={(e) => handleNodeBlur(node.id, e.target.value)} className="w-full border-0 bg-transparent text-sm leading-6 text-foreground outline-none" /></div>
+                    <div className="mt-3 flex items-start gap-2 rounded-xl bg-muted/45 p-3"><Edit3 className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" /><textarea rows={node.event.includes("\n") ? 3 : 1} defaultValue={node.event} onBlur={(e) => handleNodeBlur(node.id, e.target.value)} className="w-full resize-none border-0 bg-transparent text-sm leading-6 text-foreground outline-none" /></div>
                     {node.related_evidence_codes && <div className="mt-3 flex flex-wrap items-center gap-1.5"><span className="mr-1 text-xs text-muted-foreground">关联材料</span>{node.related_evidence_codes.split(",").map((code) => code.trim()).filter(Boolean).map((code) => <span key={code} className="rounded-lg bg-accent px-2 py-1 text-[11px] font-semibold text-secondary">{code}</span>)}</div>}
                   </div>
                 </article>
-              ))}
+                )}),
+              ])}
             </div>
           )}
         </div>

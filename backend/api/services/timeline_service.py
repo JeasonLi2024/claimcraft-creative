@@ -1,49 +1,75 @@
 # -*- coding: utf-8 -*-
 """时间线相关业务逻辑。"""
+import re
 from datetime import datetime
-
+from django.db import transaction
+from django.utils import timezone
 from api.models import TimelineNode
 
+TIME_FIELD_KEYWORDS = ("时间", "日期", "下单", "支付", "付款", "发货", "签收", "申请", "退款", "履行")
+DATE_PATTERNS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y年%m月%d日 %H:%M", "%Y年%m月%d日")
 
 def get_sorted_timeline(case):
-    """返回按 datetime 排序的时间线节点列表。"""
-    return list(case.timeline_nodes.order_by('datetime'))
+    return list(case.timeline_nodes.order_by("datetime", "order", "id"))
 
+def _parse_datetime(value):
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", str(value).strip().replace("/", "-").replace(".", "-"))
+    for fmt in DATE_PATTERNS:
+        try:
+            dt = datetime.strptime(text[:19], fmt)
+            return timezone.make_aware(dt, timezone.get_current_timezone())
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return timezone.make_aware(dt, timezone.get_current_timezone()) if timezone.is_naive(dt) else dt
+    except ValueError:
+        return None
 
+def _event_from_field(evidence, field):
+    others = list(evidence.extracted_fields.exclude(pk=field.pk).order_by("-confidence"))
+    details = [f"{item.field_name}: {item.field_value}" for item in others[:3]]
+    base = evidence.description or evidence.ocr_summary or "证据材料记录"
+    detail_text = "；".join(details)
+    return f"[{evidence.code}] {base}" + (f"（{detail_text}）" if details else "")
+
+@transaction.atomic
 def rebuild_timeline(case):
-    """从证据时间字段自动重建时间线，保留手动节点。"""
-    # 1. 删除旧自动节点
+    """优先使用图片/OCR 提取的关键时间，证据源时间作为补充。"""
     case.timeline_nodes.filter(auto_generated=True).delete()
-    # 2. 从证据 source_time 生成节点
-    new_nodes = []
-    for evidence in case.evidences.all():
+    candidates = []
+    for evidence in case.evidences.all().prefetch_related("extracted_fields"):
+        for field in evidence.extracted_fields.all():
+            name = field.field_name or ""
+            if not (field.field_category == "时间信息" or any(key in name for key in TIME_FIELD_KEYWORDS)):
+                continue
+            dt = _parse_datetime(field.field_value)
+            if dt:
+                candidates.append((dt, evidence.code, _event_from_field(evidence, field)))
         if evidence.source_time:
-            node = TimelineNode.objects.create(
-                case=case,
-                datetime=evidence.source_time,
-                event=f'[{evidence.code}] {evidence.description}',
-                related_evidence_codes=evidence.code,
-                auto_generated=True
-            )
-            new_nodes.append(node)
-        # 从抽取的时间字段生成
-        time_fields = evidence.extracted_fields.filter(field_name='时间')
-        for tf in time_fields:
-            try:
-                dt = datetime.strptime(tf.field_value.strip()[:19], '%Y-%m-%d %H:%M:%S')
-            except (ValueError, TypeError):
-                try:
-                    dt = datetime.strptime(tf.field_value.strip()[:16], '%Y-%m-%d %H:%M')
-                except (ValueError, TypeError):
-                    continue
-            node = TimelineNode.objects.create(
-                case=case,
-                datetime=dt,
-                event=f'[{evidence.code}] 抽取时间: {tf.field_value}',
-                related_evidence_codes=evidence.code,
-                auto_generated=True
-            )
-            new_nodes.append(node)
-    # 3. 合并手动+自动，按时间排序
-    all_nodes = case.timeline_nodes.all().order_by('datetime')
-    return list(all_nodes)
+            event = evidence.description or evidence.ocr_summary or "证据材料记录"
+            candidates.append((evidence.source_time, evidence.code, f"[{evidence.code}] {event}"))
+    seen = set()
+    for dt, code, event in sorted(candidates, key=lambda item: item[0]):
+        key = (dt.isoformat(), code, event)
+        if key in seen:
+            continue
+        seen.add(key)
+        TimelineNode.objects.create(case=case, datetime=dt, event=event, related_evidence_codes=code, category="其他", order=len(seen)-1, auto_generated=True)
+    return get_sorted_timeline(case)
+
+@transaction.atomic
+def persist_evidence_chain(case, chain):
+    """将工作流增强证据链写回页面共用的 TimelineNode 数据源。"""
+    case.timeline_nodes.filter(auto_generated=True).delete()
+    for index, item in enumerate(sorted(chain, key=lambda node: node.get("chain_order", 0))):
+        event = str(item.get("event") or "").strip()
+        if not event:
+            continue
+        summary = str(item.get("summary") or "").strip()
+        if summary and summary not in event:
+            event = f"{event}\n{summary}"
+        TimelineNode.objects.create(case=case, datetime=_parse_datetime(item.get("datetime")), event=event, category=item.get("category") or "其他", related_evidence_codes=",".join(item.get("evidence_codes") or []), order=index, auto_generated=True)
+    return get_sorted_timeline(case)
