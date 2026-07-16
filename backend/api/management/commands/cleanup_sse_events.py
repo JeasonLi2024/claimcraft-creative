@@ -12,6 +12,7 @@
 import os
 
 from django.core.management.base import BaseCommand
+from psycopg.rows import tuple_row
 
 from api.agents.graph import _get_connection_pool
 
@@ -42,7 +43,7 @@ class Command(BaseCommand):
         pool = _get_connection_pool()
 
         with pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(row_factory=tuple_row) as cur:
                 # 先统计将清理的数量
                 cur.execute(
                     "SELECT COUNT(*) FROM sse_event_depot "

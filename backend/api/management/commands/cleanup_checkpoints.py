@@ -9,6 +9,7 @@
 部署：cron 每日 02:00 运行。
 """
 from django.core.management.base import BaseCommand
+from psycopg.rows import tuple_row
 from api.agents.graph import _get_connection_pool
 
 
@@ -25,7 +26,7 @@ class Command(BaseCommand):
         pool = _get_connection_pool()
 
         with pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(row_factory=tuple_row) as cur:
                 # 先统计将清理的数量（保留每 thread 最新 checkpoint）
                 cur.execute("""
                     SELECT COUNT(*) FROM checkpoints

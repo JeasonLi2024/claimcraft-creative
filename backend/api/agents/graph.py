@@ -36,9 +36,12 @@
 import atexit
 import logging
 import os
+import threading
 from typing import Literal
 
 from asgiref.sync import async_to_sync, sync_to_async
+from psycopg import connect
+from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -99,48 +102,43 @@ _pool: ConnectionPool | None = None
 _checkpointer: PostgresSaver | None = None
 _store: PostgresStore | None = None
 _workflow = None
+_pool_lock = threading.Lock()
+_checkpointer_lock = threading.Lock()
+_store_lock = threading.Lock()
+
+
+def _get_db_url() -> str:
+    return os.environ.get(
+        'CHECKPOINTER_DB_URL',
+        'postgresql://claimcraft:claimcraft_dev_2025@127.0.0.1:5432/claimcraft_checkpoints',
+    )
 
 
 def _get_connection_pool() -> ConnectionPool:
-    """获取 PostgreSQL 同步连接池单例（懒加载，生产级调优）。
-
-    环境变量：
-    - CHECKPOINTER_DB_URL：PostgreSQL 连接串
-      格式：postgresql://user:password@host:5432/dbname
-      默认：postgresql://claimcraft:claimcraft_dev_2025@127.0.0.1:5432/claimcraft_checkpoints
-    - CHECKPOINTER_POOL_SIZE：连接池最大连接数（默认 20）
-    - CHECKPOINTER_POOL_MIN_SIZE：预热连接数（默认 5，避免冷启动延迟）
-    - CHECKPOINTER_POOL_TIMEOUT：获取连接等待超时秒（默认 5）
-    - CHECKPOINTER_POOL_MAX_IDLE：空闲连接最大保留秒数（默认 300）
-
-    连接池在进程退出时通过 atexit 自动关闭。
-    """
+    """获取符合 LangGraph 契约的 PostgreSQL 运行时连接池。"""
     global _pool
-    if _pool is None:
-        db_url = os.environ.get(
-            'CHECKPOINTER_DB_URL',
-            'postgresql://claimcraft:claimcraft_dev_2025@127.0.0.1:5432/claimcraft_checkpoints'
-        )
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is not None:
+            return _pool
+        db_url = _get_db_url()
         pool_size = int(os.environ.get('CHECKPOINTER_POOL_SIZE', '20'))
         min_size = int(os.environ.get('CHECKPOINTER_POOL_MIN_SIZE', '5'))
         timeout = float(os.environ.get('CHECKPOINTER_POOL_TIMEOUT', '5'))
         max_idle = float(os.environ.get('CHECKPOINTER_POOL_MAX_IDLE', '300'))
-
         _pool = ConnectionPool(
-            conninfo=db_url,
-            min_size=min_size,    # 预热连接数（避免冷启动延迟）
-            max_size=pool_size,   # 最大连接数
-            timeout=timeout,      # 获取连接超时（秒）
-            max_idle=max_idle,    # 空闲连接最大保留秒数
-            open=True,  # 立即打开连接（sync 版本无 event loop 要求）
+            conninfo=db_url, min_size=min_size, max_size=pool_size,
+            timeout=timeout, max_idle=max_idle,
+            kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+            open=True,
         )
-        # 注册进程退出时关闭连接池（sync 版本直接 close）
         atexit.register(_pool.close)
         logger.info(
             f"PostgreSQL 同步连接池已创建: {db_url.split('@')[-1]}, "
             f"min_size={min_size}, max_size={pool_size}, timeout={timeout}s"
         )
-    return _pool
+        return _pool
 
 
 def _check_pool_health() -> bool:
@@ -165,28 +163,36 @@ def _check_pool_health() -> bool:
         return False
 
 
-def _get_checkpointer() -> PostgresSaver:
-    """获取 PostgresSaver 单例（懒加载）。
+def _setup_postgres_component(component_cls, lock_name: str) -> None:
+    """使用独立 autocommit 连接执行 LangGraph schema 迁移。"""
+    with connect(
+        _get_db_url(), autocommit=True, row_factory=dict_row, prepare_threshold=0
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(hashtext(%s))", (lock_name,))
+        try:
+            component_cls(conn=conn).setup()
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (lock_name,))
 
-    首次调用时执行 setup() 建表（idempotent，已存在则跳过）。
-    sync 版本，与 Django WSGI 部署一致。
-    """
+
+def _get_checkpointer() -> PostgresSaver:
+    """获取线程安全、已完成 schema 初始化的 PostgresSaver 单例。"""
     global _checkpointer
-    if _checkpointer is None:
-        pool = _get_connection_pool()
-        # PostgresSaver 的 conn 参数同时接受 Connection 或 ConnectionPool
-        # 传入 ConnectionPool 时，内部自动借还连接
-        sync_saver = PostgresSaver(conn=pool)
-        # 首次使用时建表（idempotent，已存在则跳过）
-        sync_saver.setup()
-        # 包装成支持 async 接口的 checkpointer
-        # sync PostgresSaver 不实现 aget_tuple/aput（基类抛 NotImplementedError），
-        # 本 wrapper 用 sync_to_async 桥接 sync 方法，使 ainvoke 可用（async 节点必须用 ainvoke）
+    if _checkpointer is not None:
+        return _checkpointer
+    with _checkpointer_lock:
+        if _checkpointer is not None:
+            return _checkpointer
+        _setup_postgres_component(
+            PostgresSaver, "claimcraft_postgres_saver_setup"
+        )
+        sync_saver = PostgresSaver(conn=_get_connection_pool())
         _checkpointer = _AsyncCompatibleSyncCheckpointer(sync_saver)
-        # 初始化时打印一次连接池状态，便于运维定位
         _check_pool_health()
-        logger.info("PostgresSaver 已初始化（含 async 包装）并完成 setup()")
-    return _checkpointer
+        logger.info("PostgresSaver 已初始化（autocommit setup + async 包装）")
+        return _checkpointer
 
 
 class _AsyncCompatibleSyncCheckpointer(BaseCheckpointSaver):
@@ -241,27 +247,19 @@ class _AsyncCompatibleSyncCheckpointer(BaseCheckpointSaver):
 
 
 def _get_store() -> PostgresStore:
-    """获取 PostgresStore 单例（跨案件长期记忆）。
-
-    与 checkpointer 共用 CHECKPOINTER_DB_URL + ConnectionPool（表名不冲突，可共用）。
-    namespace 设计：(user_id, "preferences") / (user_id, "case_templates")
-
-    本期范围：仅 complaint_node 读取 complaint_style 偏好；
-    写入端点（前端设置偏好）本期不实现。
-    """
+    """获取线程安全、已完成 schema 初始化的 PostgresStore 单例。"""
     global _store
-    if _store is None:
-        # 复用 checkpointer 的 ConnectionPool（sync 版本，与 Django WSGI 一致）
-        pool = _get_connection_pool()
-        _store = PostgresStore(conn=pool)
-        try:
-            _store.setup()  # idempotent，建 store 表
-        except Exception as e:
-            # CREATE INDEX CONCURRENTLY 在事务中失败时，用 psql 手动执行 setup
-            # 表可能已存在（idempotent），仅记录警告
-            logger.warning(f"PostgresStore.setup() 失败（可能表已存在或 CONCURRENTLY 限制）: {e}")
-        logger.info("PostgresStore 已初始化（复用 checkpointer 连接池）")
-    return _store
+    if _store is not None:
+        return _store
+    with _store_lock:
+        if _store is not None:
+            return _store
+        _setup_postgres_component(
+            PostgresStore, "claimcraft_postgres_store_setup"
+        )
+        _store = PostgresStore(conn=_get_connection_pool())
+        logger.info("PostgresStore 已初始化（autocommit setup）")
+        return _store
 
 
 def _route_after_extract(state: CaseWorkflowState) -> Literal["review", "evidence_chain"]:

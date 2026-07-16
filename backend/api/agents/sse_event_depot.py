@@ -19,13 +19,14 @@
     );
 
 event_id 分配：每个 thread_id 独立计数器（从 1 开始），
-通过 SELECT ... FOR UPDATE 行锁保证并发安全（同一 thread_id 串行化）。
+通过事务级 advisory lock 保证并发安全（同一 thread_id 串行化）。
 """
 import logging
 import threading
 from typing import Any
 
 from asgiref.sync import sync_to_async
+from psycopg.rows import tuple_row
 from psycopg.types.json import Json
 from psycopg_pool import ConnectionPool
 
@@ -60,7 +61,7 @@ class EventDepot:
             if EventDepot._setup_done:
                 return
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
+                with conn.cursor(row_factory=tuple_row) as cur:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS sse_event_depot (
                             id BIGSERIAL PRIMARY KEY,
@@ -87,8 +88,7 @@ class EventDepot:
     async def persist(self, thread_id: str, event_type: str, payload: dict) -> int:
         """持久化事件，返回分配的 event_id。
 
-        通过 SELECT ... FOR UPDATE 行锁串行化同一 thread_id 的事件分配。
-        注意：首个事件（无既有行）时 FOR UPDATE 不锁行，依赖 UNIQUE 约束兜底。
+        通过事务级 advisory lock 串行化同一 thread_id 的事件分配。
 
         Args:
             thread_id: 工作流线程 ID
@@ -101,28 +101,24 @@ class EventDepot:
 
         def _persist_sync() -> int:
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
-                    # 使用事务级 advisory lock 串行化同一 thread_id 的事件分配
-                    # pg_advisory_xact_lock 在事务提交/回滚时自动释放，比 FOR UPDATE 灵活
-                    # 且不依赖聚合函数，规避 "FOR UPDATE is not allowed with aggregate functions"
-                    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (thread_id,))
-                    # 在锁保护下查询当前最大 event_id 并分配新值
-                    cur.execute(
-                        "SELECT COALESCE(MAX(event_id),0)+1 FROM sse_event_depot "
-                        "WHERE thread_id=%s",
-                        (thread_id,)
-                    )
-                    event_id = cur.fetchone()[0]
-                    cur.execute(
-                        "INSERT INTO sse_event_depot "
-                        "(thread_id, event_id, event_type, payload) "
-                        "VALUES (%s, %s, %s, %s) "
-                        "RETURNING event_id",
-                        (thread_id, event_id, event_type, Json(payload))
-                    )
-                    event_id = cur.fetchone()[0]
-                conn.commit()  # 提交事务，释放 advisory lock
-                return event_id
+                # LangGraph 要求连接池 autocommit；此处显式事务保证事件取号与插入原子完成。
+                with conn.transaction():
+                    with conn.cursor(row_factory=tuple_row) as cur:
+                        cur.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext(%s))", (thread_id,)
+                        )
+                        cur.execute(
+                            "SELECT COALESCE(MAX(event_id),0)+1 FROM sse_event_depot "
+                            "WHERE thread_id=%s", (thread_id,)
+                        )
+                        event_id = cur.fetchone()[0]
+                        cur.execute(
+                            "INSERT INTO sse_event_depot "
+                            "(thread_id, event_id, event_type, payload) "
+                            "VALUES (%s, %s, %s, %s) RETURNING event_id",
+                            (thread_id, event_id, event_type, Json(payload)),
+                        )
+                        return cur.fetchone()[0]
 
         return await sync_to_async(_persist_sync)()
 
@@ -139,7 +135,7 @@ class EventDepot:
 
         def _get_sync() -> list:
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
+                with conn.cursor(row_factory=tuple_row) as cur:
                     cur.execute(
                         "SELECT event_id, event_type, payload, created_at "
                         "FROM sse_event_depot "
@@ -166,7 +162,7 @@ class EventDepot:
 
         def _check_sync() -> bool:
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
+                with conn.cursor(row_factory=tuple_row) as cur:
                     cur.execute(
                         "SELECT 1 FROM sse_event_depot "
                         "WHERE thread_id=%s "
@@ -183,7 +179,7 @@ class EventDepot:
 
         def _get_all_sync() -> list:
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
+                with conn.cursor(row_factory=tuple_row) as cur:
                     cur.execute(
                         "SELECT event_id, event_type, payload, created_at "
                         "FROM sse_event_depot WHERE thread_id=%s "
@@ -216,7 +212,7 @@ class EventDepot:
 
         def _cleanup_sync() -> int:
             with self.pool.connection() as conn:
-                with conn.cursor() as cur:
+                with conn.cursor(row_factory=tuple_row) as cur:
                     cur.execute(
                         "DELETE FROM sse_event_depot "
                         "WHERE created_at < NOW() - INTERVAL '%s hours'",
