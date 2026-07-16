@@ -10,6 +10,10 @@ import {
   type Correction,
   type WorkflowError,
   type ConnectionState,
+  type WorkflowReplay,
+  type StagePauseData,
+  type StageEdits,
+  type EditableStage,
 } from "@/lib/workflow-events"
 import type {
   Case, CaseCreateDTO, Evidence, TimelineNode,
@@ -19,6 +23,39 @@ import type {
 
 // SSE 客户端实例存储在模块变量中（不放 state，避免被序列化/响应式追踪）
 let workflowSSEClient: WorkflowSSEClient | null = null
+
+function connectWorkflowStream(caseId: number, threadId: string, lastEventId = 0) {
+  workflowSSEClient?.close()
+  useCaseStore.setState({ connectionState: "connecting", reconnectAttempt: 0 })
+  const streamUrl = api.workflowApi.streamUrl(caseId, threadId)
+  const token = localStorage.getItem("access_token") || undefined
+  workflowSSEClient = new WorkflowSSEClient(
+    streamUrl,
+    {
+      onEvent: (event) => useCaseStore.getState().applySSEEvent(event),
+      onConnect: () =>
+        useCaseStore.setState({ connectionState: "connected", reconnectAttempt: 0 }),
+      onReconnect: (attempt) =>
+        useCaseStore.setState({ connectionState: "reconnecting", reconnectAttempt: attempt }),
+      onFatalError: (message) =>
+        useCaseStore.setState((state) => ({
+          connectionState: "error",
+          isRunning: false,
+          errors: [...state.errors, { message, recoverable: false }],
+        })),
+    },
+    token,
+    lastEventId,
+  )
+  workflowSSEClient.connect()
+}
+
+function normalizePausedAfter(value: unknown): EditableStage | null {
+  const node = typeof value === "string" ? value : ""
+  return ["preclassify", "ocr", "classify", "extract", "evidence_chain", "complaint", "respond_complaint"].includes(node)
+    ? (node as EditableStage)
+    : null
+}
 
 interface CaseState {
   currentCase: Case | null
@@ -85,14 +122,23 @@ interface CaseState {
   currentNode: string | null
   nodeStates: Record<string, NodeStatus>
   productBlocks: ProductBlock[]
-  complaintDraft: { title: string; content: string; tone: string } | null
+  complaintDraft: { title: string; content: string; tone: string; node?: "complaint" | "respond_complaint"; templateType?: string } | null
   reviewInterrupt: ReviewInterruptData | null
+  pauseData: StagePauseData | null
   errors: WorkflowError[]
   connectionState: ConnectionState
   reconnectAttempt: number
+  workflowStatus: NonNullable<Case["workflow_status"]>
+  isRestoringWorkflow: boolean
+  workflowHistoryAvailable: boolean
+  latestEventId: number
+  activeWorkflowCaseId: number | null
 
   startWorkflow: (caseId: number, evidenceIds: number[]) => Promise<void>
+  restoreWorkflow: (caseId: number) => Promise<void>
   submitReviewCorrections: (caseId: number, corrections: Correction[]) => Promise<void>
+  requestWorkflowPause: (caseId: number, reason?: string) => Promise<void>
+  resumePausedWorkflow: (caseId: number, edits: StageEdits) => Promise<void>
   clearWorkflow: () => void
   applySSEEvent: (event: SSEEvent) => void
 }
@@ -123,9 +169,15 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
   productBlocks: [],
   complaintDraft: null,
   reviewInterrupt: null,
+  pauseData: null,
   errors: [],
   connectionState: "idle",
   reconnectAttempt: 0,
+  workflowStatus: "idle",
+  isRestoringWorkflow: false,
+  workflowHistoryAvailable: false,
+  latestEventId: 0,
+  activeWorkflowCaseId: null,
 
   clearError: () => set({ error: null }),
 
@@ -492,63 +544,155 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
   // ---------- Workflow Slice 实现 ----------
 
   startWorkflow: async (caseId, evidenceIds) => {
+    workflowSSEClient?.close()
+    workflowSSEClient = null
     set({
       error: null,
       connectionState: "connecting",
       isRunning: true,
+      workflowStatus: "running",
+      isRestoringWorkflow: false,
+      workflowHistoryAvailable: false,
+      activeWorkflowCaseId: caseId,
+      latestEventId: 0,
+      threadId: null,
       productBlocks: [],
       nodeStates: {},
       complaintDraft: null,
       reviewInterrupt: null,
+      pauseData: null,
       errors: [],
       currentNode: null,
       reconnectAttempt: 0,
     })
     try {
       const { thread_id } = await api.workflowApi.start(caseId, evidenceIds)
-      set({ threadId: thread_id, connectionState: "connected" })
-
-      // 关闭旧连接（如有）
-      workflowSSEClient?.close()
-
-      const streamUrl = api.workflowApi.streamUrl(caseId, thread_id)
-      // JWT token 通过 query parameter 传递（浏览器 EventSource 不支持自定义 header）
-      const token = localStorage.getItem("access_token") || undefined
-      workflowSSEClient = new WorkflowSSEClient(
-        streamUrl,
-        {
-          onEvent: (event) => get().applySSEEvent(event),
-          onConnect: () => set({ connectionState: "connected", reconnectAttempt: 0 }),
-          onReconnect: (attempt) =>
-            set({ connectionState: "reconnecting", reconnectAttempt: attempt }),
-          onFatalError: (message) =>
-            set((s) => ({
-              connectionState: "error",
-              isRunning: false,
-              errors: [...s.errors, { message, recoverable: false }],
-            })),
-        },
-        token,
-      )
-      workflowSSEClient.connect()
+      set({ threadId: thread_id })
+      connectWorkflowStream(caseId, thread_id)
     } catch (e: any) {
       set({
         connectionState: "error",
         isRunning: false,
+        workflowStatus: "failed",
         error: e.response?.data?.detail || e.message || "启动工作流失败",
       })
       throw e
     }
   },
 
+  restoreWorkflow: async (caseId) => {
+    const currentCase = get().currentCase
+    if (!currentCase || currentCase.id !== caseId) return
+    if (get().isRestoringWorkflow) return
+    if (get().activeWorkflowCaseId === caseId && get().threadId === currentCase.thread_id) return
+
+    workflowSSEClient?.close()
+    workflowSSEClient = null
+    set({
+      isRestoringWorkflow: true,
+      activeWorkflowCaseId: caseId,
+      threadId: currentCase.thread_id || null,
+      workflowStatus: currentCase.workflow_status || "idle",
+      isRunning: currentCase.workflow_status === "running" || currentCase.workflow_status === "pausing",
+      connectionState: "idle",
+      latestEventId: 0,
+      workflowHistoryAvailable: false,
+      currentNode: null,
+      nodeStates: {},
+      productBlocks: [],
+      complaintDraft: null,
+      reviewInterrupt: null,
+      pauseData: currentCase.workflow_status === "paused" && normalizePausedAfter(currentCase.workflow_paused_after) ? { paused_after: normalizePausedAfter(currentCase.workflow_paused_after) as EditableStage } : null,
+      errors: [],
+      reconnectAttempt: 0,
+    })
+
+    if (!currentCase.thread_id || currentCase.workflow_status === "idle") {
+      set({ isRestoringWorkflow: false })
+      return
+    }
+
+    try {
+      const replay: WorkflowReplay = await api.workflowApi.replay(caseId)
+      // 路由切换或新一轮工作流启动后，丢弃迟到的旧恢复响应。
+      if (get().activeWorkflowCaseId !== caseId || replay.thread_id !== currentCase.thread_id) return
+      replay.events.forEach((event) => get().applySSEEvent(event))
+      const status = replay.workflow_status
+      const replayError =
+        status === "failed" && replay.workflow_error && get().errors.length === 0
+          ? [{ message: replay.workflow_error, recoverable: false }]
+          : get().errors
+      const pausedAfter = normalizePausedAfter(replay.paused_after)
+      set({
+        workflowStatus: status,
+        isRunning: status === "running" || status === "pausing",
+        workflowHistoryAvailable: replay.history_available,
+        latestEventId: replay.last_event_id,
+        errors: replayError,
+        pauseData: status === "paused" && pausedAfter ? { paused_after: pausedAfter } : get().pauseData,
+        connectionState: "idle",
+      })
+      if ((status === "running" || status === "pausing") && replay.thread_id) {
+        connectWorkflowStream(caseId, replay.thread_id, replay.last_event_id)
+      }
+    } catch (e: any) {
+      if (get().activeWorkflowCaseId === caseId) {
+        set({
+          isRunning: false,
+          connectionState: "error",
+          error: e.response?.data?.detail || e.message || "恢复工作流展示失败",
+        })
+      }
+    } finally {
+      if (get().activeWorkflowCaseId === caseId) set({ isRestoringWorkflow: false })
+    }
+  },
+
   submitReviewCorrections: async (caseId, corrections) => {
     set({ error: null })
     try {
-      await api.workflowApi.resume(caseId, corrections)
-      // resume 成功后关闭校正面板，等待 review.resumed 事件
-      set({ reviewInterrupt: null })
+      const { thread_id } = await api.workflowApi.resume(caseId, corrections)
+      set({
+        reviewInterrupt: null,
+        threadId: thread_id,
+        workflowStatus: "running",
+        isRunning: true,
+      })
+      connectWorkflowStream(caseId, thread_id, get().latestEventId)
     } catch (e: any) {
       set({ error: e.response?.data?.detail || e.message || "提交校正失败" })
+      throw e
+    }
+  },
+
+  requestWorkflowPause: async (caseId, reason) => {
+    set({ error: null })
+    try {
+      const { thread_id } = await api.workflowApi.pause(caseId, reason)
+      set({
+        threadId: thread_id,
+        workflowStatus: "pausing",
+        isRunning: true,
+      })
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "请求暂停失败" })
+      throw e
+    }
+  },
+
+  resumePausedWorkflow: async (caseId, edits) => {
+    set({ error: null })
+    try {
+      const { thread_id } = await api.workflowApi.resumePaused(caseId, edits)
+      set({
+        pauseData: null,
+        threadId: thread_id,
+        workflowStatus: "running",
+        isRunning: true,
+      })
+      connectWorkflowStream(caseId, thread_id, get().latestEventId)
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "继续工作流失败" })
       throw e
     }
   },
@@ -564,25 +708,72 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       productBlocks: [],
       complaintDraft: null,
       reviewInterrupt: null,
+      pauseData: null,
       errors: [],
       connectionState: "idle",
       reconnectAttempt: 0,
+      workflowStatus: "idle",
+      isRestoringWorkflow: false,
+      workflowHistoryAvailable: false,
+      latestEventId: 0,
+      activeWorkflowCaseId: null,
     })
   },
 
   applySSEEvent: (event) => {
     const eventType = event.event_type
+    if (event.event_id <= get().latestEventId) return
+    set({ latestEventId: event.event_id, workflowHistoryAvailable: true })
     switch (eventType) {
       case "workflow.start": {
         set({
           isRunning: true,
           threadId: (event.thread_id as string) || get().threadId,
           connectionState: "connected",
+          workflowStatus: "running",
+          pauseData: null,
+        })
+        break
+      }
+      case "workflow.pause_requested": {
+        set({
+          workflowStatus: "pausing",
+          isRunning: true,
+        })
+        break
+      }
+      case "workflow.paused": {
+        const pausedAfter = normalizePausedAfter(event.paused_after)
+        const nodeStates = { ...get().nodeStates }
+        if (pausedAfter) {
+          nodeStates[pausedAfter] = {
+            ...nodeStates[pausedAfter],
+            status: "paused",
+            completedAt: (event.ts as string) || nodeStates[pausedAfter]?.completedAt,
+          }
+        }
+        workflowSSEClient?.close()
+        workflowSSEClient = null
+        set({
+          currentNode: null,
+          nodeStates,
+          pauseData: pausedAfter
+            ? {
+                paused_after: pausedAfter,
+                editable_scope: Array.isArray(event.editable_scope)
+                  ? (event.editable_scope.filter((item): item is EditableStage => Boolean(normalizePausedAfter(item))) as EditableStage[])
+                  : undefined,
+                message: (event.message as string) || undefined,
+              }
+            : get().pauseData,
+          connectionState: "idle",
+          workflowStatus: "paused",
+          isRunning: false,
         })
         break
       }
       case "workflow.resumed": {
-        set({ connectionState: "connected", isRunning: true })
+        set({ connectionState: "connected", isRunning: true, workflowStatus: "running", pauseData: null })
         break
       }
       case "node.start": {
@@ -667,6 +858,8 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
             title: s.complaintDraft?.title || "",
             content: (s.complaintDraft?.content || "") + delta,
             tone: s.complaintDraft?.tone || "",
+            node: (event.node as "complaint" | "respond_complaint" | undefined) || s.complaintDraft?.node,
+            templateType: (event.template_type as string) || s.complaintDraft?.templateType,
           },
         }))
         break
@@ -677,6 +870,8 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
             title: (event.title as string) || "",
             content: (event.final_content as string) || "",
             tone: (event.tone as string) || "",
+            node: (event.node as "complaint" | "respond_complaint" | undefined) || "complaint",
+            templateType: (event.template_type as string) || undefined,
           },
         })
         break
@@ -695,8 +890,16 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
         set({ nodeStates })
         break
       }
+      case "workflow.waiting_review": {
+        workflowSSEClient?.close()
+        workflowSSEClient = null
+        set({ isRunning: false, currentNode: null, connectionState: "idle", workflowStatus: "waiting_review" })
+        break
+      }
       case "workflow.complete": {
-        set({ isRunning: false, currentNode: null, connectionState: "idle" })
+        workflowSSEClient?.close()
+        workflowSSEClient = null
+        set({ isRunning: false, currentNode: null, connectionState: "idle", workflowStatus: "succeeded", pauseData: null })
         break
       }
       case "workflow.error": {
@@ -704,6 +907,7 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
           isRunning: false,
           currentNode: null,
           connectionState: "error",
+          workflowStatus: "failed",
           errors: [
             ...s.errors,
             {

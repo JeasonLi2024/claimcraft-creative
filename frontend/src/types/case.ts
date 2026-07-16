@@ -15,6 +15,13 @@ export interface Case {
   template_count: number
   image_evidence_count: number
   extracted_field_count: number
+  thread_id?: string
+  workflow_status?: 'idle' | 'running' | 'pausing' | 'paused' | 'waiting_review' | 'succeeded' | 'failed'
+  workflow_started_at?: string | null
+  workflow_finished_at?: string | null
+  workflow_error?: string
+  workflow_revision?: number
+  workflow_paused_after?: string | null
   created_at: string
   updated_at: string
 }

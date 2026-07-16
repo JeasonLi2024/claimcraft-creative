@@ -15,8 +15,11 @@ export const NODE_ORDER = [
   "respond_complaint",
 ] as const
 
+export type WorkflowNode = (typeof NODE_ORDER)[number]
+export type EditableStage = Exclude<WorkflowNode, "review">
+
 /** 节点中文标签 */
-export const NODE_LABELS: Record<string, string> = {
+export const NODE_LABELS: Record<WorkflowNode, string> = {
   preclassify: "预分类",
   ocr: "OCR 识别",
   classify: "分类",
@@ -33,6 +36,8 @@ export const TONE_LABELS: Record<string, string> = {
   neutral: "中性",
   polite: "礼貌",
   strong: "强硬",
+  restrained: "克制",
+  legal: "法律严谨",
 }
 
 // ---------- 节点状态 ----------
@@ -40,6 +45,7 @@ export const TONE_LABELS: Record<string, string> = {
 export type NodeStatusValue =
   | "idle"
   | "running"
+  | "paused"
   | "completed"
   | "error"
   | "skipped"
@@ -61,6 +67,59 @@ export type ConnectionState =
   | "connected"
   | "reconnecting"
   | "error"
+
+// ---------- 暂停编辑 ----------
+
+export interface StagePauseData {
+  paused_after: EditableStage
+  editable_scope?: EditableStage[]
+  message?: string
+}
+
+export interface EvidenceMetaEdit {
+  evidence_id: number
+  evidence_category?: string
+  ocr_summary?: string
+}
+
+export interface OcrTextEdit {
+  evidence_id: number
+  extracted_text: string
+}
+
+export interface ExtractFieldEdit {
+  id?: number
+  evidence_id: number
+  field_name: string
+  field_value: string
+}
+
+export interface TimelineNodeEdit {
+  id?: number
+  datetime: string
+  event: string
+  category?: string
+  order?: number
+  related_evidence_codes?: string
+}
+
+export interface DocumentStageEdit {
+  title?: string
+  content?: string
+  tone?: string
+  template_type?: string
+}
+
+export interface StageEdits {
+  stage: EditableStage
+  preclassify?: EvidenceMetaEdit[]
+  classify?: EvidenceMetaEdit[]
+  ocr?: OcrTextEdit[]
+  extract?: ExtractFieldEdit[]
+  evidence_chain?: TimelineNodeEdit[]
+  complaint?: DocumentStageEdit
+  respond_complaint?: DocumentStageEdit
+}
 
 // ---------- 产物区块 ----------
 
@@ -117,9 +176,12 @@ export interface WorkflowError {
 export type EventType =
   | "workflow.start"
   | "workflow.heartbeat"
+  | "workflow.pause_requested"
+  | "workflow.paused"
   | "workflow.resumed"
   | "workflow.complete"
   | "workflow.error"
+  | "workflow.waiting_review"
   | "node.start"
   | "node.progress"
   | "node.complete"
@@ -129,6 +191,17 @@ export type EventType =
   | "review.interrupt"
   | "review.resumed"
   | "review.skipped"
+
+export interface WorkflowReplay {
+  case_id: number
+  thread_id: string | null
+  workflow_status: "idle" | "running" | "pausing" | "paused" | "waiting_review" | "succeeded" | "failed"
+  workflow_error: string
+  paused_after?: string | null
+  events: SSEEvent[]
+  last_event_id: number
+  history_available: boolean
+}
 
 /** SSE 事件通用结构（带 index signature 便于 reducer 读取 payload 字段） */
 export interface SSEEvent {

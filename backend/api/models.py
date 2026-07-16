@@ -68,6 +68,8 @@ class Case(models.Model):
     WORKFLOW_STATUS_CHOICES = [
         ('idle', '未启动'),
         ('running', '处理中'),
+        ('pausing', '暂停中'),
+        ('paused', '已暂停'),
         ('waiting_review', '等待用户校正'),
         ('succeeded', '处理完成'),
         ('failed', '处理失败'),
@@ -96,6 +98,11 @@ class Case(models.Model):
     workflow_status = models.CharField(
         '工作流状态', max_length=20, choices=WORKFLOW_STATUS_CHOICES,
         default='idle'
+    )
+    workflow_pause_requested = models.BooleanField('工作流请求暂停', default=False)
+    workflow_paused_after = models.CharField(
+        '工作流暂停边界', max_length=50, blank=True, default='',
+        help_text='安全暂停发生在该业务节点完成后'
     )
     workflow_started_at = models.DateTimeField('工作流开始时间', null=True, blank=True)
     workflow_finished_at = models.DateTimeField('工作流结束时间', null=True, blank=True)
@@ -634,6 +641,10 @@ class RespondTemplate(models.Model):
     )
     title = models.CharField('标题', max_length=200)
     content = models.TextField('答辩内容')
+    tone = models.CharField(
+        '语气', max_length=20, blank=True, default='',
+        help_text='LLM 生成的语气（firm/restrained/neutral），由工作流写入'
+    )
 
     class Meta:
         verbose_name = '反证答辩书'

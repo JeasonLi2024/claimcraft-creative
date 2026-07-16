@@ -93,8 +93,8 @@ export default function MaskPage() {
               <span className={cn("flex h-11 w-11 items-center justify-center rounded-xl", masked ? "bg-secondary text-white" : "bg-muted text-muted-foreground")}>{masked ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}</span>
               <div><h2 className="font-semibold">文本脱敏预览</h2><p className="text-sm text-muted-foreground">{masked ? "当前显示替换后的安全内容" : "当前显示识别到的原始内容"}</p></div>
             </div>
-            <button onClick={toggleMasked} className={cn("relative h-7 w-12 rounded-full transition-colors", masked ? "bg-secondary" : "bg-border")} aria-label="切换文本脱敏预览">
-              <span className={cn("absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform", masked ? "translate-x-6" : "translate-x-1")} />
+            <button onClick={toggleMasked} className={cn("relative h-6 w-11 rounded-full transition-colors", masked ? "bg-secondary" : "bg-border")} aria-label="切换文本脱敏预览">
+              <span className={cn("absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform", masked ? "translate-x-5" : "translate-x-0")} />
             </button>
           </div>
         </div>

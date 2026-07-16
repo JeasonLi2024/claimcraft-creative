@@ -2399,6 +2399,44 @@ def _format_sse_event(evt: dict) -> str:
     )
 
 
+class CaseWorkflowReplayView(APIView):
+    """返回当前工作流的持久化事件，用于页面刷新后重建展示状态。"""
+
+    def get(self, request, pk):
+        from asgiref.sync import async_to_sync
+        from api.agents import EventDepot
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        events = []
+        if case.thread_id:
+            events = async_to_sync(EventDepot().get_all_events)(case.thread_id)
+
+        # 与 SSE data 保持同一扁平结构，前端可复用同一个事件 reducer。
+        replay_events = []
+        for evt in events:
+            data = {
+                'event_id': evt.get('event_id'),
+                'event_type': evt.get('event_type'),
+                'ts': evt.get('created_at'),
+            }
+            payload = evt.get('payload')
+            if isinstance(payload, dict):
+                data.update(payload)
+            elif payload is not None:
+                data['payload'] = payload
+            replay_events.append(data)
+
+        return Response({
+            'case_id': case.id,
+            'thread_id': case.thread_id or None,
+            'workflow_status': case.workflow_status,
+            'workflow_error': case.workflow_error,
+            'events': replay_events,
+            'last_event_id': replay_events[-1]['event_id'] if replay_events else 0,
+            'history_available': bool(replay_events),
+        })
+
+
 class CaseWorkflowStartView(APIView):
     """启动工作流：POST /api/cases/<id>/workflow/start/
 

@@ -11,7 +11,7 @@ import type {
   ComplaintData, MaskResult, StatusLog,
   ExtractedField, CasePreset, DashboardStats,
 } from "@/types"
-import type { Correction } from "@/lib/workflow-events"
+import type { Correction, StageEdits, WorkflowReplay } from "@/lib/workflow-events"
 
 // Auth
 export const authApi = {
@@ -193,19 +193,40 @@ export const workflowApi = {
   start: (caseId: number, evidenceIds: number[]) =>
     apiClient
       .post<{ thread_id: string; stream_url: string }>(
-        `/cases/${caseId}/workflow/start/`,
+        '/cases/' + caseId + '/workflow/start/',
         { evidence_ids: evidenceIds },
       )
       .then((r) => r.data),
 
+  replay: (caseId: number) =>
+    apiClient
+      .get<WorkflowReplay>('/cases/' + caseId + '/workflow/replay/')
+      .then((r) => r.data),
+
   streamUrl: (caseId: number, threadId: string) =>
-    `/api/cases/${caseId}/workflow/stream/?thread_id=${threadId}`,
+    '/api/cases/' + caseId + '/workflow/stream/?thread_id=' + threadId,
+
+  pause: (caseId: number, reason?: string) =>
+    apiClient
+      .post<{ status: string; thread_id: string }>(
+        '/cases/' + caseId + '/workflow/pause/',
+        reason ? { reason } : {},
+      )
+      .then((r) => r.data),
 
   resume: (caseId: number, corrections: Correction[]) =>
     apiClient
       .post<{ status: string; thread_id: string }>(
-        `/cases/${caseId}/workflow/resume/`,
+        '/cases/' + caseId + '/workflow/resume/',
         { corrections },
+      )
+      .then((r) => r.data),
+
+  resumePaused: (caseId: number, edits: StageEdits) =>
+    apiClient
+      .post<{ status: string; thread_id: string }>(
+        '/cases/' + caseId + '/workflow/resume/',
+        { action: 'continue', edits },
       )
       .then((r) => r.data),
 }

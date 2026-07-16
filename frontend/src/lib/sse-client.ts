@@ -17,9 +17,12 @@ export interface SSEHandlers {
 /** 需要监听的 SSE 事件类型列表 */
 const EVENT_TYPES: EventType[] = [
   "workflow.start",
+  "workflow.pause_requested",
+  "workflow.paused",
   "workflow.resumed",
   "workflow.complete",
   "workflow.error",
+  "workflow.waiting_review",
   "node.start",
   "node.progress",
   "node.complete",
@@ -45,7 +48,10 @@ export class WorkflowSSEClient {
     private handlers: SSEHandlers,
     /** JWT access token，通过 query parameter 传递（浏览器 EventSource 不支持自定义 header） */
     private token?: string,
-  ) {}
+    initialLastEventId = 0,
+  ) {
+    this.lastEventId = initialLastEventId
+  }
 
   /** 建立 SSE 连接，注册所有事件类型监听器 */
   connect(): void {
@@ -85,7 +91,9 @@ export class WorkflowSSEClient {
     this.handlers.onEvent(data)
     if (
       data.event_type === "workflow.complete" ||
-      data.event_type === "workflow.error"
+      data.event_type === "workflow.error" ||
+      data.event_type === "workflow.waiting_review" ||
+      data.event_type === "workflow.paused"
     ) {
       this.close()
     }

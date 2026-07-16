@@ -37,6 +37,7 @@ from api.views import (
     CaseStatusLogView,
     CaseWorkflowView,
     CaseWorkflowHistoryView,
+    CaseWorkflowReplayView,
     CaseWorkflowStartView,
     CaseWorkflowStreamView,
     CaseWorkflowResumeView,
@@ -101,6 +102,7 @@ urlpatterns = [
     path('cases/<int:pk>/export/pdf/', ExportPDFView.as_view()),
     path('cases/<int:pk>/run-workflow/', CaseWorkflowView.as_view()),
     path('cases/<int:pk>/workflow/history/', CaseWorkflowHistoryView.as_view()),
+    path('cases/<int:pk>/workflow/replay/', CaseWorkflowReplayView.as_view()),
     # SSE 工作流流式改造（2026-07-07 新增）
     path('cases/<int:pk>/workflow/start/', CaseWorkflowStartView.as_view()),
     path('cases/<int:pk>/workflow/stream/', CaseWorkflowStreamView.as_view()),

@@ -349,12 +349,12 @@ class CaseSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'owner',
             'evidence_count', 'timeline_count', 'template_count',
             'image_evidence_count', 'extracted_field_count',
-            'workflow_status', 'workflow_started_at', 'workflow_finished_at',
+            'thread_id', 'workflow_status', 'workflow_started_at', 'workflow_finished_at',
             'workflow_error', 'workflow_revision', 'document_stale', 'archived_at',
             'progress',
         ]
         read_only_fields = [
-            'status', 'created_at', 'updated_at', 'owner', 'workflow_status',
+            'status', 'created_at', 'updated_at', 'owner', 'thread_id', 'workflow_status',
             'workflow_started_at', 'workflow_finished_at', 'workflow_error',
             'workflow_revision', 'document_stale', 'archived_at', 'progress',
         ]
