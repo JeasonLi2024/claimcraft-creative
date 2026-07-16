@@ -20,6 +20,7 @@ const EVENT_TYPES: EventType[] = [
   "workflow.pause_requested",
   "workflow.paused",
   "workflow.resumed",
+  "workflow.cancelled",
   "workflow.complete",
   "workflow.error",
   "workflow.waiting_review",
@@ -93,7 +94,8 @@ export class WorkflowSSEClient {
       data.event_type === "workflow.complete" ||
       data.event_type === "workflow.error" ||
       data.event_type === "workflow.waiting_review" ||
-      data.event_type === "workflow.paused"
+      data.event_type === "workflow.paused" ||
+      data.event_type === "workflow.cancelled"
     ) {
       this.close()
     }

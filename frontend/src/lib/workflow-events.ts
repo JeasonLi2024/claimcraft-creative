@@ -16,7 +16,7 @@ export const NODE_ORDER = [
 ] as const
 
 export type WorkflowNode = (typeof NODE_ORDER)[number]
-export type EditableStage = Exclude<WorkflowNode, "review">
+export type EditableStage = WorkflowNode
 
 /** 节点中文标签 */
 export const NODE_LABELS: Record<WorkflowNode, string> = {
@@ -70,40 +70,60 @@ export type ConnectionState =
 
 // ---------- 暂停编辑 ----------
 
+export type EditableScope = Partial<Record<"evidences" | "extracted_fields" | "timeline_nodes" | "document", string[]>>
+
+export interface StageProducts {
+  evidences?: EvidenceStageProduct[]
+  extracted_fields?: ExtractFieldEdit[]
+  timeline_nodes?: TimelineNodeEdit[]
+  document?: DocumentStageEdit | null
+}
+
 export interface StagePauseData {
   paused_after: EditableStage
-  editable_scope?: EditableStage[]
+  editable_scope?: EditableScope
+  stage_products?: StageProducts
   message?: string
 }
 
 export interface EvidenceMetaEdit {
-  evidence_id: number
+  id: number
+  evidence_id?: number
   evidence_category?: string
   ocr_summary?: string
 }
 
 export interface OcrTextEdit {
-  evidence_id: number
+  id: number
+  evidence_id?: number
   extracted_text: string
 }
 
 export interface ExtractFieldEdit {
-  id?: number
-  evidence_id: number
+  id: number
+  evidence_id?: number
+  evidence_code?: string
+  confidence?: number
   field_name: string
   field_value: string
 }
 
 export interface TimelineNodeEdit {
-  id?: number
-  datetime: string
+  id: number
+  datetime?: string
   event: string
   category?: string
   order?: number
   related_evidence_codes?: string
 }
 
+export interface EvidenceStageProduct extends EvidenceMetaEdit, Omit<OcrTextEdit, "id" | "evidence_id"> {
+  code?: string
+  description?: string
+}
+
 export interface DocumentStageEdit {
+  id?: number
   title?: string
   content?: string
   tone?: string
@@ -111,14 +131,19 @@ export interface DocumentStageEdit {
 }
 
 export interface StageEdits {
-  stage: EditableStage
-  preclassify?: EvidenceMetaEdit[]
-  classify?: EvidenceMetaEdit[]
-  ocr?: OcrTextEdit[]
-  extract?: ExtractFieldEdit[]
-  evidence_chain?: TimelineNodeEdit[]
-  complaint?: DocumentStageEdit
-  respond_complaint?: DocumentStageEdit
+  evidences?: Array<EvidenceMetaEdit | OcrTextEdit>
+  extracted_fields?: ExtractFieldEdit[]
+  timeline_nodes?: TimelineNodeEdit[]
+  document?: DocumentStageEdit
+}
+
+export interface WorkflowStateResponse {
+  case_id: number
+  thread_id: string | null
+  workflow_status: WorkflowReplay["workflow_status"]
+  workflow_paused_after: string
+  editable_scope: EditableScope
+  stage_products: StageProducts
 }
 
 // ---------- 产物区块 ----------
@@ -179,6 +204,7 @@ export type EventType =
   | "workflow.pause_requested"
   | "workflow.paused"
   | "workflow.resumed"
+  | "workflow.cancelled"
   | "workflow.complete"
   | "workflow.error"
   | "workflow.waiting_review"

@@ -14,6 +14,7 @@ import {
   type StagePauseData,
   type StageEdits,
   type EditableStage,
+  type WorkflowStateResponse,
 } from "@/lib/workflow-events"
 import type {
   Case, CaseCreateDTO, Evidence, TimelineNode,
@@ -139,6 +140,8 @@ interface CaseState {
   submitReviewCorrections: (caseId: number, corrections: Correction[]) => Promise<void>
   requestWorkflowPause: (caseId: number, reason?: string) => Promise<void>
   resumePausedWorkflow: (caseId: number, edits: StageEdits) => Promise<void>
+  cancelWorkflow: (caseId: number) => Promise<void>
+  fetchWorkflowState: (caseId: number) => Promise<WorkflowStateResponse>
   clearWorkflow: () => void
   applySSEEvent: (event: SSEEvent) => void
 }
@@ -616,20 +619,38 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       const replay: WorkflowReplay = await api.workflowApi.replay(caseId)
       // 路由切换或新一轮工作流启动后，丢弃迟到的旧恢复响应。
       if (get().activeWorkflowCaseId !== caseId || replay.thread_id !== currentCase.thread_id) return
-      replay.events.forEach((event) => get().applySSEEvent(event))
+      const replayBatchSize = 40
+      for (let index = 0; index < replay.events.length; index += replayBatchSize) {
+        replay.events.slice(index, index + replayBatchSize).forEach((event) => get().applySSEEvent(event))
+        if (index + replayBatchSize < replay.events.length) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        }
+      }
       const status = replay.workflow_status
       const replayError =
         status === "failed" && replay.workflow_error && get().errors.length === 0
           ? [{ message: replay.workflow_error, recoverable: false }]
           : get().errors
       const pausedAfter = normalizePausedAfter(replay.paused_after)
+      let pauseState = get().pauseData
+      if (status === "paused") {
+        const stateData = await get().fetchWorkflowState(caseId)
+        const statePausedAfter = normalizePausedAfter(stateData.workflow_paused_after)
+        if (statePausedAfter) {
+          pauseState = {
+            paused_after: statePausedAfter,
+            editable_scope: stateData.editable_scope,
+            stage_products: stateData.stage_products,
+          }
+        }
+      }
       set({
         workflowStatus: status,
         isRunning: status === "running" || status === "pausing",
         workflowHistoryAvailable: replay.history_available,
         latestEventId: replay.last_event_id,
         errors: replayError,
-        pauseData: status === "paused" && pausedAfter ? { paused_after: pausedAfter } : get().pauseData,
+        pauseData: status === "paused" ? pauseState || (pausedAfter ? { paused_after: pausedAfter } : null) : get().pauseData,
         connectionState: "idle",
       })
       if ((status === "running" || status === "pausing") && replay.thread_id) {
@@ -697,6 +718,41 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
     }
   },
 
+  cancelWorkflow: async (caseId) => {
+    set({ error: null })
+    try {
+      await api.workflowApi.cancel(caseId)
+      workflowSSEClient?.close()
+      workflowSSEClient = null
+      set({
+        isRunning: false,
+        currentNode: null,
+        pauseData: null,
+        workflowStatus: "idle",
+        connectionState: "idle",
+      })
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "取消工作流失败" })
+      throw e
+    }
+  },
+
+  fetchWorkflowState: async (caseId) => {
+    const stateData = await api.workflowApi.state(caseId)
+    const pausedAfter = normalizePausedAfter(stateData.workflow_paused_after)
+    if (pausedAfter) {
+      set({
+        pauseData: {
+          paused_after: pausedAfter,
+          editable_scope: stateData.editable_scope,
+          stage_products: stateData.stage_products,
+        },
+        workflowStatus: stateData.workflow_status,
+      })
+    }
+    return stateData
+  },
+
   clearWorkflow: () => {
     workflowSSEClient?.close()
     workflowSSEClient = null
@@ -760,9 +816,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
           pauseData: pausedAfter
             ? {
                 paused_after: pausedAfter,
-                editable_scope: Array.isArray(event.editable_scope)
-                  ? (event.editable_scope.filter((item): item is EditableStage => Boolean(normalizePausedAfter(item))) as EditableStage[])
-                  : undefined,
+                editable_scope:
+                  event.editable_scope && typeof event.editable_scope === "object" && !Array.isArray(event.editable_scope)
+                    ? (event.editable_scope as StagePauseData["editable_scope"])
+                    : undefined,
                 message: (event.message as string) || undefined,
               }
             : get().pauseData,
@@ -774,6 +831,19 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       }
       case "workflow.resumed": {
         set({ connectionState: "connected", isRunning: true, workflowStatus: "running", pauseData: null })
+        break
+      }
+      case "workflow.cancelled": {
+        workflowSSEClient?.close()
+        workflowSSEClient = null
+        set({
+          connectionState: "idle",
+          isRunning: false,
+          workflowStatus: "idle",
+          currentNode: null,
+          pauseData: null,
+          reviewInterrupt: null,
+        })
         break
       }
       case "node.start": {

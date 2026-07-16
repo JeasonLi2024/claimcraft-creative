@@ -146,6 +146,26 @@ def clear_pause_boundary(case_id: int, paused_after: str) -> Case:
 
 
 @transaction.atomic
+def cancel_workflow(case_id: int) -> Case:
+    """取消已暂停的工作流执行，但不取消案件本身。"""
+    case = Case.objects.select_for_update().get(pk=case_id)
+    if case.status in ('closed', 'cancelled'):
+        raise LifecycleError('已归档或已取消的案件不能取消工作流')
+    if case.workflow_status not in {'paused', 'idle'}:
+        raise LifecycleError('仅已暂停或未启动的工作流允许取消')
+    case.workflow_status = 'idle'
+    case.workflow_pause_requested = False
+    case.workflow_paused_after = ''
+    case.workflow_finished_at = timezone.now()
+    case.workflow_error = ''
+    case.save(update_fields=[
+        'workflow_status', 'workflow_pause_requested', 'workflow_paused_after',
+        'workflow_finished_at', 'workflow_error', 'updated_at',
+    ])
+    return case
+
+
+@transaction.atomic
 def mark_waiting_review(case_id: int) -> Case:
     case = Case.objects.select_for_update().get(pk=case_id)
     if case.status not in ('closed', 'cancelled'):

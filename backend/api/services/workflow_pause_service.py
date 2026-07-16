@@ -151,6 +151,66 @@ def _allowed_evidence_ids(snapshot_values):
     )
 
 
+def get_stage_products(case, paused_after):
+    """从数据库读取暂停阶段可编辑产物，供刷新后的编辑面板预填。"""
+    if paused_after in {'preclassify', 'ocr', 'classify'}:
+        rows = []
+        for evidence in case.evidences.order_by('order', 'id'):
+            rows.append({
+                'id': evidence.id,
+                'evidence_id': evidence.id,
+                'code': evidence.code,
+                'description': evidence.description,
+                'evidence_category': evidence.evidence_category,
+                'ocr_summary': evidence.ocr_summary,
+                'extracted_text': evidence.extracted_text,
+            })
+        return {'evidences': rows}
+    if paused_after in {'extract', 'review'}:
+        return {
+            'extracted_fields': [
+                {
+                    'id': field.id,
+                    'evidence_id': field.evidence_id,
+                    'evidence_code': field.evidence.code,
+                    'field_name': field.field_name,
+                    'field_value': field.field_value,
+                    'confidence': field.confidence,
+                }
+                for field in ExtractedField.objects.filter(
+                    evidence__case=case
+                ).select_related('evidence').order_by('evidence__order', 'id')
+            ]
+        }
+    if paused_after == 'evidence_chain':
+        return {
+            'timeline_nodes': [
+                {
+                    'id': node.id,
+                    'datetime': node.datetime.isoformat() if node.datetime else '',
+                    'event': node.event,
+                    'category': node.category,
+                    'order': node.order,
+                    'related_evidence_codes': node.related_evidence_codes,
+                }
+                for node in case.timeline_nodes.order_by('order', 'datetime', 'id')
+            ]
+        }
+    if paused_after in {'complaint', 'respond_complaint'}:
+        manager = case.complaint_templates if paused_after == 'complaint' else case.respond_templates
+        template = manager.order_by('id').first()
+        return {
+            'document': {
+                'id': template.id,
+                'title': template.title,
+                'content': template.content,
+                'tone': getattr(template, 'tone', ''),
+                'template_type': template.template_type,
+            } if template else None
+        }
+    return {}
+
+
 def build_stage_resume_payload(case, edits):
     paused_after = (case.workflow_paused_after or '').strip()
     if paused_after not in STAGE_EDITABLE_SCOPES:

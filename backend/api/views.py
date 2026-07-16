@@ -2431,9 +2431,81 @@ class CaseWorkflowReplayView(APIView):
             'thread_id': case.thread_id or None,
             'workflow_status': case.workflow_status,
             'workflow_error': case.workflow_error,
+            'paused_after': case.workflow_paused_after or None,
             'events': replay_events,
             'last_event_id': replay_events[-1]['event_id'] if replay_events else 0,
             'history_available': bool(replay_events),
+        })
+
+
+class CaseWorkflowPauseView(APIView):
+    """请求工作流在当前业务节点完成后安全暂停。"""
+
+    def post(self, request, pk):
+        from asgiref.sync import async_to_sync
+        from api.agents import EventDepot, NotifyEmitter
+        from api.services.case_lifecycle_service import LifecycleError, request_pause
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        if not case.thread_id:
+            return Response({'detail': '案件尚未启动工作流'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            case = request_pause(case.id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        depot = EventDepot()
+        event_id = async_to_sync(depot.persist)(case.thread_id, 'workflow.pause_requested', {
+            'thread_id': case.thread_id,
+            'case_id': case.id,
+            'reason': request.data.get('reason', ''),
+            'ts': timezone.now().isoformat(),
+        })
+        async_to_sync(NotifyEmitter().notify)(case.thread_id, event_id)
+        return Response({'status': 'pausing', 'case_id': case.id, 'thread_id': case.thread_id})
+
+
+class CaseWorkflowCancelView(APIView):
+    """取消已暂停的工作流，但保留案件与已生成产物。"""
+
+    def post(self, request, pk):
+        from asgiref.sync import async_to_sync
+        from api.agents import EventDepot, NotifyEmitter
+        from api.services.case_lifecycle_service import LifecycleError, cancel_workflow
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        thread_id = case.thread_id
+        try:
+            case = cancel_workflow(case.id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        if thread_id:
+            depot = EventDepot()
+            event_id = async_to_sync(depot.persist)(thread_id, 'workflow.cancelled', {
+                'thread_id': thread_id,
+                'case_id': case.id,
+                'ts': timezone.now().isoformat(),
+            })
+            async_to_sync(NotifyEmitter().notify)(thread_id, event_id)
+        return Response({'status': 'idle', 'case_id': case.id, 'thread_id': thread_id or None})
+
+
+class CaseWorkflowStateView(APIView):
+    """返回当前工作流状态、暂停编辑范围与数据库产物快照。"""
+
+    def get(self, request, pk):
+        from api.services.workflow_pause_service import get_stage_editable_scope, get_stage_products
+
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        paused_after = case.workflow_paused_after or ''
+        return Response({
+            'case_id': case.id,
+            'thread_id': case.thread_id or None,
+            'workflow_status': case.workflow_status,
+            'workflow_paused_after': paused_after,
+            'editable_scope': get_stage_editable_scope(paused_after),
+            'stage_products': get_stage_products(case, paused_after),
         })
 
 
@@ -2558,7 +2630,8 @@ class CaseWorkflowStreamView(View):
             for evt in missed:
                 yield _format_sse_event(evt)
                 if evt['event_type'] in (
-                    'workflow.complete', 'workflow.error', 'workflow.waiting_review'
+                    'workflow.complete', 'workflow.error', 'workflow.waiting_review',
+                    'workflow.paused', 'workflow.cancelled',
                 ):
                     return
 
@@ -2566,7 +2639,7 @@ class CaseWorkflowStreamView(View):
             if await depot.is_workflow_completed(thread_id):
                 return
             current_case = await sync_to_async(Case.objects.get)(pk=pk)
-            if current_case.workflow_status == 'waiting_review':
+            if current_case.workflow_status in {'waiting_review', 'paused', 'idle'}:
                 return
 
             # 3. 订阅 NOTIFY（通过线程桥接到 asyncio.Queue）
@@ -2602,7 +2675,8 @@ class CaseWorkflowStreamView(View):
                             current_last = evt['event_id']
                             if evt['event_type'] in (
                                 'workflow.complete', 'workflow.error',
-                                'workflow.waiting_review',
+                                'workflow.waiting_review', 'workflow.paused',
+                                'workflow.cancelled',
                             ):
                                 return
                     except asyncio.TimeoutError:
@@ -2677,26 +2751,46 @@ class CaseWorkflowResumeView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        corrections = request.data.get('corrections', [])
-        if not corrections:
-            return Response(
-                {'detail': 'corrections 不能为空'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         thread_id = case.thread_id
-        from api.services.case_lifecycle_service import LifecycleError, resume_processing
+        from api.services.case_lifecycle_service import (
+            LifecycleError,
+            clear_pause_boundary,
+            resume_processing,
+        )
+        from api.services.workflow_pause_service import (
+            StagePauseValidationError,
+            build_stage_resume_payload,
+        )
+
+        paused_after = case.workflow_paused_after
+        is_stage_resume = case.workflow_status == 'paused'
+        if is_stage_resume:
+            if request.data.get('action') != 'continue':
+                return Response({'detail': '暂停工作流仅支持 continue 操作'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                resume_payload = build_stage_resume_payload(case, request.data.get('edits', {}))
+            except StagePauseValidationError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            corrections = request.data.get('corrections', [])
+            if not corrections:
+                return Response({'detail': 'corrections 不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+            resume_payload = {'corrections': corrections}
+
         try:
             resume_processing(case.id)
+            runner = WorkflowRunner()
+            runner.start_in_background(
+                case_id=case.id,
+                thread_id=thread_id,
+                resume=resume_payload,
+            )
+            if is_stage_resume:
+                clear_pause_boundary(case.id, paused_after)
         except LifecycleError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
-
-        runner = WorkflowRunner()
-        runner.start_in_background(
-            case_id=case.id,
-            thread_id=thread_id,
-            resume={'corrections': corrections},
-        )
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
 
         return Response({
             "status": "resumed",

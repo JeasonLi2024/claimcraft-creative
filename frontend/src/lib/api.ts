@@ -11,7 +11,7 @@ import type {
   ComplaintData, MaskResult, StatusLog,
   ExtractedField, CasePreset, DashboardStats,
 } from "@/types"
-import type { Correction, StageEdits, WorkflowReplay } from "@/lib/workflow-events"
+import type { Correction, StageEdits, WorkflowReplay, WorkflowStateResponse } from "@/lib/workflow-events"
 
 // Auth
 export const authApi = {
@@ -228,5 +228,15 @@ export const workflowApi = {
         '/cases/' + caseId + '/workflow/resume/',
         { action: 'continue', edits },
       )
+      .then((r) => r.data),
+
+  cancel: (caseId: number) =>
+    apiClient
+      .post<{ status: string; thread_id: string | null }>('/cases/' + caseId + '/workflow/cancel/')
+      .then((r) => r.data),
+
+  state: (caseId: number) =>
+    apiClient
+      .get<WorkflowStateResponse>('/cases/' + caseId + '/workflow/state/')
       .then((r) => r.data),
 }

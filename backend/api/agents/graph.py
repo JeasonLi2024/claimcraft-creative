@@ -58,6 +58,7 @@ from api.agents.nodes.review_node import review_node
 from api.agents.nodes.evidence_chain_node import evidence_chain_node
 from api.agents.nodes.complaint_node import complaint_node
 from api.agents.nodes.respond_complaint_node import respond_complaint_node
+from api.agents.nodes.stage_gate_node import make_stage_gate
 
 logger = logging.getLogger(__name__)
 
@@ -315,25 +316,39 @@ def build_case_workflow():
     g.add_node("complaint", complaint_node, timeout=120, error_handler=_make_error_handler("投诉生成"))
     g.add_node("respond_complaint", respond_complaint_node, timeout=120, error_handler=_make_error_handler("反证答辩生成"))
 
-    # 添加边
+    business_nodes = (
+        "preclassify", "ocr", "classify", "extract", "review",
+        "evidence_chain", "complaint", "respond_complaint",
+    )
+    for node_name in business_nodes:
+        g.add_node(f"stage_gate_after_{node_name}", make_stage_gate(node_name))
+
+    # 每个业务节点完成后先经过阶段门，再路由到下一业务节点。
     g.add_edge(START, "preclassify")
-    g.add_edge("preclassify", "ocr")
-    g.add_edge("ocr", "classify")
-    g.add_edge("classify", "extract")
+    g.add_edge("preclassify", "stage_gate_after_preclassify")
+    g.add_edge("stage_gate_after_preclassify", "ocr")
+    g.add_edge("ocr", "stage_gate_after_ocr")
+    g.add_edge("stage_gate_after_ocr", "classify")
+    g.add_edge("classify", "stage_gate_after_classify")
+    g.add_edge("stage_gate_after_classify", "extract")
+    g.add_edge("extract", "stage_gate_after_extract")
     g.add_conditional_edges(
-        "extract",
+        "stage_gate_after_extract",
         _route_after_extract,
         {"review": "review", "evidence_chain": "evidence_chain"},
     )
-    g.add_edge("review", "evidence_chain")
-    # v10 反向维权分支：根据 case_mode 路由到 complaint 或 respond_complaint
+    g.add_edge("review", "stage_gate_after_review")
+    g.add_edge("stage_gate_after_review", "evidence_chain")
+    g.add_edge("evidence_chain", "stage_gate_after_evidence_chain")
     g.add_conditional_edges(
-        "evidence_chain",
+        "stage_gate_after_evidence_chain",
         _route_by_case_mode,
         {"complaint": "complaint", "respond_complaint": "respond_complaint"},
     )
-    g.add_edge("complaint", END)
-    g.add_edge("respond_complaint", END)
+    g.add_edge("complaint", "stage_gate_after_complaint")
+    g.add_edge("stage_gate_after_complaint", END)
+    g.add_edge("respond_complaint", "stage_gate_after_respond_complaint")
+    g.add_edge("stage_gate_after_respond_complaint", END)
 
     # 编译（启用 PostgresSaver checkpointer + PostgresStore 长期记忆，HITL 必须）
     compiled = g.compile(checkpointer=_get_checkpointer(), store=_get_store())

@@ -19,6 +19,7 @@ HITL 流程：
 """
 import asyncio
 import logging
+import os
 import threading
 from concurrent.futures import Future
 from datetime import datetime, timezone
@@ -34,7 +35,13 @@ from api.agents.sse_event_mapper import SSEEventMapper
 from api.services.case_lifecycle_service import (
     complete_processing,
     fail_processing,
+    mark_paused,
     mark_waiting_review,
+)
+from api.services.workflow_pause_service import (
+    interrupt_value,
+    is_stage_pause_interrupt_value,
+    snapshot_interrupts,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +74,7 @@ class WorkflowRunner:
     _background_loop: asyncio.AbstractEventLoop | None = None
     _background_loop_thread: threading.Thread | None = None
     _background_loop_lock = threading.Lock()
+    _task_registry_lock = threading.Lock()
 
     @classmethod
     def _run_background_loop(cls, loop: asyncio.AbstractEventLoop) -> None:
@@ -126,13 +134,18 @@ class WorkflowRunner:
                 })
                 await emitter.notify(thread_id, eid)
             else:
-                # HITL 恢复：持久化 review.resumed 事件
-                corrections = resume.get("corrections", []) if isinstance(resume, dict) else []
-                eid = await depot.persist(thread_id, "review.resumed", {
-                    "applied_corrections": corrections,
-                    "corrections_count": len(corrections),
-                    "ts": _utcnow_iso(),
-                })
+                if resume.get("interrupt_type") == "stage_pause":
+                    eid = await depot.persist(thread_id, "workflow.resumed", {
+                        "paused_after": resume.get("paused_after"),
+                        "ts": _utcnow_iso(),
+                    })
+                else:
+                    corrections = resume.get("corrections", []) if isinstance(resume, dict) else []
+                    eid = await depot.persist(thread_id, "review.resumed", {
+                        "applied_corrections": corrections,
+                        "corrections_count": len(corrections),
+                        "ts": _utcnow_iso(),
+                    })
                 await emitter.notify(thread_id, eid)
 
             # 2. 构建 workflow + config
@@ -150,6 +163,23 @@ class WorkflowRunner:
                 )
 
             mapper = SSEEventMapper()
+            token_parts: list[str] = []
+            token_started_at: float | None = None
+            token_limit = max(1, int(os.environ.get("SSE_TOKEN_BATCH_SIZE", "50")))
+            token_interval = max(0.05, float(os.environ.get("SSE_TOKEN_BATCH_INTERVAL", "0.5")))
+
+            async def flush_tokens() -> None:
+                nonlocal token_started_at
+                if not token_parts:
+                    return
+                eid = await depot.persist(thread_id, "complaint.token", {
+                    "delta": "".join(token_parts),
+                    "node": mapper.current_node,
+                })
+                token_parts.clear()
+                token_started_at = None
+                await emitter.notify(thread_id, eid)
+
             async for raw_event in stream:
                 try:
                     sse_events = await mapper.map(raw_event)
@@ -161,13 +191,43 @@ class WorkflowRunner:
                     continue
 
                 for sse_event in sse_events:
-                    eid = await depot.persist(
-                        thread_id, sse_event.type, sse_event.payload
-                    )
+                    if sse_event.type == "complaint.token":
+                        if token_started_at is None:
+                            token_started_at = asyncio.get_running_loop().time()
+                        token_parts.append(str(sse_event.payload.get("delta", "")))
+                        elapsed = asyncio.get_running_loop().time() - token_started_at
+                        if len(token_parts) >= token_limit or elapsed >= token_interval:
+                            await flush_tokens()
+                        continue
+                    await flush_tokens()
+                    eid = await depot.persist(thread_id, sse_event.type, sse_event.payload)
                     await emitter.notify(thread_id, eid)
 
-            # 4. 区分 HITL 中断与图真正结束，避免把等待校正误判为完成
+            await flush_tokens()
+
+            # 4. 区分阶段暂停、HITL 审核中断与图真正结束。
             snapshot = await workflow.aget_state(config)
+            stage_pause = next(
+                (
+                    interrupt_value(item)
+                    for item in snapshot_interrupts(snapshot)
+                    if is_stage_pause_interrupt_value(interrupt_value(item))
+                ),
+                None,
+            )
+            if stage_pause:
+                paused_after = stage_pause.get("paused_after", "")
+                changed = await sync_to_async(mark_paused, thread_sensitive=True)(case_id, paused_after)
+                if changed:
+                    paused_eid = await depot.persist(thread_id, "workflow.paused", {
+                        **stage_pause,
+                        "thread_id": thread_id,
+                        "case_id": case_id,
+                        "ts": _utcnow_iso(),
+                    })
+                    await emitter.notify(thread_id, paused_eid)
+                return
+
             if snapshot.next:
                 await sync_to_async(mark_waiting_review, thread_sensitive=True)(case_id)
                 waiting_eid = await depot.persist(thread_id, "workflow.waiting_review", {
@@ -225,8 +285,11 @@ class WorkflowRunner:
                     exc_info=True,
                 )
         finally:
-            # 任务结束，从注册表移除
-            self._task_registry.pop(thread_id, None)
+            # 任务结束，从注册表移除；仅删除当前协程对应的已完成条目。
+            with self._task_registry_lock:
+                task = self._task_registry.get(thread_id)
+                if task is not None and task.done():
+                    self._task_registry.pop(thread_id, None)
 
     def start_in_background(
         self,
@@ -248,11 +311,10 @@ class WorkflowRunner:
         Returns:
             Future 对象
         """
-        # 取消同 thread_id 的旧任务（如有）
-        old_task = self._task_registry.get(thread_id)
-        if old_task is not None and not old_task.done():
-            old_task.cancel()
-            logger.warning(f"取消同 thread_id 旧任务 (thread={thread_id})")
+        with self._task_registry_lock:
+            old_task = self._task_registry.get(thread_id)
+            if old_task is not None and not old_task.done():
+                raise RuntimeError(f"工作流任务正在运行 (thread={thread_id})")
 
         coro = self.run_and_persist(
             case_id=case_id,
@@ -269,11 +331,14 @@ class WorkflowRunner:
                 coro,
                 loop,
             )
-        self._task_registry[thread_id] = task
+        with self._task_registry_lock:
+            self._task_registry[thread_id] = task
 
         # 任务结束回调：确保从注册表清理
         def _on_done(t: Future[Any]) -> None:
-            self._task_registry.pop(thread_id, None)
+            with self._task_registry_lock:
+                if self._task_registry.get(thread_id) is t:
+                    self._task_registry.pop(thread_id, None)
             if t.cancelled():
                 logger.debug(f"后台任务已取消 (thread={thread_id})")
                 return
