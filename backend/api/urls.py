@@ -67,6 +67,8 @@ from api.views import (
     submit_intervention_view,
     # Task 3.2：/workflow-runs/* 新统一接口
     WorkflowRunCreateView,
+    WorkflowRunEventsView,
+    WorkflowRunStreamTicketView,
     WorkflowRunSnapshotView,
     WorkflowRunPauseView,
     WorkflowRunInterventionSubmitView,
@@ -75,6 +77,9 @@ from api.views import (
     CaseWorkflowRunsListView,
     # Task 4.1.4：段落级重新生成
     DocumentParagraphRegenerateView,
+    WorkflowRunDocumentDetailView,
+    WorkflowRunDocumentVersionsView,
+    WorkflowRunDocumentRollbackView,
     # Task 4.2.4：导出前质量门检查
     DocumentExportCheckView,
 )
@@ -156,7 +161,9 @@ urlpatterns = [
     #   注：与 SubTask 3.2.1 共用同一路径前缀，但用 list/ 后缀避免与 POST 根路径冲突。
     #   GET 默认会路由到 WorkflowRunCreateView（不支持 get 方法），故独立路由。
     path('cases/<int:case_id>/workflow-runs/list/', CaseWorkflowRunsListView.as_view()),
-    # SubTask 3.2.2：获取权威快照
+    # SubTask 3.2.2：事件流与权威快照
+    path('workflow-runs/<int:run_id>/events/', WorkflowRunEventsView.as_view()),
+    path('workflow-runs/<int:run_id>/stream-ticket/', WorkflowRunStreamTicketView.as_view()),
     path('workflow-runs/<int:run_id>/snapshot/', WorkflowRunSnapshotView.as_view()),
     # SubTask 3.2.3：请求暂停
     path('workflow-runs/<int:run_id>/pause/', WorkflowRunPauseView.as_view()),
@@ -169,7 +176,22 @@ urlpatterns = [
     path('workflow-runs/<int:run_id>/retry/', WorkflowRunRetryView.as_view()),
     # SubTask 3.2.6：取消运行
     path('workflow-runs/<int:run_id>/cancel/', WorkflowRunCancelView.as_view()),
-    # ===== Task 4.1.4：段落级重新生成（专业文书工作台）=====
+    # ===== Task 4.1：专业文书工作台 =====
+    path(
+        'workflow-runs/<int:run_id>/documents/<int:document_id>/',
+        WorkflowRunDocumentDetailView.as_view(),
+        name='workflow-run-document-detail',
+    ),
+    path(
+        'workflow-runs/<int:run_id>/documents/<int:document_id>/versions/',
+        WorkflowRunDocumentVersionsView.as_view(),
+        name='workflow-run-document-versions',
+    ),
+    path(
+        'workflow-runs/<int:run_id>/documents/<int:document_id>/versions/<int:version>/rollback/',
+        WorkflowRunDocumentRollbackView.as_view(),
+        name='workflow-run-document-rollback',
+    ),
     path(
         'workflow-runs/<int:run_id>/documents/<int:document_id>/paragraphs/<str:paragraph_id>/regenerate/',
         DocumentParagraphRegenerateView.as_view(),

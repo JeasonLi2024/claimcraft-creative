@@ -239,6 +239,13 @@ export default function AuthShell({ eyebrow, title, description, children }: Aut
         aria-label="ClaimCraft 产品能力展示"
       >
         <FlowingBackground reduce={reduce} />
+        <img
+          src="/登录页视觉图.png"
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-35 mix-blend-luminosity"
+        />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#17231d]/30 via-[#17231d]/48 to-[#17231d]/92" />
         <div className="relative z-10 flex items-center justify-between">
           <Link to="/home" className={`flex items-center gap-3 rounded-xl ${authFocusRing}`}>
             <BrandMark inverse />

@@ -90,14 +90,15 @@ export interface WorkflowRun {
 
 // ===== 工作流产物（对齐后端 WorkflowArtifact，Task 3.1 引入）=====
 
+// 对齐后端节点实际写入的 WorkflowArtifact.artifact_type（见 api/agents/nodes/*）
 export type WorkflowArtifactKind =
-  | 'preclassify'
-  | 'ocr'
-  | 'classify'
-  | 'extract'
+  | 'preclassify_result'
+  | 'ocr_result'
+  | 'classify_result'
+  | 'extract_result'
   | 'evidence_chain'
-  | 'complaint'
-  | 'respond_complaint'
+  | 'complaint_draft'
+  | 'respond_complaint_draft'
 
 export type WorkflowArtifactStatus = 'active' | 'stale' | 'archived'
 
@@ -116,7 +117,11 @@ export interface WorkflowArtifact {
 
 // ===== 工作流介入（对齐后端 WorkflowIntervention，Task 2.1 引入）=====
 
-export type InterventionType = 'quality_review' | 'user_pause'
+export type InterventionType =
+  | 'quality_review'
+  | 'user_pause'
+  | 'legal_confirmation'
+  | 'missing_information'
 export type InterventionStatus = 'pending' | 'submitted' | 'cancelled' | 'expired'
 
 export interface WorkflowIntervention {

@@ -26,13 +26,13 @@ const NODE_LABELS_ZH: Record<string, string> = {
 }
 
 const ARTIFACT_KIND_LABELS: Record<WorkflowArtifactKind, string> = {
-  preclassify: "预分类结果",
-  ocr: "OCR 识别结果",
-  classify: "证据分类结果",
-  extract: "字段抽取结果",
+  preclassify_result: "预分类结果",
+  ocr_result: "OCR 识别结果",
+  classify_result: "证据分类结果",
+  extract_result: "字段抽取结果",
   evidence_chain: "证据链",
-  complaint: "投诉书",
-  respond_complaint: "反证答辩书",
+  complaint_draft: "投诉书",
+  respond_complaint_draft: "反证答辩书",
 }
 
 const ARTIFACT_STATUS_LABELS: Record<WorkflowArtifact["status"], string> = {

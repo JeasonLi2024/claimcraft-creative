@@ -17,13 +17,13 @@ import type { WorkflowArtifact, WorkflowArtifactKind, WorkflowArtifactStatus } f
 // ---------- artifact kind 中文标签 ----------
 
 const ARTIFACT_KIND_LABELS: Record<WorkflowArtifactKind, string> = {
-  preclassify: "证据预分类",
-  ocr: "OCR 识别结果",
-  classify: "证据分类",
-  extract: "字段抽取",
+  preclassify_result: "证据预分类",
+  ocr_result: "OCR 识别结果",
+  classify_result: "证据分类",
+  extract_result: "字段抽取",
   evidence_chain: "证据链",
-  complaint: "投诉书",
-  respond_complaint: "反证答辩书",
+  complaint_draft: "投诉书",
+  respond_complaint_draft: "反证答辩书",
 }
 
 // ---------- status 配置 ----------

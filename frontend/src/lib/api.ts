@@ -424,6 +424,17 @@ export const workflowRunApi = {
       .then((r) => r.data),
 
   /**
+   * POST /api/workflow-runs/{run_id}/stream-ticket/
+   * 为已存在的运行签发一次性 SSE 票据（页面加载 / 刷新 / 重连 / 切换运行时用）。
+   */
+  streamTicket: (runId: number) =>
+    apiClient
+      .post<{ run_id: number; stream_ticket: string; stream_url: string }>(
+        `/workflow-runs/${runId}/stream-ticket/`,
+      )
+      .then((r) => r.data),
+
+  /**
    * 构造 SSE 事件流 URL（用于 FetchStreamSSEClient）。
    * stream_url 通常由 createRun / submitIntervention / retryRun 返回。
    * 此处提供基于 run_id 的默认构造，便于直接连接已有运行。

@@ -208,13 +208,13 @@ export function DocumentEditor({
                 ...p,
                 content: response.paragraph.content,
                 created_by_type: 'user',
-                version: response.version.version,
-                created_at: response.version.created_at,
+                version: response.version,
+                created_at: new Date().toISOString(),
               }
             : p,
         ),
       )
-      setCurrentVersion(response.version.version)
+      setCurrentVersion(response.version)
       setSaveStatus({ kind: 'saved', at: new Date() })
     } catch (err) {
       const msg =
@@ -273,13 +273,13 @@ export function DocumentEditor({
                 evidence_codes: response.paragraph.evidence_codes,
                 legal_references: response.paragraph.legal_references,
                 created_by_type: 'ai',
-                version: response.version.version,
-                created_at: response.version.created_at,
+                version: response.version,
+                created_at: new Date().toISOString(),
               }
             : p,
         ),
       )
-      setCurrentVersion(response.version.version)
+      setCurrentVersion(response.version)
       setSaveStatus({ kind: 'saved', at: new Date() })
       showToast('段落已重新生成', 'success')
     } catch (err) {

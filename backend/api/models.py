@@ -1146,6 +1146,8 @@ class WorkflowIntervention(models.Model):
     INTERVENTION_TYPE_CHOICES = [
         ('quality_review', '质量审核'),
         ('user_pause', '用户暂停'),
+        ('legal_confirmation', '法律风险确认'),
+        ('missing_information', '缺失信息补充'),
     ]
     STATUS_CHOICES = [
         ('pending', '等待用户提交'),
@@ -1173,7 +1175,10 @@ class WorkflowIntervention(models.Model):
     # 介入元数据
     intervention_type = models.CharField(
         '介入类型', max_length=32, choices=INTERVENTION_TYPE_CHOICES,
-        help_text='介入类型：quality_review / user_pause',
+        help_text=(
+            '介入类型：quality_review / user_pause / '
+            'legal_confirmation / missing_information'
+        ),
     )
     stage = models.CharField(
         '触发阶段', max_length=64,

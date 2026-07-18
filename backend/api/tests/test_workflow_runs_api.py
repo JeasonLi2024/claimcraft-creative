@@ -103,7 +103,7 @@ class WorkflowRunCreateViewTests(TestCase):
         self.assertEqual(payload['case_id'], self.case.id)
         self.assertEqual(payload['status'], 'queued')
         self.assertTrue(payload['thread_id'].startswith(f'case-{self.case.id}-run-'))
-        self.assertIn(f'/api/workflow-runs/{payload["run_id"]}/stream/', payload['stream_url'])
+        self.assertIn(f'/api/workflow-runs/{payload["run_id"]}/events/', payload['stream_url'])
         # 验证 DB 中已创建 WorkflowRun
         run = WorkflowRun.objects.get(pk=payload['run_id'])
         self.assertEqual(run.case_id, self.case.id)

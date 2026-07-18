@@ -1,5 +1,23 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "ClaimCraft Sans";
+  src: url("/fonts/alimama-agile/AlimamaAgileVF-Thin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F;
+}
+
+@font-face {
+  font-family: "ClaimCraft Sans";
+  src: url("/fonts/deyihei/SmileySans-Oblique.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -118,11 +136,11 @@
     @apply bg-background text-foreground;
     min-height: 100dvh;
     font-family:
-      "Geist Sans",
-      "SF Pro Display",
-      "Segoe UI",
+      "ClaimCraft Sans",
       "PingFang SC",
       "Microsoft YaHei",
+      "SF Pro Display",
+      "Segoe UI",
       ui-sans-serif,
       system-ui,
       sans-serif;

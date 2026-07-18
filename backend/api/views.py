@@ -3000,7 +3000,7 @@ class WorkflowRunCreateView(APIView):
             "thread_id": str,
             "status": "queued",
             "stream_ticket": str,  # 一次性 SSE Ticket，TTL 3 分钟
-            "stream_url": "/api/workflow-runs/{run_id}/stream/?ticket=<stream_ticket>"
+            "stream_url": "/api/workflow-runs/{run_id}/events/?ticket=<stream_ticket>"
         }
 
     错误响应：
@@ -3010,6 +3010,11 @@ class WorkflowRunCreateView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, case_id: int):
+        """返回案件运行历史；与 POST 共用资源路径。"""
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+        return Response(_build_case_workflow_runs_payload(case))
 
     def post(self, request, case_id: int):
         from api.agents import WorkflowRunner
@@ -3049,6 +3054,7 @@ class WorkflowRunCreateView(APIView):
         # 启动后台 WorkflowRunner（initial_state 与 resume/fork_config 互斥）
         initial_state = {
             "case_id": case.id,
+            "workflow_run_id": run.id,
             "evidence_ids": evidence_ids,
             "evidence_preclassify_results": [],
             "evidence_ocr_results": [],
@@ -3081,9 +3087,136 @@ class WorkflowRunCreateView(APIView):
             "status": run.status,
             "stream_ticket": stream_ticket,
             "stream_url": (
-                f"/api/workflow-runs/{run.id}/stream/?ticket={stream_ticket}"
+                f"/api/workflow-runs/{run.id}/events/?ticket={stream_ticket}"
             ),
         }, status=status.HTTP_201_CREATED)
+
+
+class WorkflowRunEventsView(View):
+    """按 WorkflowRun 提供带一次性票据鉴权的 SSE 事件流。"""
+
+    _terminal_events = {
+        'workflow.complete',
+        'workflow.error',
+        'workflow.waiting_review',
+        'workflow.paused',
+        'workflow.cancelled',
+    }
+
+    async def get(self, request, run_id: int):
+        from asgiref.sync import sync_to_async
+        from api.agents import EventDepot, NotifyEmitter
+        from api.models import WorkflowRun
+        from api.services.sse_ticket_service import revoke_ticket, validate_ticket
+
+        user = await CaseWorkflowStreamView()._authenticate(request)
+        if user is None:
+            return HttpResponse(
+                json.dumps({'detail': '认证失败'}),
+                content_type='application/json',
+                status=401,
+            )
+        run = await sync_to_async(
+            WorkflowRun.objects.select_related('case').filter(pk=run_id).first
+        )()
+        if run is None or run.case.owner_id != user.id:
+            return HttpResponse(
+                json.dumps({'detail': '未找到或无权访问该工作流运行'}),
+                content_type='application/json',
+                status=404,
+            )
+        ticket = request.GET.get('ticket', '')
+        if not ticket or not validate_ticket(ticket, run.id):
+            return HttpResponse(
+                json.dumps({'detail': 'Invalid or expired SSE ticket'}),
+                content_type='application/json',
+                status=401,
+            )
+        revoke_ticket(ticket)
+        try:
+            last_event_id = int(
+                request.headers.get('Last-Event-ID')
+                or request.GET.get('last_event_id', '0')
+            )
+        except (TypeError, ValueError):
+            last_event_id = 0
+
+        async def event_stream():
+            depot = EventDepot()
+            emitter = NotifyEmitter()
+            missed = await depot.get_events_after(run.thread_id, last_event_id)
+            for event in missed:
+                yield _format_sse_event(event, thread_id=run.thread_id)
+                if event['event_type'] in self._terminal_events:
+                    return
+            current_last = missed[-1]['event_id'] if missed else last_event_id
+            if await depot.is_workflow_completed(run.thread_id):
+                return
+
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+            stop_event = threading.Event()
+
+            def on_notify(_pid, _channel, payload):
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, int(payload))
+                except (TypeError, ValueError):
+                    pass
+
+            subscribe_task = asyncio.create_task(
+                emitter.subscribe(run.thread_id, on_notify, stop_event)
+            )
+            try:
+                while True:
+                    try:
+                        await asyncio.wait_for(queue.get(), timeout=15)
+                        new_events = await depot.get_events_after(
+                            run.thread_id, current_last
+                        )
+                        for event in new_events:
+                            yield _format_sse_event(event, thread_id=run.thread_id)
+                            current_last = event['event_id']
+                            if event['event_type'] in self._terminal_events:
+                                return
+                    except asyncio.TimeoutError:
+                        yield ': heartbeat\n\n'
+            finally:
+                stop_event.set()
+                subscribe_task.cancel()
+                try:
+                    await subscribe_task
+                except asyncio.CancelledError:
+                    pass
+
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream',
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        return response
+
+
+class WorkflowRunStreamTicketView(APIView):
+    """为已存在的运行签发一次性 SSE 票据。
+
+    createRun / retry / submitIntervention 会随响应返回票据；但页面加载、刷新、
+    重连或切换到历史运行时没有票据，需要单独签发。票据 TTL 短、仅可读该 run。
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int):
+        from api.models import WorkflowRun
+        from api.services.sse_ticket_service import issue_ticket
+
+        run = get_object_or_404(WorkflowRun, pk=run_id, case__owner=request.user)
+        ticket = issue_ticket(run_id=run.id, user_id=request.user.id)
+        return Response({
+            "run_id": run.id,
+            "stream_ticket": ticket,
+            "stream_url": f"/api/workflow-runs/{run.id}/events/?ticket={ticket}",
+        })
 
 
 class WorkflowRunSnapshotView(APIView):
@@ -3236,8 +3369,12 @@ class WorkflowRunInterventionSubmitView(APIView):
             )
 
         try:
+            intervention = WorkflowIntervention.objects.get(
+                pk=intervention_id,
+                workflow_run_id=run.id,
+            )
             intervention = submit_intervention(
-                intervention_id=intervention_id,
+                intervention_id=intervention.id,
                 submitted_values=request.data.get("submitted_values", {}),
                 submitted_by_id=request.user.id,
             )
@@ -3255,9 +3392,31 @@ class WorkflowRunInterventionSubmitView(APIView):
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+        from api.agents import WorkflowRunner
+        from api.services.sse_ticket_service import issue_ticket
+
+        try:
+            WorkflowRunner().start_in_background(
+                case_id=run.case_id,
+                thread_id=run.thread_id,
+                resume={
+                    "interrupt_type": intervention.intervention_type,
+                    "intervention_id": intervention.id,
+                    "submitted_values": intervention.submitted_values or {},
+                },
+            )
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        stream_ticket = issue_ticket(run_id=run.id, user_id=request.user.id)
         return Response({
             "intervention": WorkflowInterventionSchema.from_model(intervention).model_dump(),
+            "intervention_id": intervention.id,
             "status": "submitted",
+            "stream_ticket": stream_ticket,
+            "stream_url": (
+                f"/api/workflow-runs/{run.id}/events/?ticket={stream_ticket}"
+            ),
         })
 
 
@@ -3343,12 +3502,20 @@ class WorkflowRunRetryView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        from api.services.sse_ticket_service import issue_ticket
+        stream_ticket = issue_ticket(run_id=new_run.id, user_id=request.user.id)
         return Response({
+            "run_id": new_run.id,
             "new_run_id": new_run.id,
+            "parent_run_id": run.id,
             "source_run_id": run.id,
             "from_stage": from_stage,
             "thread_id": new_run.thread_id,
             "status": new_run.status,
+            "stream_ticket": stream_ticket,
+            "stream_url": (
+                f"/api/workflow-runs/{new_run.id}/events/?ticket={stream_ticket}"
+            ),
             "message": "局部重跑已启动",
         }, status=status.HTTP_201_CREATED)
 
@@ -3413,6 +3580,42 @@ class WorkflowRunCancelView(APIView):
         })
 
 
+def _build_case_workflow_runs_payload(case):
+    """构造统一运行历史响应，供根资源和旧 list 别名复用。"""
+    from api.models import WorkflowRun
+
+    runs_data = []
+    for run in WorkflowRun.objects.filter(case=case).order_by('-created_at'):
+        runs_data.append({
+            "id": run.id,
+            "case_id": run.case_id,
+            "thread_id": run.thread_id,
+            "status": run.status,
+            "current_stage": run.current_stage,
+            "current_node": run.current_node,
+            "progress": run.progress,
+            "revision": run.revision,
+            "workflow_version": run.workflow_version,
+            "state_schema_version": run.state_schema_version,
+            "policy_version": run.policy_version,
+            "prompt_bundle_version": run.prompt_bundle_version,
+            "parent_run_id": run.parent_run_id,
+            "started_by_id": run.started_by_id,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+            "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+            "quality_summary": run.quality_summary or {},
+            "error_message": run.error_message,
+        })
+    return {
+        "case_id": case.id,
+        "runs": runs_data,
+        "active_run_id": case.active_workflow_run_id,
+        "total": len(runs_data),
+    }
+
+
 class CaseWorkflowRunsListView(APIView):
     """SubTask 3.2.7：历史运行列表
 
@@ -3448,40 +3651,8 @@ class CaseWorkflowRunsListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, case_id: int):
-        from api.models import WorkflowRun
-
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
-        runs = WorkflowRun.objects.filter(case=case).order_by('-created_at')
-
-        runs_data = []
-        for run in runs:
-            runs_data.append({
-                "id": run.id,
-                "case_id": run.case_id,
-                "thread_id": run.thread_id,
-                "status": run.status,
-                "current_stage": run.current_stage,
-                "current_node": run.current_node,
-                "progress": run.progress,
-                "revision": run.revision,
-                "workflow_version": run.workflow_version,
-                "state_schema_version": run.state_schema_version,
-                "policy_version": run.policy_version,
-                "prompt_bundle_version": run.prompt_bundle_version,
-                "parent_run_id": run.parent_run_id,
-                "started_by_id": run.started_by_id,
-                "started_at": run.started_at.isoformat() if run.started_at else None,
-                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-                "created_at": run.created_at.isoformat() if run.created_at else None,
-                "updated_at": run.updated_at.isoformat() if run.updated_at else None,
-                "error_message": run.error_message,
-            })
-
-        return Response({
-            "case_id": case.id,
-            "runs": runs_data,
-            "total": len(runs_data),
-        })
+        return Response(_build_case_workflow_runs_payload(case))
 
 
 class DocumentParagraphRegenerateView(APIView):
@@ -3547,21 +3718,25 @@ class DocumentParagraphRegenerateView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # 调用 LLM 重新生成该段落（封装为辅助函数，便于测试 mock）
-        instructions = request.data.get('instructions', '') or ''
+        # 手动编辑直接保存提交内容；未提交 content 时才调用 LLM 重写。
+        submitted_content = request.data.get('content')
+        instructions = request.data.get('instructions', '') or request.data.get('prompt', '') or ''
         tone = request.data.get('tone', '') or ''
-        try:
-            new_content = _regenerate_paragraph_content(
-                doc_version=doc_version,
-                paragraph=paragraphs[target_idx],
-                instructions=instructions,
-                tone=tone,
-            )
-        except Exception as exc:
-            return Response(
-                {'detail': f'段落重新生成失败: {exc}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        if isinstance(submitted_content, str):
+            new_content = submitted_content
+        else:
+            try:
+                new_content = _regenerate_paragraph_content(
+                    doc_version=doc_version,
+                    paragraph=paragraphs[target_idx],
+                    instructions=instructions,
+                    tone=tone,
+                )
+            except Exception as exc:
+                return Response(
+                    {'detail': f'段落重新生成失败: {exc}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
         if not new_content or not new_content.strip():
             return Response(
@@ -3595,9 +3770,128 @@ class DocumentParagraphRegenerateView(APIView):
             'document_id': new_doc.id,
             'version': new_doc.version,
             'paragraph_id': paragraph_id,
-            'paragraph': new_paragraph,
+            'paragraph': _serialize_paragraph(new_paragraph),
             'changelog': new_doc.changelog,
         })
+
+
+def _serialize_paragraph(paragraph):
+    """将后端存储的段落 dict 归一化为前端契约。
+
+    后端段落以 ``paragraph_id``（paragraph_splitter 输出）作为键，而前端
+    ``Paragraph`` 类型与 ``DocumentEditor`` 统一使用 ``id``。在 API 边界做一次
+    映射，避免前端读取 ``p.id`` 得到 undefined 导致段落定位、重生成失效。
+    """
+    if not isinstance(paragraph, dict):
+        return paragraph
+    normalized = dict(paragraph)
+    if 'id' not in normalized and 'paragraph_id' in normalized:
+        normalized['id'] = normalized['paragraph_id']
+    return normalized
+
+
+class WorkflowRunDocumentDetailView(APIView):
+    """读取指定运行中的文书版本详情。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, run_id: int, document_id: int):
+        from api.models import DocumentVersion, WorkflowRun
+
+        run = get_object_or_404(WorkflowRun, pk=run_id, case__owner=request.user)
+        doc = get_object_or_404(DocumentVersion, pk=document_id, workflow_run=run)
+        latest_version = (
+            DocumentVersion.objects
+            .filter(case_id=doc.case_id, document_type=doc.document_type)
+            .order_by('-version')
+            .values_list('version', flat=True)
+            .first()
+        )
+        return Response({
+            'id': str(doc.id),
+            'run_id': run.id,
+            'title': doc.title,
+            'template_type': doc.document_type,
+            'content': doc.content,
+            'paragraphs': [_serialize_paragraph(p) for p in (doc.paragraphs or [])],
+            'current_version': latest_version or doc.version,
+            'created_at': doc.created_at.isoformat(),
+            'updated_at': doc.created_at.isoformat(),
+        })
+
+
+class WorkflowRunDocumentVersionsView(APIView):
+    """列出同案件、同文书类型的完整版本历史。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, run_id: int, document_id: int):
+        from api.models import DocumentVersion, WorkflowRun
+
+        run = get_object_or_404(WorkflowRun, pk=run_id, case__owner=request.user)
+        doc = get_object_or_404(DocumentVersion, pk=document_id, workflow_run=run)
+        versions = DocumentVersion.objects.filter(
+            case_id=doc.case_id,
+            document_type=doc.document_type,
+        ).order_by('-version')
+        return Response([
+            {
+                'id': str(item.id),
+                'document_id': str(doc.id),
+                'version': item.version,
+                'content': item.content,
+                'changelog': item.changelog,
+                'created_by_type': item.created_by_type,
+                'created_by_id': str(item.created_by_id) if item.created_by_id else None,
+                'created_at': item.created_at.isoformat(),
+                'workflow_version': item.workflow_version,
+            }
+            for item in versions
+        ])
+
+
+class WorkflowRunDocumentRollbackView(APIView):
+    """将历史版本复制为新的最新版本，保留完整审计链。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int, document_id: int, version: int):
+        from api.models import DocumentVersion, WorkflowRun
+        from api.services.document_version_service import create_document_version
+
+        run = get_object_or_404(WorkflowRun, pk=run_id, case__owner=request.user)
+        current = get_object_or_404(DocumentVersion, pk=document_id, workflow_run=run)
+        target = get_object_or_404(
+            DocumentVersion,
+            case_id=current.case_id,
+            document_type=current.document_type,
+            version=version,
+        )
+        rolled_back = create_document_version(
+            case=current.case,
+            document_type=current.document_type,
+            content=target.content,
+            title=target.title,
+            paragraphs=target.paragraphs or [],
+            workflow_run=run,
+            complaint_template=target.complaint_template,
+            respond_template=target.respond_template,
+            changelog=f'回滚至版本 v{version}',
+            created_by_type='user',
+            created_by_id=request.user.id,
+            workflow_version=run.workflow_version,
+        )
+        return Response({
+            'id': str(rolled_back.id),
+            'document_id': str(current.id),
+            'version': rolled_back.version,
+            'content': rolled_back.content,
+            'changelog': rolled_back.changelog,
+            'created_by_type': rolled_back.created_by_type,
+            'created_by_id': str(request.user.id),
+            'created_at': rolled_back.created_at.isoformat(),
+            'workflow_version': rolled_back.workflow_version,
+        }, status=status.HTTP_201_CREATED)
 
 
 def _regenerate_paragraph_content(

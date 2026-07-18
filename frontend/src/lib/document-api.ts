@@ -1,19 +1,17 @@
 // 文书 API 客户端扩展
 // 对齐 spec.md Requirement: DocumentEditor Dual-Pane Layout / Task 4.3.10
 //
-// 端点（部分由 Task 4.1/4.2 已实现，部分待 Task 6.x 补齐）：
+// 端点（后端均已实现）：
 //   POST /api/workflow-runs/{run_id}/documents/{document_id}/paragraphs/{paragraph_id}/regenerate/
-//        → 已实现（Task 4.1）
 //   POST /api/workflow-runs/{run_id}/documents/{document_id}/export-check/
-//        → 已实现（Task 4.2），返回 {passed, issues, missing_elements}
+//        → 返回 {passed, issues, missing_elements}
 //   GET  /api/workflow-runs/{run_id}/documents/{document_id}/versions/
-//        → 后端可能未实现，try/catch 降级
 //   POST /api/workflow-runs/{run_id}/documents/{document_id}/versions/{version}/rollback/
-//        → 后端可能未实现，try/catch 降级
 //   GET  /api/workflow-runs/{run_id}/documents/{document_id}/
-//        → 后端可能未实现，调用方应优先从 getSnapshot().artifacts 提取文书
 //
-// 全文重新生成通过 workflowRunApi.retryRun（Task 3.2 已实现）
+// 各方法仍保留 try/catch 降级：端点缺失（404/405）时回退到 artifact 或空数组，
+// 使前端在后端灰度未覆盖时不至于崩溃。
+// 全文重新生成通过 workflowRunApi.retryRun。
 
 import apiClient from "./api-client"
 import type {
@@ -74,10 +72,9 @@ function isNotImplemented(err: unknown): boolean {
 export const documentApi = {
   /**
    * 获取文书详情。
-   * 优先调用专用端点；若不存在则从 artifacts 中查找文书产物。
+   * 优先调用专用端点；端点不可用时回退到传入的 artifact 构造 DocumentDetail。
    *
    * GET /api/workflow-runs/{run_id}/documents/{document_id}/
-   * （后端可能未实现此专用端点；调用方可传入 artifacts 直接构造 DocumentDetail）
    */
   async getDocument(
     runId: number,
@@ -157,7 +154,7 @@ export const documentApi = {
    * 列出文书所有版本。
    *
    * GET /api/workflow-runs/{run_id}/documents/{document_id}/versions/
-   * （后端可能未实现；前端 try/catch 降级，调用方收到空数组）
+   * （端点缺失时 try/catch 降级为空数组）
    */
   async listDocumentVersions(runId: number, documentId: string): Promise<DocumentVersion[]> {
     try {
@@ -183,7 +180,6 @@ export const documentApi = {
    * 回滚到指定版本（创建新版本，内容为旧版本）。
    *
    * POST /api/workflow-runs/{run_id}/documents/{document_id}/versions/{version}/rollback/
-   * （后端可能未实现；前端抛 DocumentApiError，调用方展示友好提示）
    */
   async rollbackDocumentVersion(
     runId: number,
@@ -221,9 +217,12 @@ function artifactToDocument(
     title?: string
     content?: string
     template_type?: string
-    paragraphs?: Paragraph[]
+    paragraphs?: Array<Paragraph & { paragraph_id?: string }>
   }
-  const paragraphs = Array.isArray(payload.paragraphs) ? payload.paragraphs : []
+  // 后端段落以 paragraph_id 为键（paragraph_splitter 输出），归一化为前端契约的 id。
+  const paragraphs: Paragraph[] = (Array.isArray(payload.paragraphs) ? payload.paragraphs : []).map(
+    (p) => ({ ...p, id: p.id || p.paragraph_id || '' }),
+  )
   // 若 payload 无 paragraphs 但有 content，将整体内容作为单段
   if (paragraphs.length === 0 && payload.content) {
     paragraphs.push({

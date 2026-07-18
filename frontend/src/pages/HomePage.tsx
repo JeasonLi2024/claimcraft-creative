@@ -243,8 +243,15 @@ export default function HomePage() {
       </header>
 
       <main id="main-content">
-        <section className="relative border-b border-[#d9ddd5]">
-          <div className="mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1400px] grid-cols-1 items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[minmax(0,0.78fr)_minmax(580px,1.22fr)] lg:gap-12 lg:px-8 lg:py-14">
+        <section className="relative overflow-hidden border-b border-[#d9ddd5]">
+          <img
+            src="/首页 Hero 背景.png"
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-20"
+          />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#f8f8f5] via-[#f8f8f5]/94 to-[#f8f8f5]/58" />
+          <div className="relative mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1400px] grid-cols-1 items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[minmax(0,0.78fr)_minmax(580px,1.22fr)] lg:gap-12 lg:px-8 lg:py-14">
             <motion.div variants={stagger} initial="hidden" animate="visible" className="max-w-[680px]">
               <motion.div variants={reveal} className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#cfd5cc] bg-white px-3 py-1.5 text-xs font-semibold text-[#3f6b57]"><Sparkles className="h-3.5 w-3.5" />AI 维权材料工作区</motion.div>
               <motion.h1 variants={reveal} className="max-w-[11ch] text-[clamp(2.55rem,6.1vw,5.5rem)] font-semibold leading-[1.04] tracking-[-0.05em] text-balance lg:leading-[0.98]">把零散证据，整理成可提交的维权材料</motion.h1>

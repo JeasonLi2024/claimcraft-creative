@@ -149,6 +149,9 @@ class SSEEventMapper:
 
     def __init__(self):
         self.current_node: str | None = None
+        self.current_stage: str = ""
+        self.current_progress: float = 0.0
+        self.current_revision: int = 0
         self._node_start_times: dict[str, datetime] = {}
 
     async def map(self, raw_event: dict) -> list[SSEEvent]:
@@ -181,8 +184,10 @@ class SSEEventMapper:
         # 1. 节点开始：on_chain_start 命中工作流节点
         if event_type == "on_chain_start" and name in self.NODE_NAMES:
             self.current_node = name
+            self.current_stage = self._stage_for_node(name)
+            self.current_progress = self._progress_for_node(name, completed=False)
             self._node_start_times[name] = datetime.now(timezone.utc)
-            return [SSEEvent(
+            events = [SSEEvent(
                 type="node.start",
                 payload={
                     "node": name,
@@ -190,10 +195,19 @@ class SSEEventMapper:
                     "ts": _utcnow_iso(),
                 },
             )]
+            # 追加式业务阶段事件（新前端消费；旧 EventSource 路径忽略未知类型）
+            events.extend(self._build_stage_events(name, phase="start", output=None))
+            return events
 
         # 2. 节点完成：on_chain_end 命中工作流节点
         if event_type == "on_chain_end" and name in self.NODE_NAMES:
-            sse_events = self._build_node_complete(name, data.get("output", {}))
+            output = data.get("output", {})
+            self.current_stage = self._stage_for_node(name)
+            self.current_progress = self._progress_for_node(name, completed=True)
+            if isinstance(output, dict) and isinstance(output.get("revision"), int):
+                self.current_revision = output["revision"]
+            sse_events = self._build_node_complete(name, output)
+            sse_events.extend(self._build_stage_events(name, phase="complete", output=output))
             self.current_node = None
             return sse_events
 
@@ -231,6 +245,78 @@ class SSEEventMapper:
 
         # 其他事件过滤掉（on_chain_start/end 命中非节点、on_chat_model_start 等）
         return []
+
+    # 业务阶段首/末技术节点：用于判定 stage.started / stage.completed 边界，
+    # 中间节点发 stage.progress，避免每个节点都把整段标记为完成。
+    _STAGE_FIRST_NODES = {"preclassify", "extract", "evidence_chain", "complaint", "respond_complaint"}
+    _STAGE_LAST_NODES = {"classify", "review", "evidence_chain", "complaint", "respond_complaint"}
+
+    def _build_stage_events(self, node: str, *, phase: str, output: dict | None) -> list["SSEEvent"]:
+        """追加式发送业务阶段事件（stage.started / stage.progress / stage.completed）。
+
+        仅供新前端 workflow-run-store 做细粒度实时更新；旧 EventSource 路径不监听
+        这些事件类型，会自动忽略，保证向后兼容（不改动既有 node.* 事件）。
+
+        payload 形状对齐前端 store：{stage(键), status, progress, quality_score?, issue_count?}，
+        并携带 revision 供前端信封与跳跃检测；run_id 由 WorkflowRunner 统一注入。
+        """
+        stage = self._stage_for_node(node)
+        if not stage:
+            return []
+        payload: dict = {
+            "stage": stage,
+            "progress": self.current_progress,
+            "revision": self.current_revision,
+            "ts": _utcnow_iso(),
+        }
+        if phase == "start":
+            payload["status"] = "running"
+            event_type = "stage.started" if node in self._STAGE_FIRST_NODES else "stage.progress"
+        else:
+            # 从 NodeResult.quality 提取质量分与阻塞问题数（若节点未产出则省略）
+            quality: dict = {}
+            if isinstance(output, dict):
+                node_result = output.get("node_result")
+                if isinstance(node_result, dict) and isinstance(node_result.get("quality"), dict):
+                    quality = node_result["quality"]
+            score = quality.get("score")
+            if isinstance(score, (int, float)):
+                payload["quality_score"] = score
+            blocking = quality.get("blocking_issues")
+            if isinstance(blocking, list):
+                payload["issue_count"] = len(blocking)
+            if node in self._STAGE_LAST_NODES:
+                payload["status"] = "completed"
+                event_type = "stage.completed"
+            else:
+                payload["status"] = "running"
+                event_type = "stage.progress"
+        return [SSEEvent(type=event_type, payload=payload)]
+
+    @staticmethod
+    def _stage_for_node(node: str) -> str:
+        if node in {"preclassify", "ocr", "classify"}:
+            return "material_understanding"
+        if node in {"extract", "review"}:
+            return "fact_checking"
+        if node == "evidence_chain":
+            return "case_organization"
+        if node in {"complaint", "respond_complaint"}:
+            return "document_generation"
+        return ""
+
+    @staticmethod
+    def _progress_for_node(node: str, *, completed: bool) -> float:
+        order = [
+            "preclassify", "ocr", "classify", "extract", "review",
+            "evidence_chain", "complaint", "respond_complaint",
+        ]
+        try:
+            index = order.index(node)
+        except ValueError:
+            return 0.0
+        offset = 1 if completed else 0
+        return round((index + offset) / len(order), 4)
 
     def _apply_envelope(self, sse_event: SSEEvent) -> SSEEvent:
         """Task 1.3.2 + 1.3.4: 对 SSEEvent 应用统一信封字段 + 事件类型映射。

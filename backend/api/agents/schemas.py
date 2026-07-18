@@ -150,7 +150,12 @@ class WorkflowInterventionSchema(BaseModel):
     """WorkflowIntervention 序列化模型。"""
     id: int
     case_id: int
-    intervention_type: Literal["quality_review", "user_pause"]
+    intervention_type: Literal[
+        "quality_review",
+        "user_pause",
+        "legal_confirmation",
+        "missing_information",
+    ]
     stage: str
     status: Literal["pending", "submitted", "cancelled", "expired"]
     base_revision: int

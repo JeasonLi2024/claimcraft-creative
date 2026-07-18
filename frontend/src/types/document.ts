@@ -99,8 +99,11 @@ export interface ExportCheckResult {
 // ===== 段落重新生成响应 =====
 
 export interface RegenerateParagraphResponse {
+  document_id: number
+  paragraph_id: string
   paragraph: Paragraph
-  version: DocumentVersion
+  version: number
+  changelog: string
 }
 
 // ===== 工具函数 =====

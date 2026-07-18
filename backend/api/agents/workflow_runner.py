@@ -279,32 +279,43 @@ class WorkflowRunner:
                     initial_state = {}
                 initial_state = {**WorkflowVersion.to_initial_state(), **initial_state}
 
-                # Task 3.1：创建 WorkflowRun 记录（thread_id 由模型自动生成）
-                # selected_evidence_ids / run_options 从 initial_state 派生
+                # 新 API 会预先创建 WorkflowRun 并把 ID 注入 initial_state；旧调用
+                # 路径没有该字段时，仍由 runner 创建，避免一轮流程产生两条运行记录。
                 selected_evidence_ids = list(initial_state.get("evidence_ids", []) or [])
                 run_options = {
                     k: v for k, v in (initial_state or {}).items()
                     if k in ("case_mode", "template_type")
                 }
+                run_id = initial_state.get("workflow_run_id")
                 try:
-                    run = await _create_workflow_run(
-                        case_id=case_id,
-                        selected_evidence_ids=selected_evidence_ids,
-                        run_options=run_options,
-                    )
-                    run_id = run.id
-                    # 注入 workflow_run_id 到 initial_state（节点通过此 ID 写入 WorkflowArtifact）
-                    initial_state["workflow_run_id"] = run_id
-                    # 同步 thread_id：用 WorkflowRun.thread_id 替换原 thread_id 参数，
-                    # 确保后续 graph.invoke 使用的 thread_id 与 WorkflowRun 一致
-                    thread_id = run.thread_id
+                    if run_id is not None:
+                        from api.models import WorkflowRun
+                        run = await sync_to_async(WorkflowRun.objects.get)(
+                            pk=run_id,
+                            case_id=case_id,
+                        )
+                        thread_id = run.thread_id
+                        await _update_workflow_run(
+                            run.id,
+                            status='running',
+                            started_at=workflow_start_time,
+                            error_message='',
+                        )
+                    else:
+                        run = await _create_workflow_run(
+                            case_id=case_id,
+                            selected_evidence_ids=selected_evidence_ids,
+                            run_options=run_options,
+                        )
+                        run_id = run.id
+                        initial_state["workflow_run_id"] = run_id
+                        thread_id = run.thread_id
                 except Exception as run_err:
                     logger.error(
-                        f"创建 WorkflowRun 失败 (case={case_id}): {run_err}",
+                        f"初始化 WorkflowRun 失败 (case={case_id}): {run_err}",
                         exc_info=True,
                     )
-                    # 降级：不创建 WorkflowRun，使用原 thread_id 继续
-                    # run_id 保持为 None，后续 _update_workflow_run 调用跳过
+                    run_id = None
 
                 # Task 5.1.6：读取用户偏好注入 run_options（跨运行记忆）
                 # 优先用 WorkflowRun.started_by_id；若为 None（旧调用路径未传入）

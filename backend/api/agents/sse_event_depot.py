@@ -182,7 +182,14 @@ class EventDepot:
         # TODO(Task 3.1): WorkflowRun 模型引入后，run_id 由调用方从 WorkflowRun.id 注入；
         # 目前（Task 1.3）WorkflowRunner 暂未传 run_id，列保持 NULL。
 
-        # occurred_at 字符串 → datetime 转换（Postgres TIMESTAMPTZ 列接受 datetime）
+        # 调用方通常把统一信封字段放在 payload；显式参数优先，缺省时
+        # 自动提取，确保 run_id/revision/occurred_at 真正写入可检索列。
+        if run_id is None:
+            run_id = payload.get("run_id")
+        if revision is None:
+            revision = payload.get("revision")
+        if occurred_at is None:
+            occurred_at = payload.get("occurred_at") or payload.get("ts")
         occurred_at_dt = _parse_iso_to_dt(occurred_at)
 
         def _persist_sync() -> int:

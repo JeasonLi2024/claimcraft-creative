@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils"
 import {
   Home, FileText, BarChart3, Briefcase, Image, Clock,
   MessageSquare, Shield, Download, ChevronRight, ChevronDown, LogOut,
-  Menu, X, Gavel, UserRound, Settings, LayoutDashboard,
+  Menu, X, Gavel, UserRound, Settings, LayoutDashboard, Workflow,
 } from "lucide-react"
 
 const sidebarNav = [
@@ -18,6 +18,7 @@ const sidebarNav = [
 const caseNavComplain = [
   { label: "工作台", path: "workspace", icon: Home },
   { label: "证据管理", path: "evidence", icon: Image },
+  { label: "工作流分析", path: "analysis", icon: Workflow },
   { label: "时间线", path: "timeline", icon: Clock },
   { label: "投诉文本", path: "complaint", icon: MessageSquare },
   { label: "脱敏打码", path: "mask", icon: Shield },
@@ -27,6 +28,7 @@ const caseNavComplain = [
 const caseNavRespond = [
   { label: "工作台", path: "workspace", icon: Home },
   { label: "证据管理", path: "evidence", icon: Image },
+  { label: "工作流分析", path: "analysis", icon: Workflow },
   { label: "时间线", path: "timeline", icon: Clock },
   { label: "反证答辩", path: "respond", icon: Gavel },
   { label: "脱敏打码", path: "mask", icon: Shield },
