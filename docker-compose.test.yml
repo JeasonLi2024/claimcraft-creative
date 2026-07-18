@@ -1,0 +1,227 @@
+# ============================================================
+# 测试环境 Compose 配置
+# ------------------------------------------------------------
+# 与正式环境 (docker-compose.yml) 隔离运行：
+#   - 独立 project 名: claimcraft-test  (需用 -p claimcraft-test 启动)
+#   - 独立网络 / 命名卷 / 容器名 (自动按 project 名前缀隔离)
+#   - 端口避让: frontend 8081, mysql 3307, postgres 5433
+#   - 复用正式环境已构建的镜像 (claimcraft-creative-backend / frontend)
+#   - 复用 .env 中的 LLM / 外部 API Key 与数据库密码 (克隆数据密码需一致)
+# 服务名保持与正式环境一致 (mysql / postgres-checkpointer / backend / frontend)，
+# 以便镜像内 nginx.conf 的 http://backend:8000 与 backend 的 DB_HOST=mysql 在
+# 测试网络内正确解析。
+#
+# 启动:
+#   sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d mysql postgres-checkpointer
+#   # 克隆正式库数据后:
+#   sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d backend frontend
+# 访问: http://<服务器IP>:8081
+# 停止: sudo docker compose -f docker-compose.test.yml -p claimcraft-test down
+# ============================================================
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: claimcraft-test-mysql
+    environment:
+      MYSQL_DATABASE: claimcraft
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-claimcraft_dev_2025}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres-checkpointer:
+    image: pgvector/pgvector:pg16
+    container_name: claimcraft-test-postgres
+    environment:
+      POSTGRES_DB: claimcraft_checkpoints
+      POSTGRES_USER: claimcraft
+      POSTGRES_PASSWORD: ${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}
+    volumes:
+      - pg_checkpoints_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimcraft -d claimcraft_checkpoints"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-backend:latest
+    image: claimcraft-test-backend:latest
+    container_name: claimcraft-test-backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - DJANGO_DEBUG=True
+      - DJANGO_SECRET_KEY=${SECRET_KEY:-claimcraft-prod-secret-change-me}
+      - DJANGO_ALLOWED_HOSTS=*
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=claimcraft
+      - DB_USER=root
+      - DB_PASSWORD=${DB_PASSWORD:-claimcraft_dev_2025}
+      # 文本 LLM 配置
+      - LLM_PROVIDER=${LLM_PROVIDER:-siliconflow}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.3}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-3}
+      # OCR 视觉 LLM 配置（独立于文本 LLM，不填则回退到 LLM_*）
+      - LLM_OCR_PROVIDER=${LLM_OCR_PROVIDER:-siliconflow}
+      - LLM_OCR_API_KEY=${LLM_OCR_API_KEY:-}
+      - LLM_OCR_API_KEY_PP=${LLM_OCR_API_KEY_PP:-}
+      - LLM_OCR_BASE_URL=${LLM_OCR_BASE_URL:-}
+      - LLM_OCR_MODEL=${LLM_OCR_MODEL:-deepseek-ai/DeepSeek-OCR}
+      - LLM_OCR_TEMPERATURE=${LLM_OCR_TEMPERATURE:-0.1}
+      - LLM_OCR_TIMEOUT=${LLM_OCR_TIMEOUT:-60}
+      - LLM_OCR_MAX_RETRIES=${LLM_OCR_MAX_RETRIES:-3}
+      - LLM_OCR_PROMPT=${LLM_OCR_PROMPT:-}
+      - LLM_OCR_MAX_IMAGE_MB=${LLM_OCR_MAX_IMAGE_MB:-10}
+      # 视觉预分类+摘要 (Qwen3-Omni Captioner)
+      - LLM_CAPTIONER_PROVIDER=${LLM_CAPTIONER_PROVIDER:-siliconflow}
+      - LLM_CAPTIONER_API_KEY=${LLM_CAPTIONER_API_KEY:-}
+      - LLM_CAPTIONER_BASE_URL=${LLM_CAPTIONER_BASE_URL:-https://api.siliconflow.cn/v1}
+      - LLM_CAPTIONER_MODEL=${LLM_CAPTIONER_MODEL:-Qwen/Qwen3-Omni-30B-A3B-Captioner}
+      - LLM_CAPTIONER_TEMPERATURE=${LLM_CAPTIONER_TEMPERATURE:-0.1}
+      - LLM_CAPTIONER_TIMEOUT=${LLM_CAPTIONER_TIMEOUT:-30}
+      - LLM_CAPTIONER_MAX_RETRIES=${LLM_CAPTIONER_MAX_RETRIES:-2}
+      # PaddleOCR-VL 云端 OCR 配置（aistudio 高精度文档识别）
+      - PADDLEOCR_VL_TOKEN=${PADDLEOCR_VL_TOKEN:-}
+      - PADDLEOCR_VL_BASE_URL=${PADDLEOCR_VL_BASE_URL:-}
+      - PADDLEOCR_VL_MODEL=${PADDLEOCR_VL_MODEL:-PaddleOCR-VL-1.6}
+      - PADDLEOCR_VL_USE_DOC_ORIENTATION=${PADDLEOCR_VL_USE_DOC_ORIENTATION:-false}
+      - PADDLEOCR_VL_USE_DOC_UNWARPING=${PADDLEOCR_VL_USE_DOC_UNWARPING:-false}
+      - PADDLEOCR_VL_USE_CHART_RECOGNITION=${PADDLEOCR_VL_USE_CHART_RECOGNITION:-false}
+      - PADDLEOCR_VL_POLL_INTERVAL=${PADDLEOCR_VL_POLL_INTERVAL:-3}
+      - PADDLEOCR_VL_POLL_TIMEOUT=${PADDLEOCR_VL_POLL_TIMEOUT:-300}
+      - PADDLEOCR_VL_REQUEST_TIMEOUT=${PADDLEOCR_VL_REQUEST_TIMEOUT:-30}
+      # LangExtract（基于 Qwen3 的信息抽取，字段抽取首选）
+      - LANGEXTRACT_API_KEY=${LANGEXTRACT_API_KEY:-}
+      - LANGEXTRACT_BASE_URL=${LANGEXTRACT_BASE_URL:-https://api.siliconflow.cn/v1}
+      - LANGEXTRACT_PROVIDER=${LANGEXTRACT_PROVIDER:-openai}
+      - LANGEXTRACT_MODEL=${LANGEXTRACT_MODEL:-Qwen/Qwen3-32B}
+      - LANGEXTRACT_PASSES=${LANGEXTRACT_PASSES:-1}
+      - LANGEXTRACT_PROMPT=${LANGEXTRACT_PROMPT:-}
+      # LLM 通用调用参数（跨场景共享的重试/超时配置）
+      - LLM_COMMON_RETRY_MAX_ATTEMPTS=${LLM_COMMON_RETRY_MAX_ATTEMPTS:-3}
+      - LLM_COMMON_RETRY_WAIT_MIN=${LLM_COMMON_RETRY_WAIT_MIN:-2}
+      - LLM_COMMON_RETRY_WAIT_MAX=${LLM_COMMON_RETRY_WAIT_MAX:-10}
+      # OCR 引擎配置
+      - OCR_STRATEGIES=${OCR_STRATEGIES:-paddleocr_vl,llm_vision,paddleocr,mock}
+      - OCR_PADDLEOCR_ENABLED=${OCR_PADDLEOCR_ENABLED:-true}
+      - OCR_RETRY_MAX_ATTEMPTS=${OCR_RETRY_MAX_ATTEMPTS:-3}
+      - OCR_RETRY_WAIT_MIN=${OCR_RETRY_WAIT_MIN:-1}
+      - OCR_RETRY_WAIT_MAX=${OCR_RETRY_WAIT_MAX:-8}
+      - TESSERACT_CMD=${TESSERACT_CMD:-/usr/bin/tesseract}
+      - SIMSUN_PATH=${SIMSUN_PATH:-/usr/share/fonts/truetype/wqy/wqy-microhei.ttc}
+      - PADDLE_PDX_CACHE_HOME=${PADDLE_PDX_CACHE_HOME:-/app/.paddlex_cache}
+      - FLAGS_enable_pir_in_executor=${FLAGS_enable_pir_in_executor:-0}
+      - FLAGS_enable_pir_api=${FLAGS_enable_pir_api:-0}
+      # LangGraph Checkpointer 持久化（PostgreSQL，独立于业务 MySQL）
+      - CHECKPOINTER_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
+      - CHECKPOINTER_POOL_SIZE=${CHECKPOINTER_POOL_SIZE:-20}
+      # v3 新增：连接池调优参数
+      - CHECKPOINTER_POOL_MIN_SIZE=${CHECKPOINTER_POOL_MIN_SIZE:-5}
+      - CHECKPOINTER_POOL_TIMEOUT=${CHECKPOINTER_POOL_TIMEOUT:-5}
+      - CHECKPOINTER_POOL_MAX_IDLE=${CHECKPOINTER_POOL_MAX_IDLE:-300}
+      # LangSmith 观察配置（全链路 trace 追踪）
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-claimcraft-creative}
+      - LANGSMITH_SAMPLING_RATE=${LANGSMITH_SAMPLING_RATE:-1}
+      # v3 新增：LangSmith 区域与 Workspace
+      - LANGSMITH_REGION=${LANGSMITH_REGION:-}
+      - LANGSMITH_WORKSPACE_ID=${LANGSMITH_WORKSPACE_ID:-}
+      # 邮件发送配置（Agent Mail CLI 优先，SMTP 兜底）
+      - CLAIMCRAFT_MAIL_PROVIDER_ORDER=${CLAIMCRAFT_MAIL_PROVIDER_ORDER:-agent_cli,smtp}
+      - CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME=${CLAIMCRAFT_MAIL_DEFAULT_FROM_NAME:-ClaimCraft}
+      - CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL=${CLAIMCRAFT_MAIL_DEFAULT_FROM_EMAIL:-}
+      - CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS=${CLAIMCRAFT_MAIL_SEND_TIMEOUT_SECONDS:-30}
+      - CLAIMCRAFT_AGENT_MAIL_ENABLED=${CLAIMCRAFT_AGENT_MAIL_ENABLED:-true}
+      - CLAIMCRAFT_AGENT_MAIL_COMMAND=${CLAIMCRAFT_AGENT_MAIL_COMMAND:-/usr/local/bin/agently-cli}
+      - CLAIMCRAFT_AGENT_MAIL_HOME=${CLAIMCRAFT_AGENT_MAIL_HOME:-/app/.agently-home}
+      - CLAIMCRAFT_LOG_DIR=${CLAIMCRAFT_LOG_DIR:-/app/logs}
+      - CLAIMCRAFT_SMTP_ENABLED=${CLAIMCRAFT_SMTP_ENABLED:-true}
+      - CLAIMCRAFT_SMTP_HOST=${CLAIMCRAFT_SMTP_HOST:-smtp.qq.com}
+      - CLAIMCRAFT_SMTP_PORT=${CLAIMCRAFT_SMTP_PORT:-465}
+      - CLAIMCRAFT_SMTP_USERNAME=${CLAIMCRAFT_SMTP_USERNAME:-}
+      - CLAIMCRAFT_SMTP_PASSWORD=${CLAIMCRAFT_SMTP_PASSWORD:-}
+      - CLAIMCRAFT_SMTP_USE_TLS=${CLAIMCRAFT_SMTP_USE_TLS:-false}
+      - CLAIMCRAFT_SMTP_USE_SSL=${CLAIMCRAFT_SMTP_USE_SSL:-true}
+      # v10 新增：Embedding 服务（RAG 知识库向量检索）
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-large-zh-v1.5}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-0}
+      - EMBEDDING_VECTOR_DIM=${EMBEDDING_VECTOR_DIM:-1024}
+      # v10 新增：RAG 检索配置
+      - RAG_ENABLED=${RAG_ENABLED:-true}
+      - RAG_TOP_K=${RAG_TOP_K:-5}
+      - RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD:-0.3}
+      # v10 新增：Tools 工具集配置
+      - TOOLS_ENABLED=${TOOLS_ENABLED:-true}
+      - TOOLS_MAX_ITERATIONS=${TOOLS_MAX_ITERATIONS:-5}
+      # v10 新增：法律知识库向量库连接（复用 checkpointer PG 实例）
+      - LAW_VECTOR_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres-checkpointer:
+        condition: service_healthy
+    command: >
+      sh -c "mkdir -p /app/logs &&
+             python manage.py migrate &&
+             python manage.py shell -c \"from django.contrib.auth.models import User; user, created = User.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True, 'email': ''}); user.is_staff = True; user.is_superuser = True; user.set_password('admin123'); user.save(); print('admin user ready')\" &&
+             python manage.py loaddata seed_data.json || true &&
+             exec uvicorn claimcraft.asgi:application --host 0.0.0.0 --port 8000 --workers 1 --log-config /app/logging_uvicorn.json"
+    volumes:
+      - media_data:/app/media
+      - /srv/claimcraft/.agently-home-test:/app/.agently-home
+      - paddlex_cache:/app/.paddlex_cache
+      - /home/ubuntu/claimcraft-creative/logs/backend-test:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  frontend:
+    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-frontend:latest
+    image: claimcraft-test-frontend:latest
+    container_name: claimcraft-test-frontend
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    volumes:
+      - /home/ubuntu/claimcraft-creative/logs/frontend-test:/var/log/nginx
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  mysql_data:
+  media_data:
+  pg_checkpoints_data:
+  paddlex_cache:

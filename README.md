@@ -369,6 +369,8 @@ MySQL 回填完整法条 → Top-K
 
 ### 导入命令
 
+> 完整的数据库初始化、法律知识库构建步骤（含 MySQL/PostgreSQL 建库、pgvector 安装、预解析 JSON 导入、向量生成、验证）见 [第 14 节](#14-数据库配置与法律知识库构建)。
+
 ```bash
 # 内置少量真实法条；配置可用时生成 embedding
 python manage.py import_law_articles
@@ -679,9 +681,11 @@ claimcraft-creative/
 
 ---
 
-## 12. 本地开发
+## 12. 本地开发（非容器模式）
 
-### 环境要求
+> 适用于开发调试。生产部署请用第 13 节 Docker 模式。数据库初始化与法律知识库构建见第 14 节。
+
+### 12.1 环境要求
 
 - Python 3.11 推荐；
 - Node.js 22 推荐，与 Docker 构建环境一致；
@@ -690,10 +694,21 @@ claimcraft-creative/
 - Tesseract 可选；
 - 至少一个文本 LLM，才能获得完整证据链与文书重写。
 
-### 环境变量
+### 12.2 环境变量配置
 
 ```bash
+# Linux / macOS
 cp .env.example .env
+```
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
+```cmd
+:: Windows CMD
+copy .env.example .env
 ```
 
 本地 Django 会读取仓库根目录 `.env`。至少检查：
@@ -717,99 +732,525 @@ DJANGO_DEBUG=True
 
 Compose 读取根变量 `SECRET_KEY` 并注入容器内 `DJANGO_SECRET_KEY`；本地直接运行 Django 时应配置 `DJANGO_SECRET_KEY`。生产环境必须使用随机密钥。
 
-### 数据库
+### 12.3 后端启动
 
-MySQL：
+```bash
+# Linux / macOS
+cd backend
+python -m venv .venv
+source .venv/bin/activate          # 激活虚拟环境
+pip install -r requirements.txt
+python manage.py migrate
+
+python manage.py loaddata seed_data.json   # 可选：演示数据
+
+# 推荐 ASGI；当前 SSE 视图为异步实现
+uvicorn claimcraft.asgi:application --host 0.0.0.0 --port 8000 --reload
+```
+
+```powershell
+# Windows PowerShell
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python manage.py migrate
+uvicorn claimcraft.asgi:application --host 0.0.0.0 --port 8000 --reload
+```
+
+```cmd
+:: Windows CMD（若 PowerShell 执行策略受限）
+.venv\Scripts\activate.bat
+```
+
+> Windows 下若 PowerShell 激活脚本报执行策略错误，先执行 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
+
+### 12.4 前端启动
+
+```bash
+cd frontend
+npm install
+npm run dev          # 访问 http://localhost:5173，Vite 代理 /api、/media 到 http://localhost:8000
+```
+
+```bash
+npm run build        # tsc + vite build
+npm run preview      # 预览构建产物
+npm run typecheck    # 仅类型检查
+```
+
+### 12.5 维护指令
+
+```bash
+cd backend
+
+# 账号与权限
+python manage.py createsuperuser                  # 交互式创建管理员
+python manage.py changepassword admin             # 修改指定用户密码
+python manage.py shell                            # Django shell
+
+# 静态文件
+python manage.py collectstatic --noinput          # 收集静态文件
+
+# 数据迁移
+python manage.py makemigrations api               # 生成迁移文件
+python manage.py migrate                          # 应用迁移
+python manage.py showmigrations api               # 查看迁移状态
+
+# 代码检查与测试
+python manage.py check                            # Django 配置检查
+python manage.py test                             # 默认自动使用 SQLite
+python manage.py test api.tests.test_case_lifecycle
+python manage.py test api.tests.test_complaint_service
+```
+
+### 12.6 LangGraph 开发调试
+
+```bash
+# 仓库根目录，启动 langgraph dev 开发服务器（不依赖 Django/DB，验证图拓扑）
+langgraph dev
+# 打开 https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
+```
+
+入口文件为根目录 `dev_graph.py`，使用 mock 节点复刻真实工作流拓扑，用于 Studio UI 验证。
+
+### 12.7 日志与运行时清理
+
+```bash
+cd backend
+# SSE 事件清理
+python manage.py cleanup_sse_events
+python manage.py cleanup_sse_events --hours=48 --dry-run
+
+# 旧 checkpoint 清理（保留每个 thread 最新记录）
+python manage.py cleanup_checkpoints --days=30
+python manage.py cleanup_checkpoints --days=30 --dry-run
+```
+
+> Windows 下 psycopg 异步需要 `SelectorEventLoop`（非默认 ProactorEventLoop）。涉及 RAG/embedding 的管理命令已自动处理此兼容性，普通 Django 命令无需关注。
+
+---
+
+## 13. Docker 容器模式
+
+> 项目提供两套隔离的 Compose 配置：正式侧 `docker-compose.yml`（project 名 `claimcraft-creative`）与测试侧 `docker-compose.test.yml`（project 名 `claimcraft-test`）。两侧共享同一台主机的 `.env`，但拥有独立的网络、命名卷、容器名和镜像 tag，互不影响。
+
+### 13.1 端口与服务概览
+
+| 服务 | 正式侧端口 | 测试侧端口 | 作用 |
+|---|---|---|---|
+| frontend | 80 | 8081 | Nginx 托管 React 并反代 API/SSE/media/static |
+| backend | 内部 8000 | 内部 8000 | Django + Uvicorn，启动时迁移、创建演示管理员、加载种子数据 |
+| mysql | 3306 | 3307 | MySQL 业务数据库 |
+| postgres-checkpointer | 5432 | 5433 | checkpoint、Store、SSE、法条向量（pgvector） |
+
+| 镜像 tag | 归属 | 说明 |
+|---|---|---|
+| `claimcraft-creative-backend:latest` | 正式侧 | 由 `docker-compose.yml` 的 `build:` 产出 |
+| `claimcraft-creative-frontend:latest` | 正式侧 | 同上 |
+| `claimcraft-test-backend:latest` | 测试侧 | 由 `docker-compose.test.yml` 的 `build:` 产出，独立 tag |
+| `claimcraft-test-frontend:latest` | 测试侧 | 同上 |
+
+默认容器启动会准备演示账号 `admin / admin123`，仅适合本地或演示，生产部署必须修改启动逻辑和密码。
+
+### 13.2 配置文件
+
+```text
+docker-compose.yml          # 正式侧配置
+docker-compose.test.yml     # 测试侧配置（独立镜像 tag + build，端口避让 8081/3307/5433）
+.env                        # 两侧共享：数据库密码、SECRET_KEY、LLM 凭据等
+Dockerfile.backend          # 后端镜像构建（Python 3.11 + Node 22 + Agent Mail CLI）
+Dockerfile.frontend         # 前端镜像构建（Node 22 build + Nginx Alpine）
+nginx.conf                  # 前端 Nginx 配置（SPA fallback + /api/、/media/、/static/ 反代）
+```
+
+> 当前正式侧 Compose 含服务器特定 bind mount：`/srv/claimcraft/.agently-home`、`/home/ubuntu/claimcraft-creative/logs/backend|frontend`。测试侧对应改为 `.agently-home-test`、`logs/backend-test|frontend-test`。在 macOS、Windows 或其他 Linux 环境应改为本机路径或命名 volume。
+
+### 13.3 正式侧启动与维护
+
+```bash
+# Linux（需 sudo 访问 docker）
+cd /home/ubuntu/claimcraft-creative
+cp .env.example .env           # 首次部署：修改数据库密码、SECRET_KEY 和模型凭据
+
+# 构建并启动全部服务
+sudo docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
+
+# 访问 http://<服务器IP>/
+```
+
+```bash
+# Windows / macOS（docker desktop，无需 sudo）
+docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
+```
+
+正式侧常用维护：
+
+```bash
+PROD="sudo docker compose -f docker-compose.yml -p claimcraft-creative"
+
+$PROD ps                                    # 查看状态
+$PROD logs -f --tail 100 backend            # 跟踪日志
+$PROD restart backend                       # 重启单个服务
+$PROD stop                                  # 停止（保留容器）
+$PROD down                                  # 停止并删除容器（保留卷）
+$PROD down -v                               # 停止并删除容器+卷（慎用，数据丢失）
+
+# 进入容器
+sudo docker exec -it claimcraft-creative-backend-1 bash
+sudo docker exec claimcraft-creative-backend-1 python manage.py shell
+sudo docker exec claimcraft-creative-backend-1 python manage.py createsuperuser
+
+# 代码更新后重建正式侧
+$PROD build backend frontend
+$PROD up -d --force-recreate backend frontend
+```
+
+### 13.4 测试侧启动与维护
+
+测试侧与正式侧完全隔离，可独立构建、重启、销毁，不影响正式环境。
+
+**首次启动（含从正式库克隆数据）：**
+
+```bash
+cd /home/ubuntu/claimcraft-creative
+TEST="sudo docker compose -f docker-compose.test.yml -p claimcraft-test"
+
+# 1) 仅启动测试 DB 容器并等待 healthy
+$TEST up -d mysql postgres-checkpointer
+
+# 2) 从正式库克隆数据到测试库（见 13.5 节）
+
+# 3) 启动测试应用容器
+$TEST up -d backend frontend
+# 访问 http://<服务器IP>:8081/
+```
+
+**代码更新后只重建测试侧（正式侧保持旧代码运行）：**
+
+```bash
+cd /home/ubuntu/claimcraft-creative
+TEST="sudo docker compose -f docker-compose.test.yml -p claimcraft-test"
+
+# 重建测试镜像（只动 claimcraft-test-* tag，不碰正式镜像）
+$TEST build backend frontend
+
+# 用新镜像重建测试容器（DB 容器与数据不动）
+$TEST up -d --force-recreate backend frontend
+
+# 一行命令版本
+$TEST build backend frontend && $TEST up -d --force-recreate backend frontend
+
+# 查看启动日志确认就绪（看到 "Uvicorn running" 即可）
+sudo docker logs -f claimcraft-test-backend
+```
+
+> 关键隔离保证：测试侧镜像 tag 为 `claimcraft-test-*`，与正式侧 `claimcraft-creative-*` 完全独立。重建测试镜像不会覆盖正式镜像 tag；运行中的正式容器绑定的是镜像 ID，更不会被影响。只要测试侧永远只用 `-f docker-compose.test.yml -p claimcraft-test` 操作，正式侧永远只用 `-f docker-compose.yml -p claimcraft-creative`，两边互不干扰。
+
+测试侧常用维护：
+
+```bash
+$TEST ps
+$TEST logs -f --tail 100 backend
+$TEST restart backend
+$TEST down                                   # 删容器保卷
+$TEST down -v                                # 删容器+卷（完全重置）
+
+sudo docker exec -it claimcraft-test-backend bash
+sudo docker exec claimcraft-test-backend python manage.py shell
+```
+
+**测试环境完全重置：**
+
+```bash
+$TEST down -v                                # 删容器+卷
+$TEST up -d mysql postgres-checkpointer      # 起空库
+# 等待 healthy 后重新克隆正式数据（13.5），再:
+$TEST up -d backend frontend
+```
+
+### 13.5 从正式库克隆数据到测试库
+
+```bash
+# === MySQL（使用容器内 MYSQL_ROOT_PASSWORD 环境变量，避免特殊字符转义）===
+sudo docker exec claimcraft-creative-mysql-1 sh -c \
+  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --no-tablespaces claimcraft' \
+  > /tmp/prod_mysql.sql
+
+sudo docker exec -i claimcraft-test-mysql sh -c \
+  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" claimcraft' \
+  < /tmp/prod_mysql.sql
+
+# === PostgreSQL ===
+sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
+  sh -c 'exec pg_dump -Uclaimcraft -dclaimcraft_checkpoints' > /tmp/prod_pg.sql
+
+sudo docker exec -i claimcraft-test-postgres \
+  sh -c 'exec psql -Uclaimcraft -dclaimcraft_checkpoints' \
+  < /tmp/prod_pg.sql
+
+# 清理临时文件
+rm -f /tmp/prod_mysql.sql /tmp/prod_pg.sql
+```
+
+> 克隆需在测试 DB 容器 healthy 之后、backend 启动之前执行。数据密码两侧一致（共享 `.env`）。
+
+### 13.6 通用容器运维
+
+```bash
+# 所有 claimcraft 容器一览（正式+测试）
+sudo docker ps -a --filter "name=claimcraft" \
+  --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+# 资源占用
+sudo docker stats --no-stream \
+  claimcraft-creative-backend-1 claimcraft-test-backend
+
+# 网络与卷
+sudo docker network ls | grep claimcraft
+sudo docker volume ls | grep claimcraft
+sudo docker images | grep claimcraft
+
+# 清理悬空镜像（不影响在用镜像）
+sudo docker image prune -f
+```
+
+---
+
+## 14. 数据库配置与法律知识库构建
+
+> 法律知识库由 MySQL `LawArticle`/`PlatformRule`（结构化条文）+ PostgreSQL `law_article_vectors`（pgvector 向量）组成。完整构建流程见 [`docs/linux-kb-build-guide.md`](docs/linux-kb-build-guide.md)，本节给出常用指令。
+
+### 14.1 MySQL 初始化
 
 ```sql
+-- 库内执行（Linux/Windows 通用，mysql 客户端或 Navicat/DBeaver 均可）
 CREATE DATABASE claimcraft
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
+
+-- 可选：创建专用用户（Linux 服务器推荐）
+CREATE USER 'claimcraft'@'%' IDENTIFIED BY '<your_password>';
+GRANT ALL PRIVILEGES ON claimcraft.* TO 'claimcraft'@'%';
+FLUSH PRIVILEGES;
 ```
 
-PostgreSQL：
+```bash
+# Linux 进入 MySQL
+mysql -uroot -p
+# 或容器内（正式侧）
+sudo docker exec -it claimcraft-creative-mysql-1 mysql -uroot -p
+# 测试侧
+sudo docker exec -it claimcraft-test-mysql mysql -uroot -p
+```
+
+### 14.2 PostgreSQL + pgvector 初始化
 
 ```sql
+-- 库内执行（Linux/Windows 通用）
 CREATE USER claimcraft WITH PASSWORD 'replace-me';
 CREATE DATABASE claimcraft_checkpoints OWNER claimcraft;
 \c claimcraft_checkpoints
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-### 后端
+```bash
+# Linux：安装 pgvector 扩展
+# Debian/Ubuntu
+sudo apt install postgresql-16-pgvector
+# CentOS/RHEL（需 EPEL）
+sudo yum install pgvector_16
+# 或源码编译
+cd /tmp && git clone https://github.com/pgvector/pgvector.git && cd pgvector && make && make install
+
+# Linux 以 postgres 用户操作
+sudo -u postgres psql -c "CREATE DATABASE claimcraft_checkpoints;"
+sudo -u postgres psql -c "CREATE USER claimcraft WITH PASSWORD 'claimcraft_dev_2025';"
+sudo -u postgres psql -d claimcraft_checkpoints -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 容器内（正式侧）
+sudo docker exec -it claimcraft-creative-postgres-checkpointer-1 psql -Uclaimcraft -dclaimcraft_checkpoints
+# 测试侧
+sudo docker exec -it claimcraft-test-postgres psql -Uclaimcraft -dclaimcraft_checkpoints
+```
+
+> Windows 下安装 PostgreSQL 后通过 Stack Builder 或手动编译 pgvector；或直接使用 Docker 的 `pgvector/pgvector:pg16` 镜像。容器化部署已内置 pgvector，无需手动安装。
+
+### 14.3 Django 迁移
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-
-# 可选演示数据
-python manage.py loaddata seed_data.json
-
-# 推荐 ASGI；当前 SSE 视图为异步实现
-uvicorn claimcraft.asgi:application --host 0.0.0.0 --port 8000 --reload
+python manage.py migrate                       # 应用迁移
+python manage.py showmigrations api            # 查看迁移状态
 ```
 
-Windows 激活：
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-### 前端
+容器内执行：
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# 正式侧
+sudo docker exec claimcraft-creative-backend-1 python manage.py migrate
+# 测试侧
+sudo docker exec claimcraft-test-backend python manage.py migrate
 ```
 
-访问 `http://localhost:5173`。Vite 将 `/api` 和 `/media` 代理到 `http://localhost:8000`。
+> 注：PostgreSQL 的 checkpoint/store/SSE/向量表不由 Django migration 管理，由 `graph.py` 和相关服务按需初始化（advisory lock 防并发）。
 
-```bash
-npm run build     # tsc + vite build
-npm run preview
-```
+### 14.4 法律知识库构建
 
----
+法律原文位于 `backend/api/services/law_data_raw/`，预解析 JSON 位于 `output/`。`import_law_articles` 命令参数：
 
-## 13. Docker Compose
-
-```bash
-cp .env.example .env
-# 修改数据库密码、SECRET_KEY 和模型凭据
-docker compose up -d --build
-
-docker compose logs -f backend
-docker compose down
-```
-
-访问 `http://localhost`。
-
-| 服务 | 作用 |
+| 参数 | 作用 |
 |---|---|
-| `mysql` | MySQL 业务数据库 |
-| `postgres-checkpointer` | checkpoint、Store、SSE 和法条向量 |
-| `backend` | Django + Uvicorn，启动时迁移、创建演示管理员并尝试加载种子数据 |
-| `frontend` | Nginx 托管 React 和反代 API/SSE/media/static |
+| `--file=<path>` | 自定义法条 JSON（不指定则用预置法条） |
+| `--platform-file=<path>` | 平台规则 JSON（导入 PlatformRule 表） |
+| `--category=<cat>` | 仅导入指定分类（consumer_protection/e-commerce/contract/quality/safety） |
+| `--force-embed` | 强制重新生成 embedding（默认跳过已有法条） |
+| `--no-embed` | 不生成 embedding，仅写 MySQL 结构化数据 |
+| `--embed-only` | 仅重建向量，不覆盖 MySQL 内容/关键词 |
 
-默认容器启动会准备演示账号 `admin / admin123`。该账号仅适合本地或演示，生产部署必须修改启动逻辑和密码。
+**方式一：导入预解析 JSON（推荐）**
 
-当前 Compose 含服务器特定 bind mount：
+```bash
+cd backend
 
-```text
-/srv/claimcraft/.agently-home
-/home/ubuntu/claimcraft-creative/logs/backend
-/home/ubuntu/claimcraft-creative/logs/frontend
+# 步骤1：导入法律条文到 MySQL LawArticle 表（1646 条，不生成向量）
+python manage.py import_law_articles \
+    --file=api/services/law_data_raw/output/law_articles_parsed.json \
+    --no-embed
+
+# 步骤2：导入平台规则到 MySQL PlatformRule 表（3 条，含 182 条条文合并）
+python manage.py import_law_articles \
+    --platform-file=api/services/law_data_raw/output/platform_rules_parsed.json
+
+# 步骤3：生成 embedding 向量索引到 PostgreSQL（需 EMBEDDING_API_KEY）
+python manage.py import_law_articles \
+    --file=api/services/law_data_raw/output/law_articles_parsed.json \
+    --force-embed
 ```
 
-在 macOS、Windows 或其他 Linux 环境应改为本机路径或命名 volume。
+**方式二：从源文件重新解析（JSON 丢失时）**
+
+```bash
+cd backend
+# 重新生成 output/*.json
+python api/services/law_data_raw/parse_law_data.py
+# 再按方式一导入
+python manage.py import_law_articles \
+    --file=api/services/law_data_raw/output/law_articles_parsed.json --force-embed
+python manage.py import_law_articles \
+    --platform-file=api/services/law_data_raw/output/platform_rules_parsed.json
+```
+
+**容器内执行：**
+
+```bash
+# 正式侧
+sudo docker exec claimcraft-creative-backend-1 python manage.py import_law_articles \
+    --file=api/services/law_data_raw/output/law_articles_parsed.json --force-embed
+# 测试侧
+sudo docker exec claimcraft-test-backend python manage.py import_law_articles \
+    --file=api/services/law_data_raw/output/law_articles_parsed.json --force-embed
+```
+
+**仅重建向量（保护 LLM 生成的关键词）：**
+
+```bash
+python manage.py import_law_articles --embed-only
+# 强制重建向量
+python manage.py import_law_articles --force-embed
+```
+
+> Windows 事件循环兼容：`import_law_articles.py` 已自动处理 psycopg 异步所需的 `SelectorEventLoop`，Linux/Windows 均可直接运行，无需手动设置。
+
+### 14.5 法条关键词重新生成
+
+`regenerate_keywords` 使用 LLM 为法条重新生成摘要关键词，参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--category=<cat>` | 仅处理指定分类 |
+| `--limit=N` | 仅处理前 N 条（0=全部，测试用） |
+| `--force` | 强制重新生成（默认跳过已生成的） |
+| `--dry-run` | 仅打印结果，不写库 |
+| `--max-concurrent=N` | 最大并发（0=读 `.env` 的 `LLM_KEYWORD_MAX_CONCURRENT`，默认 8） |
+
+```bash
+cd backend
+python manage.py regenerate_keywords --limit=10 --dry-run     # 试跑 10 条
+python manage.py regenerate_keywords --category=contract      # 仅合同分类
+python manage.py regenerate_keywords --force --max-concurrent=4
+```
+
+### 14.6 数据库维护
+
+```bash
+cd backend
+# SSE 事件清理
+python manage.py cleanup_sse_events
+python manage.py cleanup_sse_events --hours=48 --dry-run
+
+# 旧 checkpoint 清理（保留每个 thread 最新记录）
+python manage.py cleanup_checkpoints --days=30
+python manage.py cleanup_checkpoints --days=30 --dry-run
+```
+
+> 建议通过 cron 定时执行（项目未引入 Celery）。
+
+### 14.7 数据库备份与恢复
+
+```bash
+# === MySQL 备份（正式侧）===
+sudo docker exec claimcraft-creative-mysql-1 sh -c \
+  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --no-tablespaces claimcraft' \
+  > /tmp/prod_mysql_$(date +%Y%m%d).sql
+
+# === MySQL 恢复（到测试侧）===
+sudo docker exec -i claimcraft-test-mysql sh -c \
+  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" claimcraft' \
+  < /tmp/prod_mysql_YYYYMMDD.sql
+
+# === PostgreSQL 备份（正式侧）===
+sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
+  sh -c 'exec pg_dump -Uclaimcraft -dclaimcraft_checkpoints' > /tmp/prod_pg_$(date +%Y%m%d).sql
+
+# === PostgreSQL 恢复（到测试侧）===
+sudo docker exec -i claimcraft-test-postgres \
+  sh -c 'exec psql -Uclaimcraft -dclaimcraft_checkpoints' \
+  < /tmp/prod_pg_YYYYMMDD.sql
+```
+
+### 14.8 验证知识库
+
+```bash
+cd backend
+# 验证 MySQL 法条数量
+python manage.py shell -c "
+from api.models import LawArticle, PlatformRule
+print(f'LawArticle: {LawArticle.objects.count()}')
+print(f'PlatformRule: {PlatformRule.objects.count()}')
+"
+
+# 验证 PostgreSQL 向量数量
+sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
+  psql -Uclaimcraft -dclaimcraft_checkpoints -c \
+  "SELECT COUNT(*) AS total, COUNT(DISTINCT law_name) AS laws FROM law_article_vectors;"
+# 预期: total=1646, laws=17
+
+# 验证 RAG 检索
+python manage.py shell -c "
+import asyncio
+from api.services.rag_service import LawRetriever
+async def test():
+    r = LawRetriever()
+    for hit in await r.search('消费者退货退款', top_k=3):
+        print(f'[{hit[\"law_name\"]}] {hit[\"article_number\"]} score={hit[\"score\"]:.4f}')
+asyncio.run(test())
+"
+```
 
 ---
 
-## 14. 环境变量分组
+## 15. 环境变量分组
 
 完整定义见 `.env.example` 和 `docker-compose.yml`。
 
@@ -839,7 +1280,7 @@ docker compose config
 
 ---
 
-## 15. 测试与检查
+## 16. 测试与检查
 
 ### 后端
 
@@ -867,7 +1308,7 @@ npm run build
 
 ---
 
-## 16. 当前实现边界
+## 17. 当前实现边界
 
 - 尚无独立 `WorkflowRun`、`WorkflowArtifact`、`WorkflowIntervention` 模型；运行状态保存在 `Case` 和 checkpoint；
 - 阶段暂停与低置信度审核仍为两套前端面板；
@@ -884,7 +1325,7 @@ npm run build
 
 ---
 
-## 17. 关键设计决策
+## 18. 关键设计决策
 
 | 决策 | 当前选择 | 原因 |
 |---|---|---|
@@ -904,7 +1345,7 @@ npm run build
 
 ---
 
-## 18. 相关文档
+## 19. 相关文档
 
 - [`docs/workflow-fullstack-upgrade-design.md`](docs/workflow-fullstack-upgrade-design.md)：后续前后端统一升级设计；
 - [`docs/superpowers/specs/2026-07-07-sse-workflow-design.md`](docs/superpowers/specs/2026-07-07-sse-workflow-design.md)：SSE 设计背景；
@@ -915,6 +1356,6 @@ npm run build
 
 ---
 
-## 19. 许可证
+## 20. 许可证
 
 本项目仅用于学习与演示目的。

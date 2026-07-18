@@ -58,40 +58,6 @@ function FlowingBackground({ reduce }: { reduce: boolean | null }) {
   )
 }
 
-function GuideCharacter({ reduce }: { reduce: boolean | null }) {
-  return (
-    <motion.div
-      className="absolute -right-4 bottom-5 z-20 hidden h-44 w-32 xl:block"
-      animate={reduce ? undefined : { y: [0, -8, 0], rotate: [0, 1.2, 0] }}
-      transition={{ duration: 4.8, repeat: Infinity, ease: "easeInOut" }}
-      aria-hidden="true"
-    >
-      <div className="absolute left-1/2 top-0 h-14 w-14 -translate-x-1/2 rounded-[48%_52%_45%_55%] border border-white/40 bg-[#e9dbc3] shadow-[inset_-8px_-8px_15px_rgba(83,64,44,.16),0_14px_30px_rgba(0,0,0,.18)]">
-        <div className="absolute left-3 top-6 h-1.5 w-1.5 rounded-full bg-[#26312b]" />
-        <div className="absolute right-3 top-6 h-1.5 w-1.5 rounded-full bg-[#26312b]" />
-        <div className="absolute left-1/2 top-9 h-1 w-4 -translate-x-1/2 rounded-full bg-[#b78f72]" />
-        <div className="absolute -left-1 -top-1 h-7 w-14 -rotate-6 rounded-[60%_45%_40%_35%] bg-[#27342e]" />
-      </div>
-      <div className="absolute left-1/2 top-12 h-24 w-20 -translate-x-1/2 rounded-[38%_38%_24%_24%] border border-white/25 bg-[#e8eee9] shadow-[inset_-12px_-12px_20px_rgba(51,74,61,.15),0_18px_35px_rgba(0,0,0,.16)]">
-        <div className="absolute left-1/2 top-4 -translate-x-1/2 rounded-md bg-[#3f6b57] px-2 py-1 font-mono text-[8px] font-bold text-white">
-          CC
-        </div>
-        <div className="absolute -left-7 top-3 h-14 w-6 rotate-[24deg] rounded-full border border-white/30 bg-[#e8eee9]" />
-        <div className="absolute -right-7 top-3 h-14 w-6 -rotate-[24deg] rounded-full border border-white/30 bg-[#e8eee9]" />
-      </div>
-      <div className="absolute bottom-0 left-7 h-9 w-6 rounded-b-full bg-[#25332c]" />
-      <div className="absolute bottom-0 right-7 h-9 w-6 rounded-b-full bg-[#25332c]" />
-      <motion.div
-        className="absolute -right-2 top-4 rounded-xl border border-white/30 bg-white/85 px-3 py-2 text-[10px] font-semibold text-[#26312b] shadow-xl backdrop-blur"
-        animate={reduce ? undefined : { opacity: [0.78, 1, 0.78], y: [0, -3, 0] }}
-        transition={{ duration: 2.8, repeat: Infinity }}
-      >
-        材料已整理好
-      </motion.div>
-    </motion.div>
-  )
-}
-
 function ProductScene({ reduce }: { reduce: boolean | null }) {
   const [tilt, setTilt] = useState({ x: 0, y: 0 })
 
@@ -217,7 +183,6 @@ function ProductScene({ reduce }: { reduce: boolean | null }) {
           </div>
         </div>
       </motion.div>
-      <GuideCharacter reduce={reduce} />
     </div>
   )
 }

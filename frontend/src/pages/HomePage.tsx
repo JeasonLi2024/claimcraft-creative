@@ -248,9 +248,9 @@ export default function HomePage() {
             src="/首页 Hero 背景.png"
             alt=""
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-20"
+            className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-50"
           />
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#f8f8f5] via-[#f8f8f5]/94 to-[#f8f8f5]/58" />
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#f8f8f5]/95 via-[#f8f8f5]/70 to-[#f8f8f5]/25" />
           <div className="relative mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1400px] grid-cols-1 items-center gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[minmax(0,0.78fr)_minmax(580px,1.22fr)] lg:gap-12 lg:px-8 lg:py-14">
             <motion.div variants={stagger} initial="hidden" animate="visible" className="max-w-[680px]">
               <motion.div variants={reveal} className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#cfd5cc] bg-white px-3 py-1.5 text-xs font-semibold text-[#3f6b57]"><Sparkles className="h-3.5 w-3.5" />AI 维权材料工作区</motion.div>
@@ -261,8 +261,8 @@ export default function HomePage() {
             </motion.div>
             <motion.div initial={reduce ? false : { opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.7, delay: 0.08, ease: EASE }} className="min-w-0"><PreviewPanel /></motion.div>
           </div>
-          <div className="mx-auto grid max-w-[1400px] grid-cols-2 border-x border-t border-[#d9ddd5] bg-white sm:grid-cols-4">
-            {outcomes.map(({ title, icon: Icon }, index) => <div key={title} className={`flex items-center gap-3 px-4 py-4 sm:px-5 ${index % 2 ? "border-l" : ""} ${index > 1 ? "border-t sm:border-t-0" : ""} sm:border-l sm:first:border-l-0`}><Icon className="h-4 w-4 shrink-0 text-[#3f6b57]" /><span className="text-xs font-medium sm:text-sm">{title}</span></div>)}
+          <div className="relative z-10 mx-auto grid max-w-[1400px] grid-cols-2 border-x border-b border-t border-[#cfd5cc] bg-white sm:grid-cols-4">
+            {outcomes.map(({ title, icon: Icon }, index) => <div key={title} className={`flex items-center gap-3 px-5 py-5 transition-colors hover:bg-[#f4f5f1] ${index % 2 ? "border-l border-[#cfd5cc]" : ""} ${index > 1 ? "border-t border-[#cfd5cc] sm:border-t-0" : ""} ${index > 0 ? "sm:border-l border-[#cfd5cc]" : ""}`}><Icon className="h-4 w-4 shrink-0 text-[#3f6b57]" /><span className="text-xs font-medium sm:text-sm">{title}</span></div>)}
           </div>
         </section>
 
