@@ -12,6 +12,14 @@ import type {
   ExtractedField, CasePreset, DashboardStats,
 } from "@/types"
 import type { Correction, StageEdits, WorkflowReplay, WorkflowStateResponse } from "@/lib/workflow-events"
+import type {
+  WorkflowRun,
+  WorkflowStage,
+  WorkflowArtifact,
+  WorkflowIntervention,
+  WorkflowAllowedActions,
+  Issue,
+} from "@/types/workflow"
 
 // Auth
 export const authApi = {
@@ -239,4 +247,187 @@ export const workflowApi = {
     apiClient
       .get<WorkflowStateResponse>('/cases/' + caseId + '/workflow/state/')
       .then((r) => r.data),
+}
+
+// Workflow Runs (Task 3.7.1: /workflow-runs/* API 端点)
+// 对齐 spec.md Requirement: Unified Snapshot API / Partial Retry / WorkflowRun Model
+//
+// 7 个端点：
+//   POST /api/cases/{case_id}/workflow-runs/                        创建运行
+//   GET  /api/workflow-runs/{run_id}/snapshot/                      获取权威快照
+//   POST /api/workflow-runs/{run_id}/pause/                         暂停运行
+//   POST /api/workflow-runs/{run_id}/interventions/{iid}/submit/    提交介入（409 冲突）
+//   POST /api/workflow-runs/{run_id}/retry/                         局部重跑（LangGraph Time Travel）
+//   POST /api/workflow-runs/{run_id}/cancel/                         取消运行
+//   GET  /api/cases/{case_id}/workflow-runs/                        历史运行列表
+
+export interface CreateRunResponse {
+  run_id: number
+  thread_id: string
+  status: string
+  stream_ticket: string
+  stream_url: string
+}
+
+export interface SnapshotResponse {
+  run: WorkflowRun
+  stages: WorkflowStage[]
+  active_intervention: WorkflowIntervention | null
+  artifacts: WorkflowArtifact[]
+  issues: Issue[]
+  actions: WorkflowAllowedActions
+}
+
+export interface PauseRunResponse {
+  status: string
+  run_id: number
+}
+
+export interface SubmitInterventionResponse {
+  status: string
+  intervention_id: number
+  stream_ticket: string
+  stream_url: string
+}
+
+export interface RetryRunResponse {
+  run_id: number
+  thread_id: string
+  parent_run_id: number
+  status: string
+  stream_ticket: string
+  stream_url: string
+}
+
+export interface CancelRunResponse {
+  status: string
+  run_id: number
+}
+
+export interface WorkflowRunSummaryItem {
+  id: number
+  thread_id: string
+  status: string
+  current_stage: string
+  progress: number
+  revision: number
+  workflow_version: string
+  parent_run_id: number | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  quality_summary: Record<string, unknown>
+  error_message: string
+}
+
+export interface ListRunsResponse {
+  case_id: number
+  runs: WorkflowRunSummaryItem[]
+  active_run_id: number | null
+}
+
+export interface RevisionConflictError {
+  code: "REVISION_CONFLICT"
+  detail: string
+  current_revision: number
+}
+
+export function isRevisionConflictError(err: unknown): err is { response: { status: 409; data: RevisionConflictError } } {
+  if (typeof err !== "object" || err === null) return false
+  const e = err as { response?: { status?: number; data?: unknown } }
+  if (!e.response || e.response.status !== 409) return false
+  const data = e.response.data
+  if (typeof data !== "object" || data === null) return false
+  return (data as { code?: unknown }).code === "REVISION_CONFLICT"
+}
+
+export const workflowRunApi = {
+  /**
+   * POST /api/cases/{case_id}/workflow-runs/
+   * 创建工作流运行，返回 run_id + stream_ticket（SSE 鉴权票据）
+   */
+  createRun: (
+    caseId: number,
+    params: { evidence_ids?: number[]; run_options?: Record<string, unknown> },
+  ) =>
+    apiClient
+      .post<CreateRunResponse>(`/cases/${caseId}/workflow-runs/`, params)
+      .then((r) => r.data),
+
+  /**
+   * GET /api/workflow-runs/{run_id}/snapshot/
+   * 获取权威快照：run + stages + active_intervention + artifacts + issues + actions
+   */
+  getSnapshot: (runId: number) =>
+    apiClient
+      .get<SnapshotResponse>(`/workflow-runs/${runId}/snapshot/`)
+      .then((r) => r.data),
+
+  /**
+   * POST /api/workflow-runs/{run_id}/pause/
+   * 请求暂停运行
+   */
+  pauseRun: (runId: number) =>
+    apiClient
+      .post<PauseRunResponse>(`/workflow-runs/${runId}/pause/`)
+      .then((r) => r.data),
+
+  /**
+   * POST /api/workflow-runs/{run_id}/interventions/{intervention_id}/submit/
+   * 提交介入修正值。当 base_revision 与当前 revision 不符时返回 409 + REVISION_CONFLICT。
+   */
+  submitIntervention: (
+    runId: number,
+    interventionId: number,
+    submittedValues: Record<string, unknown>,
+  ) =>
+    apiClient
+      .post<SubmitInterventionResponse>(
+        `/workflow-runs/${runId}/interventions/${interventionId}/submit/`,
+        { submitted_values: submittedValues },
+      )
+      .then((r) => r.data),
+
+  /**
+   * POST /api/workflow-runs/{run_id}/retry/
+   * 局部重跑：基于 LangGraph Time Travel 从 from_stage fork 新运行。
+   * 返回新 run_id + parent_run_id + stream_ticket。
+   */
+  retryRun: (
+    runId: number,
+    params: {
+      from_stage: string
+      preserve_user_confirmed?: boolean
+      fork_state_overrides?: Record<string, unknown>
+    },
+  ) =>
+    apiClient
+      .post<RetryRunResponse>(`/workflow-runs/${runId}/retry/`, params)
+      .then((r) => r.data),
+
+  /**
+   * POST /api/workflow-runs/{run_id}/cancel/
+   * 取消运行
+   */
+  cancelRun: (runId: number) =>
+    apiClient
+      .post<CancelRunResponse>(`/workflow-runs/${runId}/cancel/`)
+      .then((r) => r.data),
+
+  /**
+   * GET /api/cases/{case_id}/workflow-runs/
+   * 获取案件所有历史运行列表 + 当前活动 run_id
+   */
+  listRuns: (caseId: number) =>
+    apiClient
+      .get<ListRunsResponse>(`/cases/${caseId}/workflow-runs/`)
+      .then((r) => r.data),
+
+  /**
+   * 构造 SSE 事件流 URL（用于 FetchStreamSSEClient）。
+   * stream_url 通常由 createRun / submitIntervention / retryRun 返回。
+   * 此处提供基于 run_id 的默认构造，便于直接连接已有运行。
+   */
+  buildStreamUrl: (runId: number, ticket: string) =>
+    `/api/workflow-runs/${runId}/events/?ticket=${encodeURIComponent(ticket)}`,
 }

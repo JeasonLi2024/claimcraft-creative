@@ -18,11 +18,18 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
 
 from api.agents.state import CaseWorkflowState
+from api.agents.schemas import QualityReport
+from api.agents.utils.node_result_builder import (
+    build_node_result,
+    convert_string_errors_to_dicts,
+    make_node_partial_update,
+)
 from api.services import llm_service
 
 try:
@@ -69,6 +76,7 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
     from api.services.ocr_config import get_llm_ocr_max_image_mb
     from langchain_core.messages import HumanMessage
 
+    start_time = datetime.now(timezone.utc)
     case_id = state["case_id"]
     evidence_ids = state.get("evidence_ids", [])
     errors = []
@@ -91,10 +99,33 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     if not evidences:
         errors.append("[预分类] 无可识别的证据图片")
-        return {
-            "evidence_preclassify_results": [],
-            "errors": errors,
-        }
+        node_result = build_node_result(
+            node_name="preclassify",
+            data={"evidence_count": 0},
+            quality=QualityReport(
+                score=0.0,
+                coverage=0.0,
+                status="fail",
+                blocking_issues=[],
+                details={"reason": "no_evidence"},
+            ),
+            warnings=[],
+            errors=convert_string_errors_to_dicts(errors, stage="preclassify"),
+            provenance=[],
+            start_time=start_time,
+            model_calls=0,
+        )
+        return make_node_partial_update(
+            node_name="preclassify",
+            stage="material_understanding",
+            progress=0.10,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_preclassify_results": [],
+                "errors": convert_string_errors_to_dicts(errors, stage="preclassify"),
+            },
+        )
 
     # 2. Captioner 可用性检查（不可用时全部降级为 other）
     if not llm_service.is_scenario_available("captioner"):
@@ -120,10 +151,46 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
             except Exception as ex:
                 logger.error(f"持久化预分类降级结果失败 {e.code}: {ex}", exc_info=True)
                 errors.append(f"[预分类] 持久化 {e.code} 失败: {ex}")
-        return {
-            "evidence_preclassify_results": results,
-            "errors": errors + ["[预分类] Captioner 不可用，全部标记为 other"],
-        }
+        errors.append("[预分类] Captioner 不可用，全部标记为 other")
+        error_dicts = convert_string_errors_to_dicts(errors, stage="preclassify")
+        coverage = len(results) / max(len(evidences), 1)
+        provenance = [
+            {
+                "node": "preclassify",
+                "evidence_id": r["evidence_id"],
+                "field_name": None,
+                "source_ref": f"preclassify:{r['evidence_code']}",
+                "ts": start_time.isoformat(),
+            }
+            for r in results
+        ]
+        node_result = build_node_result(
+            node_name="preclassify",
+            data={"evidence_count": len(results), "degraded": True},
+            quality=QualityReport(
+                score=0.0,
+                coverage=coverage,
+                status="warn",
+                blocking_issues=[],
+                details={"degraded": True, "reason": "captioner_unavailable"},
+            ),
+            warnings=[],
+            errors=error_dicts,
+            provenance=provenance,
+            start_time=start_time,
+            model_calls=0,
+        )
+        return make_node_partial_update(
+            node_name="preclassify",
+            stage="material_understanding",
+            progress=0.10,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_preclassify_results": results,
+                "errors": error_dicts,
+            },
+        )
 
     # 3. 获取 captioner LLM 实例 + 案件描述
     try:
@@ -210,10 +277,54 @@ async def preclassify_node(state: CaseWorkflowState) -> dict[str, Any]:
     results = await asyncio.gather(*[_process_one(e) for e in evidences])
     preclassify_results = [r for r in results if isinstance(r, dict)]
 
-    return {
-        "evidence_preclassify_results": preclassify_results,
-        "errors": errors,
-    }
+    # 计算 quality：平均置信度 + 覆盖率
+    if preclassify_results:
+        avg_confidence = sum(r.get("confidence", 0.0) for r in preclassify_results) / len(preclassify_results)
+    else:
+        avg_confidence = 0.0
+    coverage = len(preclassify_results) / max(len(evidences), 1)
+    quality_status = "pass" if avg_confidence > 0.7 else "warn"
+    error_dicts = convert_string_errors_to_dicts(errors, stage="preclassify")
+    provenance = [
+        {
+            "node": "preclassify",
+            "evidence_id": r["evidence_id"],
+            "field_name": None,
+            "source_ref": f"preclassify:{r['evidence_code']}",
+            "ts": start_time.isoformat(),
+        }
+        for r in preclassify_results
+    ]
+    node_result = build_node_result(
+        node_name="preclassify",
+        data={
+            "evidence_count": len(preclassify_results),
+            "avg_confidence": avg_confidence,
+        },
+        quality=QualityReport(
+            score=avg_confidence,
+            coverage=coverage,
+            status=quality_status,
+            blocking_issues=[],
+            details={"avg_confidence": avg_confidence},
+        ),
+        warnings=[],
+        errors=error_dicts,
+        provenance=provenance,
+        start_time=start_time,
+        model_calls=len(evidences),
+    )
+    return make_node_partial_update(
+        node_name="preclassify",
+        stage="material_understanding",
+        progress=0.10,
+        state=state,
+        node_result=node_result,
+        legacy_fields={
+            "evidence_preclassify_results": preclassify_results,
+            "errors": error_dicts,
+        },
+    )
 
 
 def _fallback_result(evidence, reason: str) -> dict:

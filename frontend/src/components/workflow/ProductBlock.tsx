@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { NODE_LABELS, summarizeProducts } from "@/lib/workflow-events"
-import type { ProductBlock as ProductBlockType } from "@/lib/workflow-events"
+import type { ProductBlock as ProductBlockType, WorkflowNode } from "@/lib/workflow-events"
 
 // ---------- 节点产物详情：按节点类型渲染不同 UI ----------
 
@@ -300,7 +300,7 @@ export function ProductBlock({ block }: { block: ProductBlockType }) {
         className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[#F7F6F3] transition-colors rounded-r-md"
       >
         <span className="text-sm font-medium text-[#111111]">
-          {NODE_LABELS[node]}完成 · {summarizeProducts(node, products)}
+          {NODE_LABELS[node as WorkflowNode]}完成 · {summarizeProducts(node, products)}
         </span>
         <div className="flex items-center gap-2">
           {completedAt && (

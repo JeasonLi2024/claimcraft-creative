@@ -44,6 +44,13 @@ function connectWorkflowStream(caseId: number, threadId: string, lastEventId = 0
           isRunning: false,
           errors: [...state.errors, { message, recoverable: false }],
         })),
+      // Task 1.11: 提供 activeRunId / expectedRevision 的实时读取闭包
+      getActiveRunId: () => useCaseStore.getState().activeRunId,
+      getExpectedRevision: () => useCaseStore.getState().snapshotRevision,
+      // Task 1.11: revision 跳跃时触发重新获取权威快照
+      onRevisionGap: async () => {
+        await useCaseStore.getState().refetchSnapshot()
+      },
     },
     token,
     lastEventId,
@@ -118,32 +125,91 @@ interface CaseState {
   clearError: () => void
 
   // ---------- Workflow Slice ----------
+  // @deprecated Task 3.5.3：工作流状态已迁移到 `stores/workflow-run-store.ts`。
+  // 以下字段保留仅为向后兼容（现有组件仍依赖），新代码应使用 `useWorkflowRunStore`。
+  // 迁移完成后将整体移除。
+  /** @deprecated 使用 workflow-run-store.run + connection */
   isRunning: boolean
+  /** @deprecated 使用 workflow-run-store.run.thread_id */
   threadId: string | null
+  /** @deprecated 使用 workflow-run-store.stages + BusinessStageStepper */
   currentNode: string | null
+  /** @deprecated 使用 workflow-run-store.stages */
   nodeStates: Record<string, NodeStatus>
+  /** @deprecated 使用 workflow-run-store.artifacts */
   productBlocks: ProductBlock[]
+  /** @deprecated 使用 workflow-run-store.artifacts（complaint/respond_complaint kind） */
   complaintDraft: { title: string; content: string; tone: string; node?: "complaint" | "respond_complaint"; templateType?: string } | null
+  /** @deprecated 使用 workflow-run-store.activeIntervention */
   reviewInterrupt: ReviewInterruptData | null
+  /** @deprecated 使用 workflow-run-store.activeIntervention（intervention_type=user_pause） */
   pauseData: StagePauseData | null
+  /** @deprecated 使用 workflow-run-store.run.status === 'failed' + issues */
   errors: WorkflowError[]
+  /** @deprecated 使用 workflow-run-store.connection */
   connectionState: ConnectionState
+  /** @deprecated 由 workflow-run-store.connection 管理 */
   reconnectAttempt: number
+  /** @deprecated 使用 workflow-run-store.run.status */
   workflowStatus: NonNullable<Case["workflow_status"]>
+  /** @deprecated 由 workflow-run-store 管理 */
   isRestoringWorkflow: boolean
+  /** @deprecated 由 workflow-run-store 管理 */
   workflowHistoryAvailable: boolean
+  /** @deprecated 使用 workflow-run-store.latestEventId */
   latestEventId: number
+  /** @deprecated 由 workflow-run-store 管理（基于 run.id） */
   activeWorkflowCaseId: number | null
+  /**
+   * @deprecated 使用 workflow-run-store.runId
+   *
+   * Task 1.11: 当前活跃的 WorkflowRun id。
+   * 用于 SSE 事件 run_id 检查：event.run_id 不符时丢弃事件。
+   * null 表示尚未设置（旧版本后端未返回 run_id），跳过检查（向后兼容）。
+   */
+  activeRunId: number | null
+  /**
+   * @deprecated 使用 workflow-run-store（applySSEEvent 内部管理 refetch）
+   *
+   * Task 1.11: revision 跳跃时标记为 true，触发 getSnapshot() 重新获取权威快照后清零。
+   * 组件可观察此字段显示「正在重新加载」提示。
+   */
+  needsSnapshotRefetch: boolean
+  /**
+   * @deprecated 使用 workflow-run-store.snapshotRevision
+   *
+   * Task 1.11: 当前期望的下一个 revision（即本地最新已处理 revision）。
+   * 用于 SSE 事件 revision 检查：跳跃触发重新获取，重复/乱序丢弃。
+   * 0 表示尚未处理任何 revision 事件（向后兼容旧版本后端无 revision 字段）。
+   */
+  snapshotRevision: number
 
+  /** @deprecated 使用 workflowRunApi.createRun + workflow-run-store.applySnapshot */
   startWorkflow: (caseId: number, evidenceIds: number[]) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.getSnapshot + workflow-run-store.applySnapshot */
   restoreWorkflow: (caseId: number) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.submitIntervention */
   submitReviewCorrections: (caseId: number, corrections: Correction[]) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.pauseRun */
   requestWorkflowPause: (caseId: number, reason?: string) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.submitIntervention */
   resumePausedWorkflow: (caseId: number, edits: StageEdits) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.cancelRun */
   cancelWorkflow: (caseId: number) => Promise<void>
+  /** @deprecated 使用 workflowRunApi.getSnapshot */
   fetchWorkflowState: (caseId: number) => Promise<WorkflowStateResponse>
+  /** @deprecated 使用 workflow-run-store.reset */
   clearWorkflow: () => void
+  /** @deprecated 使用 workflow-run-store.applySSEEvent */
   applySSEEvent: (event: SSEEvent) => void
+  /**
+   * @deprecated 使用 workflow-run-store（applySSEEvent 内部返回 needsSnapshotRefetch）
+   *
+   * Task 1.11: 重新获取权威快照（revision 跳跃时调用）。
+   * 当前阶段复用 fetchWorkflowState（旧版本 state 端点），
+   * Task 3.2 完成后切换为 /api/workflow-runs/{run_id}/snapshot/。
+   */
+  refetchSnapshot: () => Promise<void>
 }
 
 export const useCaseStore = create<CaseState>()((set, get) => ({
@@ -181,6 +247,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
   workflowHistoryAvailable: false,
   latestEventId: 0,
   activeWorkflowCaseId: null,
+  // Task 1.11: SSE 同步规则相关字段
+  activeRunId: null,
+  needsSnapshotRefetch: false,
+  snapshotRevision: 0,
 
   clearError: () => set({ error: null }),
 
@@ -567,6 +637,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       errors: [],
       currentNode: null,
       reconnectAttempt: 0,
+      // Task 1.11: 重置 SSE 同步规则字段
+      activeRunId: null,
+      needsSnapshotRefetch: false,
+      snapshotRevision: 0,
     })
     try {
       const { thread_id } = await api.workflowApi.start(caseId, evidenceIds)
@@ -608,6 +682,10 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       pauseData: currentCase.workflow_status === "paused" && normalizePausedAfter(currentCase.workflow_paused_after) ? { paused_after: normalizePausedAfter(currentCase.workflow_paused_after) as EditableStage } : null,
       errors: [],
       reconnectAttempt: 0,
+      // Task 1.11: 重置 SSE 同步规则字段
+      activeRunId: null,
+      needsSnapshotRefetch: false,
+      snapshotRevision: 0,
     })
 
     if (!currentCase.thread_id || currentCase.workflow_status === "idle") {
@@ -773,13 +851,62 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       workflowHistoryAvailable: false,
       latestEventId: 0,
       activeWorkflowCaseId: null,
+      // Task 1.11: 重置 SSE 同步规则字段
+      activeRunId: null,
+      needsSnapshotRefetch: false,
+      snapshotRevision: 0,
     })
   },
 
   applySSEEvent: (event) => {
+    const state = get()
+
+    // ===== Task 1.11: 四步 SSE 同步规则检查 =====
+    // Step 1: run_id 检查（向后兼容：run_id 不存在或 activeRunId 未设置时跳过）
+    if (
+      typeof event.run_id === "number" &&
+      state.activeRunId != null &&
+      event.run_id !== state.activeRunId
+    ) {
+      return
+    }
+
+    // Step 2: event_id 检查（已处理过的事件丢弃，原有去重逻辑）
+    if (event.event_id <= state.latestEventId) return
+
+    // Step 3: revision 检查（向后兼容：revision 不存在或 snapshotRevision 为 0 时跳过）
+    if (typeof event.revision === "number" && state.snapshotRevision > 0) {
+      const expected = state.snapshotRevision
+      if (event.revision > expected + 1) {
+        // revision 跳跃：事件丢失，设置标志并触发 getSnapshot() 重新获取权威快照
+        const caseId = state.activeWorkflowCaseId
+        set({ needsSnapshotRefetch: true })
+        if (caseId != null) {
+          // 非阻塞触发快照重新获取，完成后清除标志
+          void get().fetchWorkflowState(caseId).then(() => {
+            if (get().needsSnapshotRefetch) {
+              set({ needsSnapshotRefetch: false })
+            }
+          })
+        }
+        return
+      }
+      if (event.revision <= expected) {
+        // 重复或乱序事件，丢弃
+        return
+      }
+    }
+
+    // Step 4: 应用事件（事件类型路由 + state 更新）
     const eventType = event.event_type
-    if (event.event_id <= get().latestEventId) return
-    set({ latestEventId: event.event_id, workflowHistoryAvailable: true })
+    const applyUpdates: Partial<CaseState> = {
+      latestEventId: event.event_id,
+      workflowHistoryAvailable: true,
+    }
+    if (typeof event.revision === "number") {
+      applyUpdates.snapshotRevision = event.revision
+    }
+    set(applyUpdates)
     switch (eventType) {
       case "workflow.start": {
         set({
@@ -997,6 +1124,18 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
         // 未知事件类型，忽略
         break
       }
+    }
+  },
+
+  // Task 1.11: revision 跳跃时重新获取权威快照
+  refetchSnapshot: async () => {
+    const caseId = get().activeWorkflowCaseId
+    if (caseId == null) return
+    set({ needsSnapshotRefetch: true })
+    try {
+      await get().fetchWorkflowState(caseId)
+    } finally {
+      set({ needsSnapshotRefetch: false })
     }
   },
 }))

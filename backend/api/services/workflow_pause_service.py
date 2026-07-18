@@ -58,7 +58,19 @@ LIMITS = {
 
 
 def is_stage_pause_interrupt_value(value):
-    return isinstance(value, dict) and value.get('interrupt_type') == 'stage_pause'
+    """判断 interrupt payload 是否为阶段暂停类型（user_pause / 旧 stage_pause）。
+
+    Task 2.2.2 后 stage_gate_node 改用 `interrupt_type=user_pause`，但旧 checkpoint
+    中可能仍含 `interrupt_type=stage_pause`。本函数同时识别两种格式 +
+    `intervention_kind=user_pause`，保持向后兼容。
+    """
+    if not isinstance(value, dict):
+        return False
+    if value.get('interrupt_type') in ('stage_pause', 'user_pause'):
+        return True
+    if value.get('intervention_kind') == 'user_pause':
+        return True
+    return False
 
 
 def get_stage_editable_scope(paused_after):
@@ -67,6 +79,12 @@ def get_stage_editable_scope(paused_after):
 
 
 def build_stage_pause_payload(paused_after):
+    """构造阶段暂停的 interrupt payload（Task 0.3.4 验证：JSON 可序列化）。
+
+    返回值仅含 str / dict[str, list[str]]，无 datetime / model 实例，
+    满足 langgraph-human-in-the-loop skill 对 interrupt payload 的要求
+    （必须 JSON 可序列化以便 checkpointer 持久化）。
+    """
     return {
         'interrupt_type': 'stage_pause',
         'paused_after': paused_after,

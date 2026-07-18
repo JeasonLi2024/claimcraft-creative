@@ -18,11 +18,18 @@
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
 
 from api.agents.state import CaseWorkflowState
+from api.agents.schemas import QualityReport
+from api.agents.utils.node_result_builder import (
+    build_node_result,
+    convert_string_errors_to_dicts,
+    make_node_partial_update,
+)
 
 try:
     from langsmith import traceable
@@ -53,6 +60,7 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
     from api.models import Case, Evidence
     from api.services.ocr_service import ocr_image_with_strategy
 
+    start_time = datetime.now(timezone.utc)
     case_id = state["case_id"]
     evidence_ids = state.get("evidence_ids", [])
     # 复用预分类节点的 evidence_category（按 evidence_id 索引）
@@ -81,10 +89,34 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
 
     if not evidences:
         errors.append("无可识别的证据图片")
-        return {
-            "evidence_ocr_results": [],
-            "errors": errors,
-        }
+        error_dicts = convert_string_errors_to_dicts(errors, stage="ocr")
+        node_result = build_node_result(
+            node_name="ocr",
+            data={"evidence_count": 0},
+            quality=QualityReport(
+                score=0.0,
+                coverage=0.0,
+                status="fail",
+                blocking_issues=[],
+                details={"reason": "no_evidence"},
+            ),
+            warnings=[],
+            errors=error_dicts,
+            provenance=[],
+            start_time=start_time,
+            model_calls=0,
+        )
+        return make_node_partial_update(
+            node_name="ocr",
+            stage="material_understanding",
+            progress=0.20,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_ocr_results": [],
+                "errors": error_dicts,
+            },
+        )
 
     # 2. 获取案件描述（透传给策略用于纠错上下文）
     try:
@@ -196,7 +228,61 @@ async def ocr_node(state: CaseWorkflowState) -> dict[str, Any]:
     results = await asyncio.gather(*[_process_one(e) for e in ocr_evidences])
     ocr_results = [r for r in results if isinstance(r, dict)] + skip_results
 
-    return {
-        "evidence_ocr_results": ocr_results,
-        "errors": errors,
-    }
+    # 计算 quality：OCR 成功率 + 覆盖率
+    total_count = len(ocr_results)
+    success_count = sum(1 for r in ocr_results if r.get("ocr_status") == "done")
+    failed_count = sum(1 for r in ocr_results if r.get("ocr_status") == "failed")
+    skipped_count = sum(1 for r in ocr_results if r.get("ocr_strategy_used") == "skipped_physical")
+    success_rate = success_count / max(total_count, 1)
+    coverage = total_count / max(len(evidences), 1)
+    quality_status = "pass" if success_rate >= 0.8 else ("warn" if success_rate >= 0.5 else "fail")
+    error_dicts = convert_string_errors_to_dicts(errors, stage="ocr")
+    # provenance: 图片区域 + OCR 策略
+    provenance = [
+        {
+            "node": "ocr",
+            "evidence_id": r.get("evidence_id"),
+            "field_name": None,
+            "source_ref": f"ocr:{r.get('evidence_code', '')}:{r.get('ocr_strategy_used', '')}",
+            "ts": start_time.isoformat(),
+        }
+        for r in ocr_results
+    ]
+    node_result = build_node_result(
+        node_name="ocr",
+        data={
+            "evidence_count": total_count,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "skipped_count": skipped_count,
+        },
+        quality=QualityReport(
+            score=success_rate,
+            coverage=coverage,
+            status=quality_status,
+            blocking_issues=[],
+            details={
+                "success_rate": success_rate,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
+            },
+        ),
+        warnings=[],
+        errors=error_dicts,
+        provenance=provenance,
+        start_time=start_time,
+        model_calls=len(ocr_evidences),
+        api_calls=len(ocr_evidences),
+    )
+    return make_node_partial_update(
+        node_name="ocr",
+        stage="material_understanding",
+        progress=0.20,
+        state=state,
+        node_result=node_result,
+        legacy_fields={
+            "evidence_ocr_results": ocr_results,
+            "errors": error_dicts,
+        },
+    )

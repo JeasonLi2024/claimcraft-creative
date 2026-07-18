@@ -21,12 +21,13 @@ from django.views import View
 from django_fsm import can_proceed
 from datetime import timedelta
 from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.generics import (
     ListCreateAPIView,
     RetrieveUpdateDestroyAPIView,
     ListAPIView,
 )
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import (
@@ -2366,13 +2367,32 @@ class CaseWorkflowHistoryView(APIView):
 # ===== SSE 工作流流式改造（2026-07-07）=====
 
 
-def _format_sse_event(evt: dict) -> str:
-    """格式化 SSE 事件字符串。
+def _format_sse_event(evt: dict, thread_id: str | None = None) -> str:
+    """格式化 SSE 事件字符串（Task 1.3.3: 统一信封）。
 
-    格式：event: {type}\nid: {event_id}\ndata: {json}\n\n
+    输出格式：event: {type}\nid: {event_id}\ndata: {json}\n\n
+
+    统一信封（data JSON 顶层）含 7 个字段：
+        - event_id: 事件序号（thread_id 范围内单调递增）
+        - event_type: 事件类型（保留旧类型字符串，向后兼容前端 addEventListener；
+          新类型可通过 payload.mapped_event_type 获取）
+        - run_id: WorkflowRun.id（Task 3.1 引入前为 None）
+        - thread_id: 工作流线程 ID（从调用方传入，depot 行不含此字段）
+        - revision: state.revision 快照（Task 2.4 引入前为 None）
+        - occurred_at: 业务发生时间 ISO 8601（fallback 到 created_at）
+        - payload: 事件负载（嵌套 dict）
+
+    向后兼容：
+        - 保留 ts 字段（旧前端读取）
+        - 保留 payload 字段展开到顶层（旧前端 reducer 直接读 data.node / data.delta 等）
+        - 保留 event_type 为旧类型字符串（前端 dispatch 的 data.event_type === "workflow.complete"
+          等检查继续工作；SSE wire event: 行也用旧类型，addEventListener 正常触发）
+        - 新增 legacy_event_type 字段（= event_type，显式标注旧类型供调试）
 
     Args:
-        evt: EventDepot 返回的事件 dict（含 event_id / event_type / payload / created_at）
+        evt: EventDepot 返回的事件 dict（含 event_id / event_type / payload /
+            run_id / revision / occurred_at / created_at）
+        thread_id: 工作流线程 ID（由调用方从 case / request 注入）
 
     Returns:
         SSE 协议格式的字符串
@@ -2380,17 +2400,29 @@ def _format_sse_event(evt: dict) -> str:
     event_type = evt.get('event_type', 'message')
     event_id = evt.get('event_id')
     payload = evt.get('payload', {}) or {}
+    # occurred_at 优先取业务时间，回退到 DB 写入时间 created_at
+    occurred_at = evt.get('occurred_at') or evt.get('created_at')
 
-    # data 字段包含 event_id + event_type + ts + payload 展开
+    # Task 1.3.3: 统一信封 7 字段
     data = {
         'event_id': event_id,
         'event_type': event_type,
+        'run_id': evt.get('run_id'),
+        'thread_id': thread_id,
+        'revision': evt.get('revision'),
+        'occurred_at': occurred_at,
+        'payload': payload,
+        # 向后兼容字段
         'ts': evt.get('created_at'),
+        'legacy_event_type': event_type,
     }
+    # 向后兼容：payload 字段展开到顶层（旧前端 reducer 直接读 data.node / data.delta 等）
     if isinstance(payload, dict):
-        data.update(payload)
-    elif payload is not None:
-        data['payload'] = payload
+        for k, v in payload.items():
+            # 不覆盖信封字段（event_id / event_type / run_id / thread_id / revision /
+            # occurred_at / payload / ts / legacy_event_type）
+            if k not in data:
+                data[k] = v
 
     return (
         f"event: {event_type}\n"
@@ -2411,19 +2443,30 @@ class CaseWorkflowReplayView(APIView):
         if case.thread_id:
             events = async_to_sync(EventDepot().get_all_events)(case.thread_id)
 
-        # 与 SSE data 保持同一扁平结构，前端可复用同一个事件 reducer。
+        # 与 SSE data 保持同一统一信封结构，前端可复用同一个事件 reducer。
+        # Task 1.3.3: 同步 _format_sse_event 的 7 字段信封 + 向后兼容扁平字段。
         replay_events = []
         for evt in events:
+            payload = evt.get('payload') or {}
+            occurred_at = evt.get('occurred_at') or evt.get('created_at')
             data = {
+                # 统一信封 7 字段
                 'event_id': evt.get('event_id'),
                 'event_type': evt.get('event_type'),
+                'run_id': evt.get('run_id'),
+                'thread_id': case.thread_id,
+                'revision': evt.get('revision'),
+                'occurred_at': occurred_at,
+                'payload': payload,
+                # 向后兼容字段
                 'ts': evt.get('created_at'),
+                'legacy_event_type': evt.get('event_type'),
             }
-            payload = evt.get('payload')
+            # 向后兼容：payload 字段展开到顶层（旧前端 reducer 直接读 data.node 等）
             if isinstance(payload, dict):
-                data.update(payload)
-            elif payload is not None:
-                data['payload'] = payload
+                for k, v in payload.items():
+                    if k not in data:
+                        data[k] = v
             replay_events.append(data)
 
         return Response({
@@ -2512,8 +2555,8 @@ class CaseWorkflowStateView(APIView):
 class CaseWorkflowStartView(APIView):
     """启动工作流：POST /api/cases/<id>/workflow/start/
 
-    创建后台 WorkflowRunner 任务，返回 thread_id + stream_url。
-    前端收到响应后建立 SSE 连接消费事件。
+    创建后台 WorkflowRunner 任务，返回 thread_id + stream_ticket + stream_url。
+    前端收到响应后使用 stream_ticket 建立 SSE 连接消费事件。
 
     Body:
         evidence_ids: list[int] (可选，指定处理的证据；不传则处理案件全部有图证据)
@@ -2523,12 +2566,17 @@ class CaseWorkflowStartView(APIView):
             "status": "started",
             "case_id": int,
             "thread_id": str,
-            "stream_url": "/api/cases/<id>/workflow/stream/?thread_id=<thread_id>"
+            "stream_ticket": str,  # 一次性 SSE Ticket，TTL 3 分钟
+            "stream_url": "/api/cases/<id>/workflow/stream/?thread_id=<thread_id>&ticket=<stream_ticket>"
         }
+
+    TODO（Task 3.1）：当前 stream_ticket 绑定 case_id 作为 run_id 占位；
+    引入 WorkflowRun 后改为真正的 run_id。
     """
 
     def post(self, request, pk):
         from api.agents import WorkflowRunner
+        from api.services.sse_ticket_service import issue_ticket
 
         case = get_object_or_404(Case, pk=pk, owner=request.user)
         evidence_ids = request.data.get('evidence_ids', [])
@@ -2565,11 +2613,19 @@ class CaseWorkflowStartView(APIView):
             case_id=case.id, thread_id=thread_id, initial_state=initial_state
         )
 
+        # 签发一次性 SSE Ticket（Task 1.4.3）
+        # TODO（Task 3.1）：当前以 case.id 占位 run_id；引入 WorkflowRun 后改为真正的 run_id
+        stream_ticket = issue_ticket(run_id=case.id, user_id=request.user.id)
+
         return Response({
             "status": "started",
             "case_id": case.id,
             "thread_id": thread_id,
-            "stream_url": f"/api/cases/{case.id}/workflow/stream/?thread_id={thread_id}",
+            "stream_ticket": stream_ticket,
+            "stream_url": (
+                f"/api/cases/{case.id}/workflow/stream/"
+                f"?thread_id={thread_id}&ticket={stream_ticket}"
+            ),
         })
 
 
@@ -2578,11 +2634,21 @@ class CaseWorkflowStreamView(View):
 
     从 EventDepot 读取事件推送给前端，支持断连续传。
     流程：
-        1. 读取 Last-Event-ID header 或 ?last_event_id= query 参数
-        2. 从 EventDepot 批量回放漏掉的事件（event_id > last）
-        3. 订阅 NotifyEmitter(thread_id) 获取新事件通知
-        4. 收到通知 → 拉取新事件 → SSE 推送
-        5. 每 15s 心跳保活
+        1. JWT 认证（Authorization header 或 ?token=）
+        2. SSE Ticket 鉴权（?ticket=，一次性，验证后立即撤销）
+        3. 读取 Last-Event-ID header 或 ?last_event_id= query 参数
+        4. 从 EventDepot 批量回放漏掉的事件（event_id > last）
+        5. 订阅 NotifyEmitter(thread_id) 获取新事件通知
+        6. 收到通知 → 拉取新事件 → SSE 推送
+        7. 每 15s 心跳保活
+
+    鉴权（双重，Task 1.4.2）：
+        - 原有 JWT 鉴权保留（用户身份校验）
+        - 新增 SSE Ticket 鉴权（一次性，防止 SSE URL 被复制滥用）
+        - 缺少 ticket → 401 {"detail": "Missing SSE ticket"}
+        - ticket 无效/过期/已使用 → 401 {"detail": "Invalid or expired SSE ticket"}
+        - TODO（Task 3.1）：当前以 case_id 占位 run_id 进行校验；引入 WorkflowRun 后
+          改为真正的 run_id，并区分 401（无效 ticket）与 403（run_id 不匹配）
 
     需要 ASGI 部署（uvicorn），Django 4.2+ 支持异步生成器。
     继承 Django 原生 View（非 DRF APIView）以支持 async def get。
@@ -2591,6 +2657,7 @@ class CaseWorkflowStreamView(View):
     async def get(self, request, pk):
         from asgiref.sync import sync_to_async
         from api.agents import EventDepot, NotifyEmitter
+        from api.services.sse_ticket_service import revoke_ticket, validate_ticket
 
         # 手动 JWT 认证（DRF APIView 在 ASGI 下不支持 async）
         user = await self._authenticate(request)
@@ -2600,6 +2667,33 @@ class CaseWorkflowStreamView(View):
                 content_type='application/json',
                 status=401,
             )
+
+        # SSE Ticket 鉴权（Task 1.4.2）：在原有 JWT 之上新增一次性 ticket 校验
+        # TODO（Task 3.1）：当前以 case_id 占位 run_id；引入 WorkflowRun 后改为
+        #   真正的 run_id，并区分 401（无效 ticket）与 403（run_id 不匹配）
+        ticket = request.GET.get('ticket', '')
+        if not ticket:
+            return HttpResponse(
+                json.dumps({'detail': 'Missing SSE ticket'}),
+                content_type='application/json',
+                status=401,
+            )
+        try:
+            case_id_for_ticket = int(pk)
+        except (TypeError, ValueError):
+            return HttpResponse(
+                json.dumps({'detail': 'Invalid case id'}),
+                content_type='application/json',
+                status=400,
+            )
+        if not validate_ticket(ticket, case_id_for_ticket):
+            return HttpResponse(
+                json.dumps({'detail': 'Invalid or expired SSE ticket'}),
+                content_type='application/json',
+                status=401,
+            )
+        # 一次性使用：验证通过后立即撤销，防止 SSE URL 被复制后滥用
+        revoke_ticket(ticket)
 
         case = await sync_to_async(get_object_or_404)(Case, pk=pk, owner=user)
         thread_id = request.GET.get('thread_id') or case.thread_id
@@ -2628,7 +2722,7 @@ class CaseWorkflowStreamView(View):
             # 1. 回放漏掉的事件（断连续传）
             missed = await depot.get_events_after(thread_id, last_event_id)
             for evt in missed:
-                yield _format_sse_event(evt)
+                yield _format_sse_event(evt, thread_id=thread_id)
                 if evt['event_type'] in (
                     'workflow.complete', 'workflow.error', 'workflow.waiting_review',
                     'workflow.paused', 'workflow.cancelled',
@@ -2671,7 +2765,7 @@ class CaseWorkflowStreamView(View):
                             thread_id, current_last
                         )
                         for evt in new_events:
-                            yield _format_sse_event(evt)
+                            yield _format_sse_event(evt, thread_id=thread_id)
                             current_last = evt['event_id']
                             if evt['event_type'] in (
                                 'workflow.complete', 'workflow.error',
@@ -2738,11 +2832,21 @@ class CaseWorkflowResumeView(APIView):
         corrections: list[{evidence_id, field_name, corrected_value}]
 
     Response:
-        {"status": "resumed", "case_id": int, "thread_id": str}
+        {
+            "status": "resumed",
+            "case_id": int,
+            "thread_id": str,
+            "stream_ticket": str,  # 一次性 SSE Ticket，TTL 3 分钟（Task 1.4.3）
+            "stream_url": "/api/cases/<id>/workflow/stream/?thread_id=<thread_id>&ticket=<stream_ticket>"
+        }
+
+    TODO（Task 3.1）：当前 stream_ticket 绑定 case_id 作为 run_id 占位；
+    引入 WorkflowRun 后改为真正的 run_id。
     """
 
     def post(self, request, pk):
         from api.agents import WorkflowRunner
+        from api.services.sse_ticket_service import issue_ticket
 
         case = get_object_or_404(Case, pk=pk, owner=request.user)
         if not case.thread_id:
@@ -2792,8 +2896,816 @@ class CaseWorkflowResumeView(APIView):
         except RuntimeError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
 
+        # 签发新的一次性 SSE Ticket（Task 1.4.3）：resume 后前端需重新建立 SSE 连接，
+        # 旧 ticket 已在连接建立时被 revoke，故每次 resume 都签发新 ticket
+        # TODO（Task 3.1）：当前以 case.id 占位 run_id；引入 WorkflowRun 后改为真正的 run_id
+        stream_ticket = issue_ticket(run_id=case.id, user_id=request.user.id)
+
         return Response({
             "status": "resumed",
             "case_id": case.id,
             "thread_id": thread_id,
+            "stream_ticket": stream_ticket,
+            "stream_url": (
+                f"/api/cases/{case.id}/workflow/stream/"
+                f"?thread_id={thread_id}&ticket={stream_ticket}"
+            ),
+        })
+
+
+# ===== Task 2.4：介入提交占位端点 =====
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_intervention_view(request, case_id: int, intervention_id: int):
+    """提交介入：POST /api/cases/<case_id>/interventions/<intervention_id>/submit/
+
+    占位端点（Task 2.4）：当前以 case_id 作为 URL 占位，Task 3.2 引入 WorkflowRun 后
+    迁移到 `/api/workflow-runs/{run_id}/interventions/{intervention_id}/submit/`。
+
+    Body:
+        submitted_values: dict  # 用户提交的值
+
+    响应：
+        - 200: {"intervention": {...}, "status": "submitted"}
+        - 400: {"detail": str}       # 介入状态非 pending 等 ValueError
+        - 404: {"detail": "介入记录不存在"}
+        - 409: {"code": "REVISION_CONFLICT", "detail": str, "current_revision": int}
+
+    TODO（Task 3.2）：迁移到 /api/workflow-runs/{run_id}/interventions/{intervention_id}/submit/
+    """
+    from api.agents.schemas import WorkflowInterventionSchema
+    from api.models import WorkflowIntervention
+    from api.services.intervention_service import (
+        RevisionConflictError,
+        submit_intervention,
+    )
+
+    try:
+        intervention = submit_intervention(
+            intervention_id=intervention_id,
+            submitted_values=request.data.get("submitted_values", {}),
+            submitted_by_id=request.user.id,
+        )
+    except RevisionConflictError as e:
+        return Response({
+            "code": "REVISION_CONFLICT",
+            "detail": str(e),
+            "current_revision": e.current_revision,
+        }, status=status.HTTP_409_CONFLICT)
+    except WorkflowIntervention.DoesNotExist:
+        return Response(
+            {"detail": "介入记录不存在"}, status=status.HTTP_404_NOT_FOUND
+        )
+    except ValueError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        "intervention": WorkflowInterventionSchema.from_model(intervention).model_dump(),
+        "status": "submitted",
+    })
+
+
+# ===== Task 3.2：/workflow-runs/* API 端点（新统一接口，保留旧 /cases/<id>/workflow/* 兼容）=====
+#
+# 设计要点：
+# - 7 个端点对齐 spec.md「Requirement: Unified WorkflowRun API」
+# - 权限：IsAuthenticated + case owner 校验（workflow_run.case.owner == request.user）
+# - 异步服务调用：使用 async_to_sync 包装 RetryService（async def）
+#   参考 views.py 现有 `from asgiref.sync import async_to_sync` 用法
+# - SSE Ticket 集成：WorkflowRunCreateView 签发一次性 ticket 绑定 run_id
+# - 双写兼容策略（Task 3.4.2）：新 API 内部使用 WorkflowRun.status 新枚举，
+#   同时通过 case_lifecycle_service 维护 Case.workflow_status 旧值兼容旧 API
+# - revision 冲突检测：WorkflowRunInterventionSubmitView 捕获 RevisionConflictError 返回 409
+# - 延迟导入避免循环依赖（如 api.agents.WorkflowRunner / api.services.* 在方法内导入）
+
+
+class WorkflowRunCreateView(APIView):
+    """SubTask 3.2.1：创建工作流运行
+
+    POST /api/cases/{case_id}/workflow-runs/
+
+    创建新 WorkflowRun 记录并启动后台 WorkflowRunner，返回 run_id + thread_id +
+    一次性 SSE Ticket + stream_url。前端收到响应后使用 stream_ticket 建立 SSE 连接。
+
+    Body:
+        evidence_ids: list[int] (可选，指定处理的证据；不传则处理案件全部有图证据)
+        run_options: dict (可选，运行选项，如 {"template_type": "platform", "case_mode": "complain"})
+
+    Response:
+        {
+            "run_id": int,
+            "case_id": int,
+            "thread_id": str,
+            "status": "queued",
+            "stream_ticket": str,  # 一次性 SSE Ticket，TTL 3 分钟
+            "stream_url": "/api/workflow-runs/{run_id}/stream/?ticket=<stream_ticket>"
+        }
+
+    错误响应：
+        - 404: 案件不存在
+        - 403: 非案件 owner
+        - 409: 案件已归档/取消 / 工作流任务正在运行
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, case_id: int):
+        from api.agents import WorkflowRunner
+        from api.services.case_lifecycle_service import (
+            LifecycleError,
+            start_processing,
+        )
+        from api.services.sse_ticket_service import issue_ticket
+
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+        evidence_ids = request.data.get('evidence_ids', [])
+        run_options = request.data.get('run_options', {}) or {}
+
+        # 创建 WorkflowRun（thread_id 由模型 save() 自动生成 case-{case_id}-run-{id}）
+        from api.models import WorkflowRun
+        run = WorkflowRun.objects.create(
+            case=case,
+            status='queued',
+            selected_evidence_ids=evidence_ids,
+            run_options=run_options,
+            started_by_id=request.user.id,
+        )
+
+        # 同步 Case.active_workflow_run + workflow_status（双写兼容）
+        Case.objects.filter(pk=case.id).update(
+            active_workflow_run=run,
+            thread_id=run.thread_id,
+        )
+        try:
+            start_processing(case.id, actor=request.user, thread_id=run.thread_id)
+        except LifecycleError as exc:
+            run.status = 'failed'
+            run.error_message = str(exc)
+            run.save(update_fields=['status', 'error_message'])
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        # 启动后台 WorkflowRunner（initial_state 与 resume/fork_config 互斥）
+        initial_state = {
+            "case_id": case.id,
+            "evidence_ids": evidence_ids,
+            "evidence_preclassify_results": [],
+            "evidence_ocr_results": [],
+            "evidence_classify_results": [],
+            "evidence_extract_results": [],
+            "needs_human_review": False,
+            "evidence_chain": [],
+            "complaint_draft": None,
+            "review_decision": None,
+            "errors": [],
+        }
+        try:
+            runner = WorkflowRunner()
+            runner.start_in_background(
+                case_id=case.id,
+                thread_id=run.thread_id,
+                initial_state=initial_state,
+            )
+        except RuntimeError as exc:
+            # 后台任务已存在等冲突
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        # 签发一次性 SSE Ticket（绑定真正的 run_id）
+        stream_ticket = issue_ticket(run_id=run.id, user_id=request.user.id)
+
+        return Response({
+            "run_id": run.id,
+            "case_id": case.id,
+            "thread_id": run.thread_id,
+            "status": run.status,
+            "stream_ticket": stream_ticket,
+            "stream_url": (
+                f"/api/workflow-runs/{run.id}/stream/?ticket={stream_ticket}"
+            ),
+        }, status=status.HTTP_201_CREATED)
+
+
+class WorkflowRunSnapshotView(APIView):
+    """SubTask 3.2.2：获取权威快照
+
+    GET /api/workflow-runs/{run_id}/snapshot/
+
+    调用 SnapshotService.get_snapshot 聚合 run + stages + active_intervention +
+    artifacts + issues + actions，作为前端展示的权威数据源。
+
+    Response:
+        {
+            "run": {...},
+            "stages": [...],               # 4 业务阶段
+            "active_intervention": {...} | null,
+            "artifacts": [...],
+            "issues": [...],
+            "actions": {can_pause, can_resume, can_cancel, can_retry,
+                       can_restart_from_stage, can_submit_intervention}
+        }
+
+    错误响应：
+        - 404: 运行不存在 / 非 case owner
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, run_id: int):
+        from api.models import WorkflowRun
+        from api.services.snapshot_service import SnapshotService
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        # case owner 校验
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        snapshot = SnapshotService().get_snapshot(run_id)
+        if snapshot is None:
+            return Response(
+                {'detail': '工作流运行不存在'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(snapshot)
+
+
+class WorkflowRunPauseView(APIView):
+    """SubTask 3.2.3：请求暂停工作流运行
+
+    POST /api/workflow-runs/{run_id}/pause/
+
+    调用 case_lifecycle_service.pause_workflow_run 将 WorkflowRun.status 置为 pausing。
+    实际暂停在下一个 stage_gate 节点检测到 workflow_pause_requested 时完成
+    （WorkflowRunner 负责监听并触发 mark_paused）。
+
+    Response:
+        {
+            "run_id": int,
+            "status": "pausing",
+            "message": "暂停请求已提交，将在当前阶段完成后生效"
+        }
+
+    错误响应：
+        - 404: 运行不存在
+        - 403: 非 case owner
+        - 409: 当前状态不允许暂停（非 running）
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int):
+        from api.models import WorkflowRun
+        from api.services.case_lifecycle_service import (
+            LifecycleError,
+            request_pause,
+        )
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if run.status != 'running':
+            return Response(
+                {
+                    'detail': f'当前运行状态 {run.status} 不允许暂停（仅 running 允许）',
+                    'current_status': run.status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # 同步 Case.workflow_pause_requested 标志 + workflow_status='pausing'（双写兼容）
+        try:
+            request_pause(run.case_id)
+        except LifecycleError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        # 同步 WorkflowRun.status='pausing'（新枚举）
+        WorkflowRun.objects.filter(pk=run.id).update(status='pausing')
+
+        return Response({
+            "run_id": run.id,
+            "status": "pausing",
+            "message": "暂停请求已提交，将在当前阶段完成后生效",
+        })
+
+
+class WorkflowRunInterventionSubmitView(APIView):
+    """SubTask 3.2.4：提交介入
+
+    POST /api/workflow-runs/{run_id}/interventions/{intervention_id}/submit/
+
+    调用 intervention_service.submit_intervention 提交用户介入数据。
+    含 revision 冲突检测：base_revision != current_revision 时返回 409。
+
+    Body:
+        submitted_values: dict  # 用户提交的值
+
+    Response:
+        {
+            "intervention": {...},  # WorkflowInterventionSchema 序列化
+            "status": "submitted"
+        }
+
+    错误响应：
+        - 404: 运行 / 介入记录不存在 / 非 case owner
+        - 400: 介入状态非 pending（ValueError）
+        - 409: revision 冲突（RevisionConflictError → REVISION_CONFLICT + current_revision）
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int, intervention_id: int):
+        from api.agents.schemas import WorkflowInterventionSchema
+        from api.models import WorkflowIntervention, WorkflowRun
+        from api.services.intervention_service import (
+            RevisionConflictError,
+            submit_intervention,
+        )
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            intervention = submit_intervention(
+                intervention_id=intervention_id,
+                submitted_values=request.data.get("submitted_values", {}),
+                submitted_by_id=request.user.id,
+            )
+        except RevisionConflictError as e:
+            return Response({
+                "code": "REVISION_CONFLICT",
+                "detail": str(e),
+                "current_revision": e.current_revision,
+                "base_revision": e.base_revision,
+            }, status=status.HTTP_409_CONFLICT)
+        except WorkflowIntervention.DoesNotExist:
+            return Response(
+                {"detail": "介入记录不存在"}, status=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "intervention": WorkflowInterventionSchema.from_model(intervention).model_dump(),
+            "status": "submitted",
+        })
+
+
+class WorkflowRunRetryView(APIView):
+    """SubTask 3.2.5：局部重跑（基于 LangGraph Time Travel）
+
+    POST /api/workflow-runs/{run_id}/retry/
+
+    调用 RetryService.retry_from_stage（async）从指定阶段 fork 出新运行。
+    使用 async_to_sync 包装异步调用，避免阻塞 Django 同步视图。
+
+    Body:
+        from_stage: str  # 重跑起始阶段
+            (material_understanding / fact_checking / case_organization / document_generation)
+        preserve_user_confirmed: bool = True  # 是否保留 user_confirmed_fields
+        fork_state_overrides: dict = {}  # 额外的 state 覆盖
+
+    Response:
+        {
+            "new_run_id": int,
+            "source_run_id": int,
+            "from_stage": str,
+            "thread_id": str,
+            "status": "queued",
+            "message": "局部重跑已启动"
+        }
+
+    错误响应：
+        - 404: 运行不存在 / 非 case owner
+        - 400: 无效的 from_stage 或 fork_state_overrides 格式
+        - 409: 源运行状态不允许重跑（非 failed/succeeded/waiting_user）或 fork 失败
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int):
+        from asgiref.sync import async_to_sync
+        from api.models import WorkflowRun
+        from api.services.retry_service import RetryService
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from_stage = request.data.get('from_stage', '')
+        if not from_stage:
+            return Response(
+                {'detail': 'from_stage 为必填字段'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        preserve_user_confirmed = request.data.get('preserve_user_confirmed', True)
+        fork_state_overrides = request.data.get('fork_state_overrides', {}) or {}
+        if not isinstance(fork_state_overrides, dict):
+            return Response(
+                {'detail': 'fork_state_overrides 必须为对象'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        service = RetryService()
+        try:
+            # RetryService.retry_from_stage 是 async，用 async_to_sync 包装
+            new_run = async_to_sync(service.retry_from_stage)(
+                source_run_id=run.id,
+                from_stage=from_stage,
+                preserve_user_confirmed=bool(preserve_user_confirmed),
+                fork_state_overrides=fork_state_overrides or None,
+                started_by_id=request.user.id,
+            )
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response(
+                {'detail': f'局部重跑失败: {e}'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except WorkflowRun.DoesNotExist:
+            return Response(
+                {'detail': '源工作流运行不存在'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            "new_run_id": new_run.id,
+            "source_run_id": run.id,
+            "from_stage": from_stage,
+            "thread_id": new_run.thread_id,
+            "status": new_run.status,
+            "message": "局部重跑已启动",
+        }, status=status.HTTP_201_CREATED)
+
+
+class WorkflowRunCancelView(APIView):
+    """SubTask 3.2.6：取消工作流运行
+
+    POST /api/workflow-runs/{run_id}/cancel/
+
+    调用 case_lifecycle_service.cancel_workflow_run 将 WorkflowRun.status 置为 cancelled。
+    仅允许在 queued / running / pausing / waiting_user 状态下取消。
+
+    Response:
+        {
+            "run_id": int,
+            "status": "cancelled",
+            "message": "工作流运行已取消"
+        }
+
+    错误响应：
+        - 404: 运行不存在 / 非 case owner
+        - 409: 当前状态不允许取消（已 succeeded / failed / cancelled）
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int):
+        from api.models import WorkflowRun
+        from api.services.case_lifecycle_service import cancel_workflow_run
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        cancellable_statuses = {'queued', 'running', 'pausing', 'waiting_user'}
+        if run.status not in cancellable_statuses:
+            return Response(
+                {
+                    'detail': f'当前运行状态 {run.status} 不允许取消',
+                    'current_status': run.status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # 同步 WorkflowRun.status='cancelled'（新枚举）
+        cancel_workflow_run(run.id)
+        # 同步 Case.workflow_status='idle'（双写兼容，便于旧 API 显示已取消）
+        Case.objects.filter(pk=run.case_id).update(
+            workflow_status='idle',
+            workflow_pause_requested=False,
+            workflow_paused_after='',
+            workflow_finished_at=timezone.now(),
+        )
+
+        return Response({
+            "run_id": run.id,
+            "status": "cancelled",
+            "message": "工作流运行已取消",
+        })
+
+
+class CaseWorkflowRunsListView(APIView):
+    """SubTask 3.2.7：历史运行列表
+
+    GET /api/cases/{case_id}/workflow-runs/
+
+    返回指定案件的所有 WorkflowRun 历史（按 created_at 降序），含 parent_run_id
+    用于追溯 fork 链。每条返回基础信息（不含 artifacts / interventions 详情，前端按需
+    调用 snapshot 端点获取详情）。
+
+    Response:
+        {
+            "case_id": int,
+            "runs": [
+                {
+                    "id": int, "case_id": int, "thread_id": str,
+                    "status": str, "current_stage": str, "progress": float,
+                    "revision": int, "workflow_version": str,
+                    "parent_run_id": int | null,
+                    "started_at": str | null, "finished_at": str | null,
+                    "created_at": str, "updated_at": str,
+                    "error_message": str
+                },
+                ...
+            ],
+            "total": int
+        }
+
+    错误响应：
+        - 404: 案件不存在
+        - 403: 非 case owner
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, case_id: int):
+        from api.models import WorkflowRun
+
+        case = get_object_or_404(Case, pk=case_id, owner=request.user)
+        runs = WorkflowRun.objects.filter(case=case).order_by('-created_at')
+
+        runs_data = []
+        for run in runs:
+            runs_data.append({
+                "id": run.id,
+                "case_id": run.case_id,
+                "thread_id": run.thread_id,
+                "status": run.status,
+                "current_stage": run.current_stage,
+                "current_node": run.current_node,
+                "progress": run.progress,
+                "revision": run.revision,
+                "workflow_version": run.workflow_version,
+                "state_schema_version": run.state_schema_version,
+                "policy_version": run.policy_version,
+                "prompt_bundle_version": run.prompt_bundle_version,
+                "parent_run_id": run.parent_run_id,
+                "started_by_id": run.started_by_id,
+                "started_at": run.started_at.isoformat() if run.started_at else None,
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "created_at": run.created_at.isoformat() if run.created_at else None,
+                "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+                "error_message": run.error_message,
+            })
+
+        return Response({
+            "case_id": case.id,
+            "runs": runs_data,
+            "total": len(runs_data),
+        })
+
+
+class DocumentParagraphRegenerateView(APIView):
+    """SubTask 4.1.4：段落级重新生成
+
+    POST /api/workflow-runs/{run_id}/documents/{document_id}/paragraphs/{paragraph_id}/regenerate/
+
+    基于现有 DocumentVersion 创建新版本，仅替换目标段落内容。
+    LLM 调用通过 _regenerate_paragraph_content 辅助函数封装，便于测试 mock。
+
+    Body (可选):
+        instructions: str  - 重新生成指令（如「更详细地描述当事人信息」）
+        evidence_codes: list[str] - 段落新证据编号（不传则保留原值）
+        tone: str - 语气（firm/restrained/neutral，默认沿用原文档）
+
+    Response:
+        {
+            "document_id": int,       # 新 DocumentVersion ID
+            "version": int,           # 新版本号
+            "paragraph_id": str,      # 重新生成的段落 ID
+            "paragraph": {...},       # 更新后的段落 dict
+            "changelog": str
+        }
+
+    错误响应：
+        - 404: 运行 / 文书版本 / 段落不存在
+        - 403: 非 case owner
+        - 400: 段落结构为空
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int, document_id: int, paragraph_id: str):
+        from api.models import DocumentVersion, WorkflowRun
+        from api.services.document_version_service import regenerate_paragraph
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        doc_version = get_object_or_404(
+            DocumentVersion, pk=document_id, workflow_run_id=run_id
+        )
+
+        paragraphs = doc_version.paragraphs or []
+        if not paragraphs:
+            return Response(
+                {'detail': '文书版本段落结构为空，无法重新生成段落'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        target_idx = next(
+            (i for i, p in enumerate(paragraphs)
+             if p.get('paragraph_id') == paragraph_id),
+            None,
+        )
+        if target_idx is None:
+            return Response(
+                {'detail': f'段落 {paragraph_id} 不存在'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 调用 LLM 重新生成该段落（封装为辅助函数，便于测试 mock）
+        instructions = request.data.get('instructions', '') or ''
+        tone = request.data.get('tone', '') or ''
+        try:
+            new_content = _regenerate_paragraph_content(
+                doc_version=doc_version,
+                paragraph=paragraphs[target_idx],
+                instructions=instructions,
+                tone=tone,
+            )
+        except Exception as exc:
+            return Response(
+                {'detail': f'段落重新生成失败: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not new_content or not new_content.strip():
+            return Response(
+                {'detail': '段落重新生成返回空内容'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        evidence_codes = request.data.get('evidence_codes')
+        changelog = (
+            f'段落 {paragraph_id} 重新生成'
+            + (f'（指令：{instructions}）' if instructions else '')
+        )
+
+        try:
+            new_doc, new_paragraph, _ = regenerate_paragraph(
+                doc_version=doc_version,
+                paragraph_id=paragraph_id,
+                new_content=new_content.strip(),
+                evidence_codes=evidence_codes,
+                changelog=changelog,
+                created_by_type='user',
+                created_by_id=request.user.id,
+            )
+        except ValueError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            'document_id': new_doc.id,
+            'version': new_doc.version,
+            'paragraph_id': paragraph_id,
+            'paragraph': new_paragraph,
+            'changelog': new_doc.changelog,
+        })
+
+
+def _regenerate_paragraph_content(
+    *,
+    doc_version,
+    paragraph: dict,
+    instructions: str = '',
+    tone: str = '',
+) -> str:
+    """调用 LLM 重新生成单个段落内容。
+
+    封装为模块级函数，便于测试通过 unittest.mock.patch 替换。
+
+    Args:
+        doc_version: DocumentVersion 实例（提供文书上下文）
+        paragraph: 目标段落 dict（含 title / content / evidence_codes）
+        instructions: 用户重新生成指令（可空）
+        tone: 语气（可空，默认沿用原文档语气）
+
+    Returns:
+        重新生成的段落内容（str）
+    """
+    from api.services import llm_service
+
+    paragraph_title = paragraph.get('title', '')
+    original_content = paragraph.get('content', '')
+    evidence_codes = paragraph.get('evidence_codes', [])
+    legal_refs = paragraph.get('legal_references', [])
+
+    prompt = (
+        f'你是法律文书写作助手。请重新生成以下文书的指定段落，保持与上下文一致。\n\n'
+        f'文书类型：{doc_version.get_document_type_display()}\n'
+        f'文书标题：{doc_version.title}\n'
+        + (f'语气要求：{tone}\n' if tone else '')
+        + f'\n段落标题：{paragraph_title}\n'
+        f'段落当前内容：\n{original_content}\n'
+        + (f'关联证据编号：{", ".join(evidence_codes)}\n' if evidence_codes else '')
+        + (
+            f'引用法条：{"; ".join(r.get("law_name", "") + r.get("article_number", "") for r in legal_refs)}\n'
+            if legal_refs else ''
+        )
+        + (f'\n用户重新生成指令：{instructions}\n' if instructions else '')
+        + '\n请直接输出重新生成的段落正文（含段落标题），不要额外解释。'
+    )
+
+    if llm_service.is_llm_available():
+        result = llm_service.chat_with_retry([
+            {'role': 'user', 'content': prompt}
+        ])
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+
+    # LLM 不可用时返回原内容（允许流程继续，由调用方决定是否接受）
+    return original_content
+
+
+class DocumentExportCheckView(APIView):
+    """SubTask 4.2.4：导出前质量门检查端点
+
+    POST /api/workflow-runs/{run_id}/documents/{document_id}/export-check/
+
+    调用 document_quality_service.run_export_check 执行 5 项导出前检查：
+    1. 法条引用真实性（validate_legal_references 三级降级）
+    2. 金额一致性（文书正文 vs ExtractedField 金额字段）
+    3. 主体名称一致性（文书 vs ExtractedField 主体字段）
+    4. 必备要素完整性（事实段 / 依据段 / 诉求段）
+    5. stale 产物引用（WorkflowArtifact.status='stale'）
+
+    Response:
+        {
+            "passed": bool,            # True 当且仅当无 blocking issues
+            "issues": [...],           # ExportCheckIssue 列表（model_dump）
+            "missing_elements": [...], # 缺失的必备要素子集
+            "checks_run": [...]        # 已执行的检查项列表
+        }
+
+    错误响应：
+        - 404: 运行 / 文书不存在或不属于该运行（含非 owner，不暴露存在性）
+        - 401: 未认证
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, run_id: int, document_id: int):
+        from asgiref.sync import async_to_sync
+        from api.models import DocumentVersion, WorkflowRun
+        from api.services.document_quality_service import run_export_check
+
+        run = get_object_or_404(WorkflowRun, pk=run_id)
+        if run.case_id is None or run.case.owner_id != request.user.id:
+            return Response(
+                {'detail': '未找到或无权访问该工作流运行'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 校验 document_id 属于该 run（404 if not）
+        get_object_or_404(
+            DocumentVersion, pk=document_id, workflow_run_id=run_id
+        )
+
+        # 调用导出前质量门检查（async → sync via async_to_sync）
+        result = async_to_sync(run_export_check)(
+            document_id=document_id, run_id=run_id,
+        )
+
+        return Response({
+            'passed': result.passed,
+            'issues': [issue.model_dump() for issue in result.issues],
+            'missing_elements': result.missing_elements,
+            'checks_run': result.checks_run,
         })

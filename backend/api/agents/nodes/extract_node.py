@@ -22,11 +22,18 @@ LangExtract 优势：
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
 
 from api.agents.state import CaseWorkflowState
+from api.agents.schemas import QualityReport
+from api.agents.utils.node_result_builder import (
+    build_node_result,
+    convert_string_errors_to_dicts,
+    make_node_partial_update,
+)
 from api.services import llm_service
 
 try:
@@ -101,13 +108,39 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
     ocr_results = state.get("evidence_ocr_results", [])
     classify_results = state.get("evidence_classify_results", [])
     errors = []
+    start_time = datetime.now(timezone.utc)
 
     if not ocr_results:
-        return {
-            "evidence_extract_results": [],
-            "needs_human_review": False,
-            "errors": ["[抽取] 无 OCR 结果"],
-        }
+        errors.append("[抽取] 无 OCR 结果")
+        error_dicts = convert_string_errors_to_dicts(errors, stage="extract")
+        node_result = build_node_result(
+            node_name="extract",
+            data={"evidence_count": 0},
+            quality=QualityReport(
+                score=0.0,
+                coverage=0.0,
+                status="fail",
+                blocking_issues=[],
+                details={"reason": "no_ocr_results"},
+            ),
+            warnings=[],
+            errors=error_dicts,
+            provenance=[],
+            start_time=start_time,
+            model_calls=0,
+        )
+        return make_node_partial_update(
+            node_name="extract",
+            stage="fact_checking",
+            progress=0.45,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_extract_results": [],
+                "needs_human_review": False,
+                "errors": error_dicts,
+            },
+        )
 
     # 过滤纯物证图片（无文字内容，跳过字段抽取）
     physical_results = [
@@ -221,6 +254,7 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
             any_needs_review = True
 
         # 6. 持久化（幂等：先 delete 再 create，写入 field_category + source_hash）
+        # Task 2.4：首次抽取的字段 user_confirmed=False（用户尚未校正）
         try:
             evidence = await sync_to_async(Evidence.objects.get)(pk=evidence_id, case_id=case_id)
             await sync_to_async(evidence.extracted_fields.all().delete)()
@@ -232,6 +266,7 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
                     confidence=f.get("confidence", 0.7),
                     field_category=f.get("field_category", "其他"),
                     source_hash=source_hash,
+                    user_confirmed=False,
                 )
         except Evidence.DoesNotExist:
             errors.append(f"证据 {evidence_id} 不存在，无法持久化抽取字段")
@@ -255,11 +290,69 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
     results = await asyncio.gather(*[_process_one(ocr) for ocr in ocr_results])
     extract_results = [r for r in results if isinstance(r, dict)] + physical_results
 
-    return {
-        "evidence_extract_results": extract_results,
-        "needs_human_review": any_needs_review,
-        "errors": errors,
-    }
+    # 计算 quality：字段完整率 + 低置信度数量
+    total_evidences = len(extract_results)
+    evidences_with_fields = sum(1 for er in extract_results if er.get("fields"))
+    total_fields = sum(len(er.get("fields", [])) for er in extract_results)
+    low_confidence_count = sum(
+        1 for er in extract_results
+        for f in er.get("fields", [])
+        if f.get("confidence", 1.0) < LOW_CONFIDENCE_THRESHOLD
+    )
+    # 字段完整率 = 1 - 低置信度占比
+    field_quality_score = 1.0 - (low_confidence_count / max(total_fields, 1))
+    coverage = evidences_with_fields / max(total_evidences, 1)
+    quality_status = "fail" if any_needs_review else ("pass" if field_quality_score >= 0.7 else "warn")
+    error_dicts = convert_string_errors_to_dicts(errors, stage="extract")
+    # provenance: 字段来源 evidence_id + 区域
+    provenance = [
+        {
+            "node": "extract",
+            "evidence_id": er.get("evidence_id"),
+            "field_name": f.get("field_name"),
+            "source_ref": f"extract:{er.get('evidence_code', '')}:{f.get('field_name', '')}",
+            "ts": start_time.isoformat(),
+        }
+        for er in extract_results
+        for f in er.get("fields", [])
+    ]
+    node_result = build_node_result(
+        node_name="extract",
+        data={
+            "evidence_count": total_evidences,
+            "total_fields": total_fields,
+            "low_confidence_count": low_confidence_count,
+            "needs_human_review": any_needs_review,
+        },
+        quality=QualityReport(
+            score=field_quality_score,
+            coverage=coverage,
+            status=quality_status,
+            blocking_issues=[],
+            details={
+                "total_fields": total_fields,
+                "low_confidence_count": low_confidence_count,
+                "needs_human_review": any_needs_review,
+            },
+        ),
+        warnings=[],
+        errors=error_dicts,
+        provenance=provenance,
+        start_time=start_time,
+        model_calls=len(ocr_results),
+    )
+    return make_node_partial_update(
+        node_name="extract",
+        stage="fact_checking",
+        progress=0.45,
+        state=state,
+        node_result=node_result,
+        legacy_fields={
+            "evidence_extract_results": extract_results,
+            "needs_human_review": any_needs_review,
+            "errors": error_dicts,
+        },
+    )
 
 
 async def _check_extract_cache(evidence_id: int, source_hash: str) -> list[dict] | None:

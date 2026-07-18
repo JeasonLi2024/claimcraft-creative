@@ -108,6 +108,14 @@ class Case(models.Model):
     workflow_finished_at = models.DateTimeField('工作流结束时间', null=True, blank=True)
     workflow_error = models.TextField('工作流错误', blank=True, default='')
     workflow_revision = models.PositiveIntegerField('工作流版本', default=0)
+    # Task 3.1：当前活动工作流运行（指向最近一次活动的 WorkflowRun）
+    # 保留旧 thread_id / workflow_status 双写兼容
+    active_workflow_run = models.ForeignKey(
+        'WorkflowRun', on_delete=models.SET_NULL, related_name='active_for_cases',
+        null=True, blank=True,
+        verbose_name='当前活动运行',
+        help_text='指向案件最近一次活动的工作流运行；保留旧 thread_id / workflow_status 双写兼容'
+    )
     document_stale = models.BooleanField('文稿是否已过期', default=False)
     archived_at = models.DateTimeField('归档时间', null=True, blank=True)
 
@@ -503,6 +511,15 @@ class ExtractedField(models.Model):
         '源文本哈希', max_length=32, blank=True, default='',
         help_text='OCR文本MD5，用于缓存比对避免重复抽取'
     )
+    # Task 2.4：用户确认标记（review_node resume 时由用户校正过的字段置为 True）
+    user_confirmed = models.BooleanField(
+        '用户已确认', default=False,
+        help_text='用户在 HITL 校正中确认或修改过该字段则为 True（首次抽取默认 False）'
+    )
+    confirmed_at = models.DateTimeField(
+        '确认时间', null=True, blank=True,
+        help_text='用户确认时间（ISO 8601），未确认时为 null'
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
@@ -575,6 +592,11 @@ class ComplaintTemplate(models.Model):
         '语气', max_length=20, blank=True, default='',
         help_text='LLM 生成的语气（firm/restrained/neutral），由工作流写入'
     )
+    # Task 4.1.1：段落级证据引用（含 content / evidence_codes / legal_references / source_regions）
+    paragraphs = models.JSONField(
+        '段落结构', default=list, blank=True,
+        help_text='文书段落列表，每段含 content / evidence_codes / legal_references / source_regions'
+    )
 
     class Meta:
         verbose_name = '投诉模板'
@@ -644,6 +666,11 @@ class RespondTemplate(models.Model):
     tone = models.CharField(
         '语气', max_length=20, blank=True, default='',
         help_text='LLM 生成的语气（firm/restrained/neutral），由工作流写入'
+    )
+    # Task 4.1.1：段落级证据引用（含 content / evidence_codes / legal_references / source_regions）
+    paragraphs = models.JSONField(
+        '段落结构', default=list, blank=True,
+        help_text='文书段落列表，每段含 content / evidence_codes / legal_references / source_regions'
     )
 
     class Meta:
@@ -891,3 +918,425 @@ class PlatformRule(models.Model):
             'handling_process': self.handling_process,
             'source_url': self.source_url,
         }
+
+
+class WorkflowRun(models.Model):
+    """工作流运行实例（一个 Case 可有多次运行历史）。"""
+
+    STATUS_CHOICES = [
+        ('queued', '排队中'),
+        ('running', '运行中'),
+        ('pausing', '暂停中'),
+        ('waiting_user', '等待用户介入'),
+        ('succeeded', '成功完成'),
+        ('failed', '失败'),
+        ('cancelled', '已取消'),
+    ]
+
+    # 关联
+    case = models.ForeignKey(
+        Case, on_delete=models.CASCADE, related_name='workflow_runs',
+        verbose_name='关联案件'
+    )
+    parent_run = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, related_name='forked_runs',
+        null=True, blank=True,
+        verbose_name='父运行（局部重跑 fork 自）',
+        help_text='Task 3.3 RetryService fork 出的运行指向原运行'
+    )
+
+    # LangGraph 持久化
+    thread_id = models.CharField(
+        'LangGraph Thread ID', max_length=100, unique=True, db_index=True,
+        help_text='格式 case-{case_id}-run-{run_id}，每个 WorkflowRun 独立 thread_id（对齐 langgraph-persistence skill）'
+    )
+
+    # 版本快照（启动时记录，对齐 spec.md E 节）
+    workflow_version = models.CharField('工作流版本', max_length=20, default='')
+    state_schema_version = models.IntegerField('State schema 版本', default=1)
+    policy_version = models.CharField('策略版本', max_length=20, default='')
+    prompt_bundle_version = models.CharField('Prompt bundle 版本', max_length=20, default='')
+
+    # 运行状态
+    status = models.CharField(
+        '运行状态', max_length=20, choices=STATUS_CHOICES, default='queued', db_index=True
+    )
+    current_stage = models.CharField('当前业务阶段', max_length=64, blank=True, default='')
+    current_node = models.CharField('当前节点名', max_length=64, blank=True, default='')
+    progress = models.FloatField('进度', default=0.0)
+    revision = models.PositiveIntegerField('State revision', default=0)
+
+    # 启动配置
+    selected_evidence_ids = models.JSONField(
+        '选中的证据 ID', default=list, blank=True,
+        help_text='空列表表示处理案件全部有图证据'
+    )
+    run_options = models.JSONField(
+        '运行选项', default=dict, blank=True,
+        help_text='如 {"template_type": "platform", "case_mode": "complain"}'
+    )
+
+    # 结果摘要
+    quality_summary = models.JSONField(
+        '质量摘要', default=dict, blank=True,
+        help_text='聚合各阶段质量评分 {stage: {score, coverage, status, blocking_issues}}'
+    )
+    error_message = models.TextField('错误信息', blank=True, default='')
+
+    # 时间戳
+    started_at = models.DateTimeField('开始时间', null=True, blank=True)
+    finished_at = models.DateTimeField('结束时间', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    # 发起人
+    started_by_id = models.IntegerField('发起用户 ID', null=True, blank=True)
+
+    class Meta:
+        verbose_name = '工作流运行'
+        verbose_name_plural = '工作流运行'
+        db_table = 'workflow_run'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['case', 'status']),
+            models.Index(fields=['status', 'started_at']),
+        ]
+
+    def __str__(self):
+        return f'WorkflowRun(#{self.id}, case={self.case_id}, status={self.status})'
+
+    def save(self, *args, **kwargs):
+        """首次保存时自动生成 thread_id（如未指定）+ 注入版本快照。"""
+        is_new = self._state.adding
+        if is_new and not self.thread_id:
+            # 先保存获取自增 ID，再生成 thread_id 并更新
+            super().save(*args, **kwargs)
+            self.thread_id = f'case-{self.case_id}-run-{self.id}'
+            # 注入版本快照（若未指定）
+            if not self.workflow_version:
+                from api.agents.version import WorkflowVersion
+                self.workflow_version = WorkflowVersion.WORKFLOW_VERSION
+                self.state_schema_version = WorkflowVersion.STATE_SCHEMA_VERSION
+                self.policy_version = WorkflowVersion.POLICY_VERSION
+                self.prompt_bundle_version = WorkflowVersion.PROMPT_BUNDLE_VERSION
+            super().save(update_fields=['thread_id', 'workflow_version', 'state_schema_version', 'policy_version', 'prompt_bundle_version'])
+            return
+        # 已有记录或已指定 thread_id：常规保存
+        if is_new and not self.workflow_version:
+            from api.agents.version import WorkflowVersion
+            self.workflow_version = WorkflowVersion.WORKFLOW_VERSION
+            self.state_schema_version = WorkflowVersion.STATE_SCHEMA_VERSION
+            self.policy_version = WorkflowVersion.POLICY_VERSION
+            self.prompt_bundle_version = WorkflowVersion.PROMPT_BUNDLE_VERSION
+        super().save(*args, **kwargs)
+
+
+class WorkflowArtifact(models.Model):
+    """工作流产物（节点输出物）。"""
+
+    ARTIFACT_TYPE_CHOICES = [
+        ('preclassify_result', '预分类结果'),
+        ('ocr_result', 'OCR 结果'),
+        ('classify_result', '分类结果'),
+        ('extract_result', '抽取结果'),
+        ('review_result', '审核结果'),
+        ('evidence_chain', '证据链'),
+        ('complaint_draft', '投诉文书草稿'),
+        ('respond_complaint_draft', '答辩书草稿'),
+    ]
+    STAGE_CHOICES = [
+        ('material_understanding', '材料理解'),
+        ('fact_checking', '事实核对'),
+        ('case_organization', '案件组织'),
+        ('document_generation', '文书生成'),
+    ]
+    STATUS_CHOICES = [
+        ('current', '当前有效'),
+        ('stale', '已过期'),
+        ('superseded', '已替代'),
+    ]
+
+    # 关联
+    workflow_run = models.ForeignKey(
+        WorkflowRun, on_delete=models.CASCADE, related_name='artifacts',
+        verbose_name='关联运行'
+    )
+    case = models.ForeignKey(
+        Case, on_delete=models.CASCADE, related_name='workflow_artifacts',
+        verbose_name='关联案件（冗余便于查询）'
+    )
+    evidence_id = models.IntegerField(
+        '关联证据 ID', null=True, blank=True,
+        help_text='产物关联的具体证据 ID（如为多证据聚合产物则为 null）'
+    )
+
+    # 产物元数据
+    artifact_type = models.CharField(
+        '产物类型', max_length=32, choices=ARTIFACT_TYPE_CHOICES, db_index=True
+    )
+    stage = models.CharField(
+        '所属业务阶段', max_length=32, choices=STAGE_CHOICES, db_index=True
+    )
+    node_name = models.CharField('生成节点名', max_length=64, blank=True, default='')
+    version = models.IntegerField('产物版本', default=1, help_text='同类型同证据的版本号（自增）')
+    revision = models.IntegerField('State revision', default=0)
+    status = models.CharField(
+        '产物状态', max_length=16, choices=STATUS_CHOICES, default='current', db_index=True
+    )
+
+    # 产物内容
+    content = models.JSONField('产物内容', default=dict, help_text='节点 NodeResult.data 的快照')
+    summary = models.JSONField(
+        '业务摘要', default=dict, blank=True,
+        help_text='前端卡片展示用摘要 {title, key_metrics, highlights}'
+    )
+    quality = models.JSONField(
+        '质量评分', default=dict, blank=True,
+        help_text='NodeResult.quality 的快照 {score, coverage, status, blocking_issues, details}'
+    )
+    provenance = models.JSONField(
+        '数据来源', default=list, blank=True,
+        help_text='NodeResult.provenance 列表快照'
+    )
+    source_refs = models.JSONField(
+        '上游依赖', default=list, blank=True,
+        help_text='上游 WorkflowArtifact ID 列表，用于 stale 传播'
+    )
+    metrics = models.JSONField(
+        '指标', default=dict, blank=True,
+        help_text='NodeResult.metrics 快照 {duration_ms, model_calls, tokens}'
+    )
+    metadata = models.JSONField(
+        '元数据', default=dict, blank=True,
+        help_text='产物级元数据（Task 5.2.3：迁移失败时写入 {readonly: True, readonly_reason: ...}）'
+    )
+
+    # 时间戳
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+    stale_at = models.DateTimeField('过期时间', null=True, blank=True, help_text='标记为 stale 的时间')
+
+    class Meta:
+        verbose_name = '工作流产物'
+        verbose_name_plural = '工作流产物'
+        db_table = 'workflow_artifact'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['workflow_run', 'artifact_type', 'status']),
+            models.Index(fields=['case', 'artifact_type', 'status']),
+            models.Index(fields=['evidence_id', 'artifact_type']),
+        ]
+
+    def __str__(self):
+        return f'WorkflowArtifact(#{self.id}, run={self.workflow_run_id}, type={self.artifact_type})'
+
+
+class WorkflowIntervention(models.Model):
+    """工作流介入记录（HITL 暂停 + 用户提交）。
+
+    统一管理 review.interrupt（quality_review）和 stage_pause（user_pause）两类介入。
+    幂等性约束：按 (workflow_run + intervention_type + stage + base_revision) 唯一约束，
+    resume 时使用 update_or_create 避免重复创建。
+
+    Task 3.1 重构：新增 workflow_run 外键（替代 case 外键），case 字段保留为冗余
+    便于按 case 查询历史介入。submit_intervention 从 workflow_run.revision 读取
+    当前 revision 进行冲突检测（如 workflow_run 为 None 则回退到 case.workflow_revision）。
+    """
+
+    INTERVENTION_TYPE_CHOICES = [
+        ('quality_review', '质量审核'),
+        ('user_pause', '用户暂停'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', '等待用户提交'),
+        ('submitted', '已提交'),
+        ('cancelled', '已取消'),
+        ('expired', '已过期'),
+    ]
+
+    # Task 3.1：新增 workflow_run 外键（替代 case 作为主关联）
+    workflow_run = models.ForeignKey(
+        'WorkflowRun', on_delete=models.CASCADE, related_name='interventions',
+        verbose_name='关联工作流运行',
+        null=True, blank=True,  # 兼容旧记录
+        help_text='Task 3.1 后替代 case 外键'
+    )
+
+    # 保留 case 外键用于向后兼容查询（denormalized，从 workflow_run.case 派生）
+    case = models.ForeignKey(
+        Case, on_delete=models.CASCADE, related_name='interventions',
+        verbose_name='关联案件（冗余）',
+        null=True, blank=True,  # 兼容旧记录
+        help_text='Task 3.1 后冗余字段，从 workflow_run.case 派生'
+    )
+
+    # 介入元数据
+    intervention_type = models.CharField(
+        '介入类型', max_length=32, choices=INTERVENTION_TYPE_CHOICES,
+        help_text='介入类型：quality_review / user_pause',
+    )
+    stage = models.CharField(
+        '触发阶段', max_length=64,
+        help_text='触发阶段，如 extract / evidence_chain / stage_gate_after_extract',
+    )
+    status = models.CharField(
+        '介入状态', max_length=16, choices=STATUS_CHOICES, default='pending',
+    )
+    base_revision = models.IntegerField(
+        '触发时 revision', default=0,
+        help_text='触发时的 state.revision，用于冲突检测',
+    )
+
+    # 介入表单与数据
+    form_schema = models.JSONField(
+        '表单 schema', default=dict,
+        help_text='前端动态表单 schema',
+    )
+    initial_values = models.JSONField(
+        '初始值', default=dict,
+        help_text='初始值（节点产出供用户编辑）',
+    )
+    impact = models.JSONField(
+        '影响范围', default=dict,
+        help_text='影响范围描述（下游哪些节点会重跑）',
+    )
+
+    # 用户提交数据
+    submitted_values = models.JSONField(
+        '用户提交值', default=dict, blank=True,
+        help_text='用户提交的值（提交后填充）',
+    )
+
+    # 时间戳
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    submitted_at = models.DateTimeField('提交时间', null=True, blank=True)
+    cancelled_at = models.DateTimeField('取消时间', null=True, blank=True)
+    expires_at = models.DateTimeField(
+        '过期时间', null=True, blank=True,
+        help_text='过期时间（默认 base_revision + 24h）',
+    )
+
+    # 审计
+    created_by_id = models.IntegerField(
+        '创建用户 ID', null=True, blank=True,
+    )
+    submitted_by_id = models.IntegerField(
+        '提交用户 ID', null=True, blank=True,
+    )
+
+    class Meta:
+        verbose_name = '工作流介入记录'
+        verbose_name_plural = '工作流介入记录'
+        db_table = 'workflow_intervention'
+        # Task 3.1：幂等性约束改为基于 workflow_run（替代旧 case 唯一约束）
+        unique_together = [
+            ('workflow_run', 'intervention_type', 'stage', 'base_revision'),
+        ]
+        indexes = [
+            # 旧 case 唯一约束改为辅助索引（便于按 case 查询历史介入）
+            models.Index(
+                fields=['case', 'intervention_type', 'stage', 'base_revision'],
+                name='workflow_in_case_lookup_idx',
+            ),
+            models.Index(fields=['case', 'status']),
+            models.Index(fields=['intervention_type', 'status']),
+            models.Index(fields=['workflow_run', 'status']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (
+            f'WorkflowIntervention(workflow_run={self.workflow_run_id}, '
+            f'case={self.case_id}, '
+            f'type={self.intervention_type}, stage={self.stage}, '
+            f'status={self.status})'
+        )
+
+
+class DocumentVersion(models.Model):
+    """文书版本（记录每次生成 / 用户修改的版本）。
+
+    Task 4.1.2：每个 case 的每个 document_type 维护独立版本号序列。
+    段落级结构存储在 paragraphs 字段，含 evidence_codes / legal_references /
+    source_regions，支持段落级证据引用与局部重新生成。
+    审计字段 workflow_version 满足 spec.md E 节「历史文书版本记录生成时的
+    workflow_version」需求。
+    """
+
+    DOCUMENT_TYPE_CHOICES = [
+        ('complaint', '投诉文书'),
+        ('respond_complaint', '答辩文书'),
+    ]
+    CREATED_BY_TYPE_CHOICES = [
+        ('ai', 'AI 生成'),
+        ('user', '用户修改'),
+        ('system', '系统调整'),
+    ]
+
+    # 关联
+    case = models.ForeignKey(
+        Case, on_delete=models.CASCADE, related_name='document_versions',
+        verbose_name='关联案件'
+    )
+    workflow_run = models.ForeignKey(
+        'WorkflowRun', on_delete=models.SET_NULL, related_name='document_versions',
+        null=True, blank=True,
+        verbose_name='关联工作流运行'
+    )
+    complaint_template = models.ForeignKey(
+        ComplaintTemplate, on_delete=models.SET_NULL, related_name='versions',
+        null=True, blank=True,
+        verbose_name='关联投诉模板'
+    )
+    respond_template = models.ForeignKey(
+        RespondTemplate, on_delete=models.SET_NULL, related_name='versions',
+        null=True, blank=True,
+        verbose_name='关联答辩模板'
+    )
+
+    # 版本信息
+    document_type = models.CharField(
+        '文书类型', max_length=20, choices=DOCUMENT_TYPE_CHOICES, db_index=True
+    )
+    version = models.IntegerField(
+        '版本号', default=1, help_text='同类型同 case 的版本号（自增）'
+    )
+    title = models.CharField('标题', max_length=200, blank=True, default='')
+    content = models.TextField('正文内容')
+    paragraphs = models.JSONField(
+        '段落结构', default=list, blank=True,
+        help_text='段落级结构（含 evidence_codes / legal_references / source_regions）'
+    )
+    changelog = models.TextField(
+        '变更说明', blank=True, default='', help_text='本版本相对上一版本的变更说明'
+    )
+
+    # 创建者
+    created_by_type = models.CharField(
+        '创建者类型', max_length=10, choices=CREATED_BY_TYPE_CHOICES, default='ai'
+    )
+    created_by_id = models.IntegerField('创建者 ID', null=True, blank=True)
+
+    # 审计
+    workflow_version = models.CharField(
+        '工作流版本', max_length=20, blank=True, default='',
+        help_text='生成时的 workflow_version（满足审计需求，对齐 spec.md E 节）'
+    )
+
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '文书版本'
+        verbose_name_plural = '文书版本'
+        db_table = 'document_version'
+        ordering = ['-version']
+        indexes = [
+            models.Index(fields=['case', 'document_type', 'version']),
+            models.Index(fields=['workflow_run', 'document_type']),
+        ]
+
+    def __str__(self):
+        return (
+            f'DocumentVersion(#{self.id}, case={self.case_id}, '
+            f'type={self.document_type}, v{self.version})'
+        )

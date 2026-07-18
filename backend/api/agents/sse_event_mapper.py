@@ -28,11 +28,81 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# ===== Task 1.3.4: 统一信封事件类型枚举（字符串常量） =====
+# 命名规则：<域>.<动作>，与 spec 5.3 节事件契约一致。
+# 旧事件类型通过 map_legacy_event_type() 映射到这些常量；新代码应直接使用这些常量。
+
+# 阶段事件（业务阶段 = 材料理解 / 事实核对 / 案件组织 / 文书生成）
+EVENT_STAGE_STARTED = "stage.started"
+EVENT_STAGE_PROGRESS = "stage.progress"
+EVENT_STAGE_COMPLETED = "stage.completed"
+EVENT_STAGE_QUALITY_CHANGED = "stage.quality_changed"
+
+# 产物事件（WorkflowArtifact 状态变更）
+EVENT_ARTIFACT_CREATED = "artifact.created"
+EVENT_ARTIFACT_UPDATED = "artifact.updated"
+EVENT_ARTIFACT_STALE = "artifact.stale"
+
+# 用户介入事件（Task 2.1 WorkflowIntervention）
+EVENT_INTERVENTION_CREATED = "intervention.created"
+EVENT_INTERVENTION_SUBMITTED = "intervention.submitted"
+EVENT_INTERVENTION_CANCELLED = "intervention.cancelled"
+
+# 文书流式事件
+EVENT_DOCUMENT_DELTA = "document.delta"
+EVENT_DOCUMENT_COMPLETED = "document.completed"
+
+# 问题事件（Issue 阻塞/警告/提示）
+EVENT_ISSUE_CREATED = "issue.created"
+EVENT_ISSUE_RESOLVED = "issue.resolved"
+
+
+# ===== Task 1.3.4: 旧 → 新事件类型映射表 =====
+# 向后兼容：WorkflowRunner 仍发出旧事件类型（workflow.start / complaint.token 等），
+# 通过 map_legacy_event_type() 转换为新统一信封类型；原类型保留在 payload.legacy_event_type。
+LEGACY_EVENT_TYPE_MAP: dict[str, str] = {
+    "workflow.start": EVENT_STAGE_STARTED,
+    "workflow.resumed": EVENT_STAGE_STARTED,
+    "workflow.paused": EVENT_INTERVENTION_CREATED,
+    "workflow.waiting_review": EVENT_INTERVENTION_CREATED,
+    "workflow.complete": EVENT_STAGE_COMPLETED,
+    "workflow.error": EVENT_ISSUE_CREATED,
+    "complaint.token": EVENT_DOCUMENT_DELTA,
+    "complaint.completed": EVENT_DOCUMENT_COMPLETED,
+    "review.skipped": EVENT_STAGE_COMPLETED,
+    "review.resumed": EVENT_INTERVENTION_SUBMITTED,
+    # 其他事件类型（node.start / node.complete / node.progress / node.error /
+    # review.interrupt / complaint.done）保持原样，待 Task 2.x/3.x 节点升级时再映射。
+}
+
+
+def map_legacy_event_type(old_type: str) -> str:
+    """旧 → 新事件类型映射（向后兼容）。
+
+    Args:
+        old_type: WorkflowRunner / SSEEventMapper 当前发出的旧事件类型字符串
+
+    Returns:
+        新统一信封事件类型；不在映射表中的旧类型原样返回（保留兼容）。
+    """
+    return LEGACY_EVENT_TYPE_MAP.get(old_type, old_type)
+
+
 @dataclass
 class SSEEvent:
-    """SSE 事件数据结构（type + payload）。"""
+    """SSE 事件数据结构（type + payload + 统一信封字段）。
+
+    Task 1.3.2: 新增 run_id / revision / occurred_at 三个字段，默认 None 保持向后兼容。
+    - run_id: WorkflowRun.id（Task 3.1 引入前为 None，标注 TODO）
+    - revision: 工作流 state.revision 快照（用于前端检测跳跃重取 Snapshot）
+    - occurred_at: 业务发生时间 ISO 8601 字符串（统一信封字段，区别于 DB 写入时间 created_at）
+    """
     type: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # Task 1.3.2: 统一信封字段（默认 None 保持向后兼容）
+    run_id: int | None = None
+    revision: int | None = None
+    occurred_at: str | None = None
 
 
 def _utcnow_iso() -> str:
@@ -88,12 +158,22 @@ class SSEEventMapper:
         （complaint / respond_complaint 节点额外产生 complaint.done）。
         on_custom_event 产生 node.progress 里程碑通知。
 
+        Task 1.3.2 + 1.3.4: 返回前对每个 SSEEvent 应用统一信封字段
+        （run_id / revision / occurred_at）+ 调用 map_legacy_event_type 计算
+        新事件类型（保留旧类型在 payload.legacy_event_type 供调试）。
+
         Args:
             raw_event: astream_events(v2) 产生的原始事件 dict
 
         Returns:
             SSE 事件列表（可能为空）
         """
+        sse_events = self._map_raw(raw_event)
+        # 后处理：填充统一信封字段 + 事件类型映射（Task 1.3.2 + 1.3.4）
+        return [self._apply_envelope(e) for e in sse_events]
+
+    def _map_raw(self, raw_event: dict) -> list[SSEEvent]:
+        """原始事件过滤映射的纯逻辑（不含统一信封后处理）。"""
         event_type: str = raw_event.get("event", "")
         name: str = raw_event.get("name", "")
         data: dict = raw_event.get("data", {}) or {}
@@ -151,6 +231,31 @@ class SSEEventMapper:
 
         # 其他事件过滤掉（on_chain_start/end 命中非节点、on_chat_model_start 等）
         return []
+
+    def _apply_envelope(self, sse_event: SSEEvent) -> SSEEvent:
+        """Task 1.3.2 + 1.3.4: 对 SSEEvent 应用统一信封字段 + 事件类型映射。
+
+        - 调用 map_legacy_event_type 计算新事件类型（SubTask 1.3.4 要求）
+        - 保留旧类型在 payload.legacy_event_type 供调试
+        - 新事件类型存入 payload.mapped_event_type 供下游/前端过渡使用
+        - 填充 occurred_at（若未设置）
+        - run_id / revision 保持 None（Task 3.1 / 2.4 引入后由调用方注入）
+
+        注意：SSEEvent.type 本身保留旧类型字符串，以保持向后兼容：
+          - WorkflowRunner.flush_tokens 依赖 sse_event.type == "complaint.token"
+            做 token 批量聚合（不破坏现有事件流，对齐约束 #2）
+          - 前端 EventSource.addEventListener 仍按旧类型注册
+          - 新类型通过 payload.mapped_event_type 暴露，前端可在 Task 1.11+ 切换
+        """
+        mapped_type = map_legacy_event_type(sse_event.type)
+        if isinstance(sse_event.payload, dict):
+            # setdefault 避免覆盖调用方显式设置的值
+            sse_event.payload.setdefault("legacy_event_type", sse_event.type)
+            sse_event.payload.setdefault("mapped_event_type", mapped_type)
+        if not sse_event.occurred_at:
+            sse_event.occurred_at = _utcnow_iso()
+        # run_id / revision: Task 3.1 / 2.4 引入后由 WorkflowRunner 注入，此处保持 None
+        return sse_event
 
     def _map_custom_event(self, name: str, data: dict) -> list[SSEEvent]:
         """映射 on_custom_event 为 SSE 事件（node.progress 或 review.skipped）。

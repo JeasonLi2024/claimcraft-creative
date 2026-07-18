@@ -217,6 +217,21 @@ export type EventType =
   | "review.interrupt"
   | "review.resumed"
   | "review.skipped"
+  // Task 3.5 / 1.3：业务阶段级事件类型（对齐 spec SSE Event Types）
+  | "stage.started"
+  | "stage.progress"
+  | "stage.completed"
+  | "stage.quality_changed"
+  | "artifact.created"
+  | "artifact.updated"
+  | "artifact.stale"
+  | "intervention.created"
+  | "intervention.submitted"
+  | "intervention.cancelled"
+  | "document.delta"
+  | "document.completed"
+  | "issue.created"
+  | "issue.resolved"
 
 export interface WorkflowReplay {
   case_id: number
@@ -233,7 +248,12 @@ export interface WorkflowReplay {
 export interface SSEEvent {
   event_id: number
   event_type: EventType
+  // 统一信封新增字段（向后兼容，可选）
+  run_id?: number | null
   thread_id?: string
+  revision?: number | null
+  occurred_at?: string // ISO 8601
+  // 旧字段保留（向后兼容）
   timestamp?: string
   [key: string]: unknown
 }

@@ -123,7 +123,7 @@ class AgentMailCLIProvider(BaseMailProvider):
         return True, ''
 
     def _run_command(self, args: list[str]) -> subprocess.CompletedProcess:
-        logger.info('agent_mail_cli_exec', extra={'args': args})
+        logger.info('agent_mail_cli_exec', extra={'cli_args': args})
         command_env = os.environ.copy()
         if self.home_dir:
             appdata_dir = os.path.join(self.home_dir, 'AppData', 'Roaming')

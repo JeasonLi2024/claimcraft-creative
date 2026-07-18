@@ -1,6 +1,36 @@
 # -*- coding: utf-8 -*-
-"""案件生命周期与工作流状态的统一事务服务。"""
+"""案件生命周期与工作流状态的统一事务服务。
+
+Task 3.4.2 兼容策略（Case.workflow_status 枚举统一）：
+========================================
+
+背景：spec.md MODIFIED Requirements: Case Workflow Status 要求将
+`Case.workflow_status` 枚举从旧值
+`idle / running / pausing / paused / waiting_review / succeeded / failed`
+统一为新值
+`idle / queued / running / pausing / waiting_user / succeeded / failed / cancelled`
+（`paused` + `waiting_review` 合并为 `waiting_user`，新增 `queued` / `cancelled`）。
+
+实施策略（避免破坏旧 API + 避免数据库迁移）：
+1. **不修改 `Case.WORKFLOW_STATUS_CHOICES` 与 `Case.workflow_status` 字段**：
+   `Case.workflow_status` 继续存储旧值（idle / running / pausing / paused /
+   waiting_review / succeeded / failed），不触发 Django 迁移，不影响旧数据。
+2. **`WorkflowRun.status` 已使用新枚举**（Task 3.1 已落地）。
+3. **旧 API 端点（`/cases/<id>/workflow/*`）直接返回 `Case.workflow_status` 旧值**，
+   不做转换，保持 100% 向后兼容。
+4. **新 API 端点（Task 3.2 的 `/workflow-runs/*`）在序列化 `Case.workflow_status`
+   时调用 `map_legacy_status_to_new()` 转换为新值返回**；新 API 内部使用
+   `WorkflowRun.status`（新枚举），仅在需要回填 Case 旧字段时调用
+   `map_workflow_status_to_legacy()` 转回旧值。
+5. **`waiting_user` 反向映射需 `intervention_type` 区分**：
+   - `user_pause` → 旧 `paused`
+   - `quality_review` → 旧 `waiting_review`
+   - `None` / 其他 → 默认 `paused`
+
+参见 `map_workflow_status_to_legacy()` / `map_legacy_status_to_new()`。
+"""
 from dataclasses import dataclass
+from typing import Optional
 
 from django.db import transaction
 from django.utils import timezone
@@ -312,6 +342,108 @@ def mark_document_stale(case_id: int) -> None:
     Case.objects.filter(pk=case_id, status='submitted').update(document_stale=True)
 
 
+# ===== Task 3.1：WorkflowRun 状态转换函数（不删除现有 Case 状态转换函数，保留双写兼容）=====
+
+
+def start_workflow_run(run_id: int, started_at=None) -> None:
+    """启动 WorkflowRun：status=running, started_at=now。
+
+    Args:
+        run_id: WorkflowRun ID
+        started_at: 启动时间（None 表示当前时间）
+    """
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(
+        status='running',
+        started_at=started_at or timezone.now(),
+    )
+
+
+def pause_workflow_run(run_id: int) -> None:
+    """暂停 WorkflowRun：status=pausing。"""
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(status='pausing')
+
+
+def wait_user_workflow_run(run_id: int) -> None:
+    """WorkflowRun 进入等待用户介入：status=waiting_user。"""
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(status='waiting_user')
+
+
+def complete_workflow_run(run_id: int, quality_summary: dict = None) -> None:
+    """WorkflowRun 成功完成：status=succeeded, finished_at=now。
+
+    Args:
+        run_id: WorkflowRun ID
+        quality_summary: 质量摘要（可选）
+    """
+    from api.models import WorkflowRun
+    update_fields = {
+        'status': 'succeeded',
+        'finished_at': timezone.now(),
+    }
+    if quality_summary:
+        update_fields['quality_summary'] = quality_summary
+    WorkflowRun.objects.filter(pk=run_id).update(**update_fields)
+
+
+def fail_workflow_run(run_id: int, error_message: str) -> None:
+    """WorkflowRun 失败：status=failed, finished_at=now, error_message=str(e)。
+
+    Args:
+        run_id: WorkflowRun ID
+        error_message: 错误信息（截断至 2000 字符）
+    """
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(
+        status='failed',
+        finished_at=timezone.now(),
+        error_message=(error_message or '')[:2000],
+    )
+
+
+def cancel_workflow_run(run_id: int) -> None:
+    """WorkflowRun 取消：status=cancelled, finished_at=now。"""
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(
+        status='cancelled',
+        finished_at=timezone.now(),
+    )
+
+
+def update_run_progress(
+    run_id: int,
+    *,
+    revision: int = None,
+    current_stage: str = None,
+    current_node: str = None,
+    progress: float = None,
+) -> None:
+    """增量更新 WorkflowRun 进度字段（仅更新非 None 字段）。
+
+    Args:
+        run_id: WorkflowRun ID
+        revision: state revision（可选）
+        current_stage: 当前业务阶段（可选）
+        current_node: 当前节点名（可选）
+        progress: 进度 0.0-1.0（可选）
+    """
+    fields: dict = {}
+    if revision is not None:
+        fields['revision'] = revision
+    if current_stage is not None:
+        fields['current_stage'] = current_stage
+    if current_node is not None:
+        fields['current_node'] = current_node
+    if progress is not None:
+        fields['progress'] = progress
+    if not fields:
+        return
+    from api.models import WorkflowRun
+    WorkflowRun.objects.filter(pk=run_id).update(**fields)
+
+
 def get_case_progress(case: Case) -> dict:
     """根据真实业务数据计算工作台进度和下一步动作。"""
     evidence_done = case.evidences.exists()
@@ -348,3 +480,71 @@ def get_case_progress(case: Case) -> dict:
         'next_action': next_action,
         'can_archive': document_done and masking_done and case.workflow_status not in NON_ARCHIVABLE_WORKFLOW_STATUSES and case.status == 'submitted',
     }
+
+
+# ===== Task 3.4.2: Case.workflow_status 枚举映射（旧值 ↔ 新值）=====
+#
+# 兼容策略详见模块 docstring。
+# - Case.workflow_status 字段保持旧值不变（不修改 choices，不触发迁移）
+# - WorkflowRun.status 使用新枚举（Task 3.1 已落地）
+# - 旧 API 直接返回旧值；新 API 通过 map_legacy_status_to_new() 转换后返回
+# - waiting_user 反向映射需 intervention_type 区分 paused / waiting_review
+
+
+# 旧 → 新状态映射（向后兼容）
+LEGACY_TO_NEW_STATUS = {
+    'idle': 'idle',
+    'running': 'running',
+    'pausing': 'pausing',
+    'paused': 'waiting_user',
+    'waiting_review': 'waiting_user',
+    'succeeded': 'succeeded',
+    'failed': 'failed',
+}
+
+NEW_TO_LEGACY_STATUS_DEFAULT = {
+    'idle': 'idle',
+    'queued': 'idle',
+    'running': 'running',
+    'pausing': 'pausing',
+    'waiting_user': 'paused',  # 默认映射为 paused，具体可由 intervention_type 区分
+    'succeeded': 'succeeded',
+    'failed': 'failed',
+    'cancelled': 'failed',
+}
+
+
+def map_workflow_status_to_legacy(status: str, intervention_type: Optional[str] = None) -> str:
+    """新状态 → 旧状态映射（旧 API 兼容）。
+
+    Args:
+        status: 新状态值（idle / queued / running / pausing / waiting_user /
+            succeeded / failed / cancelled）
+        intervention_type: 介入类型（用于区分 paused / waiting_review），仅在
+            `status='waiting_user'` 时生效：
+            - 'user_pause' → 旧 'paused'
+            - 'quality_review' → 旧 'waiting_review'
+            - None / 其他 → 默认 'paused'
+
+    Returns:
+        旧状态值。未知新状态原样返回（防御性 fallback）。
+    """
+    if status == 'waiting_user':
+        if intervention_type == 'quality_review':
+            return 'waiting_review'
+        return 'paused'
+    return NEW_TO_LEGACY_STATUS_DEFAULT.get(status, status)
+
+
+def map_legacy_status_to_new(legacy_status: str) -> str:
+    """旧状态 → 新状态映射。
+
+    Args:
+        legacy_status: 旧状态值（idle / running / pausing / paused /
+            waiting_review / succeeded / failed）
+
+    Returns:
+        新状态值。`paused` 与 `waiting_review` 都映射为 `waiting_user`；
+        未知旧状态原样返回（防御性 fallback）。
+    """
+    return LEGACY_TO_NEW_STATUS.get(legacy_status, legacy_status)

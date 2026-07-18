@@ -64,6 +64,19 @@ from api.views import (
     CaseTypePresetListView,
     ApplyPresetView,
     StatsView,
+    submit_intervention_view,
+    # Task 3.2：/workflow-runs/* 新统一接口
+    WorkflowRunCreateView,
+    WorkflowRunSnapshotView,
+    WorkflowRunPauseView,
+    WorkflowRunInterventionSubmitView,
+    WorkflowRunRetryView,
+    WorkflowRunCancelView,
+    CaseWorkflowRunsListView,
+    # Task 4.1.4：段落级重新生成
+    DocumentParagraphRegenerateView,
+    # Task 4.2.4：导出前质量门检查
+    DocumentExportCheckView,
 )
 
 urlpatterns = [
@@ -113,6 +126,8 @@ urlpatterns = [
     path('cases/<int:pk>/workflow/start/', CaseWorkflowStartView.as_view()),
     path('cases/<int:pk>/workflow/stream/', CaseWorkflowStreamView.as_view()),
     path('cases/<int:pk>/workflow/resume/', CaseWorkflowResumeView.as_view()),
+    # Task 2.4：介入提交占位端点（Task 3.2 迁移到 /workflow-runs/{run_id}/...）
+    path('cases/<int:case_id>/interventions/<int:intervention_id>/submit/', submit_intervention_view),
     # 既有路由
     path('cases/<int:pk>/', CaseDetailView.as_view()),
     path('cases/<int:case_id>/evidences/', EvidenceListCreateView.as_view()),
@@ -134,4 +149,36 @@ urlpatterns = [
     path('cases/<int:pk>/apply-preset/', ApplyPresetView.as_view()),
     # Task 28：数据统计仪表盘
     path('stats/dashboard/', StatsView.as_view()),
+    # ===== Task 3.2：/workflow-runs/* 新统一接口（保留旧 /cases/<id>/workflow/* 兼容）=====
+    # SubTask 3.2.1：创建工作流运行（POST /api/cases/{case_id}/workflow-runs/）
+    path('cases/<int:case_id>/workflow-runs/', WorkflowRunCreateView.as_view()),
+    # SubTask 3.2.7：历史运行列表（GET /api/cases/{case_id}/workflow-runs/list/）
+    #   注：与 SubTask 3.2.1 共用同一路径前缀，但用 list/ 后缀避免与 POST 根路径冲突。
+    #   GET 默认会路由到 WorkflowRunCreateView（不支持 get 方法），故独立路由。
+    path('cases/<int:case_id>/workflow-runs/list/', CaseWorkflowRunsListView.as_view()),
+    # SubTask 3.2.2：获取权威快照
+    path('workflow-runs/<int:run_id>/snapshot/', WorkflowRunSnapshotView.as_view()),
+    # SubTask 3.2.3：请求暂停
+    path('workflow-runs/<int:run_id>/pause/', WorkflowRunPauseView.as_view()),
+    # SubTask 3.2.4：提交介入（含 409 冲突响应）
+    path(
+        'workflow-runs/<int:run_id>/interventions/<int:intervention_id>/submit/',
+        WorkflowRunInterventionSubmitView.as_view(),
+    ),
+    # SubTask 3.2.5：局部重跑
+    path('workflow-runs/<int:run_id>/retry/', WorkflowRunRetryView.as_view()),
+    # SubTask 3.2.6：取消运行
+    path('workflow-runs/<int:run_id>/cancel/', WorkflowRunCancelView.as_view()),
+    # ===== Task 4.1.4：段落级重新生成（专业文书工作台）=====
+    path(
+        'workflow-runs/<int:run_id>/documents/<int:document_id>/paragraphs/<str:paragraph_id>/regenerate/',
+        DocumentParagraphRegenerateView.as_view(),
+        name='document-paragraph-regenerate',
+    ),
+    # ===== Task 4.2.4：导出前质量门检查 =====
+    path(
+        'workflow-runs/<int:run_id>/documents/<int:document_id>/export-check/',
+        DocumentExportCheckView.as_view(),
+        name='document-export-check',
+    ),
 ]

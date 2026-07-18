@@ -17,9 +17,16 @@ v9 重构说明（视觉预分类 + 摘要驱动）：
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from api.agents.state import CaseWorkflowState
+from api.agents.schemas import QualityReport
+from api.agents.utils.node_result_builder import (
+    build_node_result,
+    convert_string_errors_to_dicts,
+    make_node_partial_update,
+)
 from api.services import llm_service
 
 try:
@@ -65,6 +72,7 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
     preclassify_results = state.get("evidence_preclassify_results", [])
     ocr_results = state.get("evidence_ocr_results", [])
     errors = []
+    start_time = datetime.now(timezone.utc)
 
     if not preclassify_results:
         # 预分类未产出（如 Captioner 不可用），全部降级为 other
@@ -79,10 +87,45 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
             }
             for r in ocr_results
         ]
-        return {
-            "evidence_classify_results": results,
-            "errors": ["[分类] 无预分类结果，全部标记为 other"],
-        }
+        errors.append("[分类] 无预分类结果，全部标记为 other")
+        error_dicts = convert_string_errors_to_dicts(errors, stage="classify")
+        provenance = [
+            {
+                "node": "classify",
+                "evidence_id": r.get("evidence_id"),
+                "field_name": None,
+                "source_ref": f"classify:{r.get('evidence_code', '')}:other",
+                "ts": start_time.isoformat(),
+            }
+            for r in results
+        ]
+        node_result = build_node_result(
+            node_name="classify",
+            data={"evidence_count": len(results), "degraded": True},
+            quality=QualityReport(
+                score=0.0,
+                coverage=len(results) / max(len(preclassify_results), 1) if preclassify_results else 0.0,
+                status="warn",
+                blocking_issues=[],
+                details={"degraded": True, "reason": "no_preclassify"},
+            ),
+            warnings=[],
+            errors=error_dicts,
+            provenance=provenance,
+            start_time=start_time,
+            model_calls=0,
+        )
+        return make_node_partial_update(
+            node_name="classify",
+            stage="material_understanding",
+            progress=0.30,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_classify_results": results,
+                "errors": error_dicts,
+            },
+        )
 
     # 1. 筛选高/低置信度子集
     high_confidence = [r for r in preclassify_results if r.get("confidence", 0.0) >= LOW_CONFIDENCE_THRESHOLD]
@@ -134,10 +177,63 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
     classify_results.sort(key=lambda x: ocr_order.get(x["evidence_id"], 0))
 
     logger.info(f"[分类] 完成，共 {len(classify_results)} 条")
-    return {
-        "evidence_classify_results": classify_results,
-        "errors": errors,
-    }
+    # 计算 quality：平均分类置信度 + 类别分布
+    if classify_results:
+        avg_confidence = sum(r.get("confidence", 0.0) for r in classify_results) / len(classify_results)
+    else:
+        avg_confidence = 0.0
+    coverage = len(classify_results) / max(len(preclassify_results), 1)
+    quality_status = "pass" if avg_confidence >= 0.7 else "warn"
+    # 类别分布
+    category_distribution: dict[str, int] = {}
+    for r in classify_results:
+        cat = r.get("evidence_category", "other")
+        category_distribution[cat] = category_distribution.get(cat, 0) + 1
+    error_dicts = convert_string_errors_to_dicts(errors, stage="classify")
+    provenance = [
+        {
+            "node": "classify",
+            "evidence_id": r.get("evidence_id"),
+            "field_name": None,
+            "source_ref": f"classify:{r.get('evidence_code', '')}:{r.get('evidence_category', 'other')}",
+            "ts": start_time.isoformat(),
+        }
+        for r in classify_results
+    ]
+    node_result = build_node_result(
+        node_name="classify",
+        data={
+            "evidence_count": len(classify_results),
+            "avg_confidence": avg_confidence,
+            "category_distribution": category_distribution,
+        },
+        quality=QualityReport(
+            score=avg_confidence,
+            coverage=coverage,
+            status=quality_status,
+            blocking_issues=[],
+            details={
+                "avg_confidence": avg_confidence,
+                "category_distribution": category_distribution,
+            },
+        ),
+        warnings=[],
+        errors=error_dicts,
+        provenance=provenance,
+        start_time=start_time,
+        model_calls=len(low_confidence),
+    )
+    return make_node_partial_update(
+        node_name="classify",
+        stage="material_understanding",
+        progress=0.30,
+        state=state,
+        node_result=node_result,
+        legacy_fields={
+            "evidence_classify_results": classify_results,
+            "errors": error_dicts,
+        },
+    )
 
 
 async def _refine_low_confidence_batch(

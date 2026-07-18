@@ -1,5 +1,9 @@
-// HITL 校正 UI：人工审核中断时展示可编辑字段列表
-// 参考 spec 第 6.10 节
+/**
+ * @deprecated 使用 InterventionPanel 代替。本组件保留用于渐进迁移。
+ *
+ * HITL 校正 UI：人工审核中断时展示可编辑字段列表
+ * 参考 spec 第 6.10 节
+ */
 import { useState } from "react"
 import { AlertTriangle } from "lucide-react"
 import { useCaseStore } from "@/stores/case-store"
@@ -40,10 +44,14 @@ export function ReviewInterruptPanel({
     }
   }
 
+  // 表单错误关联：错误提示元素 id + 输入框 aria-describedby
+  const errorId = "review-interrupt-error"
+  const hasError = Boolean(error)
+
   return (
     <div className="border-2 border-amber-400 bg-[#FBF3DB] rounded-md p-4">
       <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="w-5 h-5 text-amber-600" />
+        <AlertTriangle className="w-5 h-5 text-amber-600" aria-hidden="true" />
         <h3 className="font-semibold text-amber-900">需要人工校正</h3>
       </div>
       {data.message && (
@@ -66,6 +74,8 @@ export function ReviewInterruptPanel({
             <input
               value={corrections[i]?.corrected_value ?? ""}
               onChange={(e) => updateCorrection(i, e.target.value)}
+              aria-invalid={hasError}
+              aria-describedby={hasError ? errorId : undefined}
               className="flex-1 text-sm border border-[#EAEAEA] rounded px-2 py-1 focus:outline-none focus:border-amber-400"
             />
           </div>
@@ -73,13 +83,13 @@ export function ReviewInterruptPanel({
       </div>
 
       {error && (
-        <p className="mt-2 text-xs text-red-600">{error}</p>
+        <p id={errorId} role="alert" className="mt-2 text-sm text-red-600">{error}</p>
       )}
 
       <button
         onClick={handleSubmit}
         disabled={submitting}
-        className="mt-3 px-4 py-2 bg-amber-600 text-white rounded text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="mt-3 inline-flex min-h-[44px] items-center justify-center rounded bg-amber-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {submitting ? "提交中..." : "提交校正并继续"}
       </button>

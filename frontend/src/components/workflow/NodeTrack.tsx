@@ -1,6 +1,7 @@
+/** @deprecated 使用 BusinessStageStepper 代替。本组件保留用于渐进迁移。 */
 import { useCaseStore } from "@/stores/case-store"
 import { NODE_LABELS, NODE_ORDER } from "@/lib/workflow-events"
-import type { NodeStatus, NodeStatusValue } from "@/lib/workflow-events"
+import type { NodeStatus, NodeStatusValue, WorkflowNode } from "@/lib/workflow-events"
 import { NodeStatusIcon } from "./NodeStatusIcon"
 
 const BUSINESS_LABELS: Record<string, string> = {
@@ -43,7 +44,7 @@ function statusText(status: NodeStatusValue) {
   return "未开始"
 }
 
-function TrackCard({ node, ns, current, paused }: { node: string; ns?: NodeStatus; current: boolean; paused: boolean }) {
+function TrackCard({ node, ns, current, paused }: { node: WorkflowNode; ns?: NodeStatus; current: boolean; paused: boolean }) {
   const status = ns?.status || "idle"
   const stageLabel = ns?.progressStage ? STAGE_LABELS[ns.progressStage] || ns.progressStage : ""
 
