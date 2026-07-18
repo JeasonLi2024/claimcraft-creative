@@ -45,7 +45,7 @@ export interface Evidence {
   image: string | null
   extracted_text: string | null
   ocr_status: 'pending' | 'done' | 'failed' | null
-  mask_status: 'none' | 'pending' | 'done' | null
+  mask_status: 'none' | 'pending' | 'done' | 'failed' | null
   masked_image: string | null
   // v9 新增：视觉预分类+摘要字段
   evidence_category: string  // chat_screenshot/product_order/logistics_tracking/payment_record/invoice/other
@@ -84,7 +84,8 @@ export interface RespondData {
 export interface MaskResult {
   evidence_code: string
   type: string
-  original: string
+  types?: string[]
+  original?: string
   masked: string
 }
 

@@ -463,7 +463,13 @@ class Evidence(models.Model):
     )
     mask_status = models.CharField(
         '打码状态', max_length=20, default='none',
-        help_text='none/pending/done'
+        choices=[
+            ('none', '未处理'),
+            ('pending', '处理中'),
+            ('done', '已完成'),
+            ('failed', '处理失败'),
+        ],
+        help_text='none/pending/done/failed'
     )
     evidence_category = models.CharField(
         'LLM分类', max_length=50, blank=True, default='',

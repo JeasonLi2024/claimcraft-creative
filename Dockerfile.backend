@@ -15,6 +15,11 @@ RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g; 
     && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
+        pandoc \
+        texlive-xetex \
+        texlive-lang-chinese \
+        texlive-latex-extra \
+        fonts-noto-cjk \
         fonts-wqy-microhei \
         libglib2.0-0 \
         libgl1 \

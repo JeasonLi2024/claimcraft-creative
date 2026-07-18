@@ -115,8 +115,9 @@ interface CaseState {
   maskImages: (caseId: number) => Promise<void>
 
   exportText: (caseId: number, params: { template_type: string; masked: boolean }) => Promise<{ content: string; filename: string }>
-  exportPackage: (caseId: number, templateType: string) => Promise<Blob>
-  exportPDF: (caseId: number, templateType: string) => Promise<Blob>
+  exportPackage: (caseId: number, templateType: string) => Promise<api.ExportFileResult>
+  exportPDF: (caseId: number, templateType: string) => Promise<api.ExportFileResult>
+  exportWord: (caseId: number, templateType: string) => Promise<api.ExportFileResult>
 
   fetchStats: () => Promise<void>
   fetchCasePresets: (caseType: string) => Promise<CasePreset[]>
@@ -538,7 +539,7 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
             return {
               ...ev,
               masked_image: match.masked_image,
-              mask_status: match.mask_status || match.masked_status || "done",
+              mask_status: match.mask_status,
             }
           }
           return ev
@@ -577,6 +578,16 @@ export const useCaseStore = create<CaseState>()((set, get) => ({
       return await api.exportApi.exportPDF(caseId, templateType)
     } catch (e: any) {
       set({ error: e.response?.data?.detail || e.message || "导出 PDF 失败" })
+      throw e
+    }
+  },
+
+  exportWord: async (caseId, templateType) => {
+    set({ error: null })
+    try {
+      return await api.exportApi.exportWord(caseId, templateType)
+    } catch (e: any) {
+      set({ error: e.response?.data?.detail || e.message || "导出 Word 失败" })
       throw e
     }
   },

@@ -246,6 +246,11 @@ CLAIMCRAFT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 # CORS 配置（开发环境简化）
 CORS_ORIGIN_ALLOW_ALL = True
 CORS_ALLOW_ALL_ORIGINS = True
+# 前后端若分域部署，允许浏览器读取下载文件名响应头。
+CORS_EXPOSE_HEADERS = ['Content-Disposition', 'X-Export-Filename', 'Content-Length']
+# 正确识别公网 Nginx/负载均衡传递的 HTTPS 协议。
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
 
 # Django REST Framework

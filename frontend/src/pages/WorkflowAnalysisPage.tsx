@@ -5,7 +5,7 @@
 //   SSE 事件：stage.* 本地即时更新；其余结构性事件触发去抖 snapshot 重取（权威来源）
 //
 // 契约对齐：后端 snapshot / 事件形状经 lib/workflow-adapters 归一化为前端类型。
-// 旧路径（EvidencePage → WorkflowStreamPanel）保持不变，本页为新增入口。
+// 新旧工作流统一在本页展示：WorkflowRun 使用新工作台，历史 thread 使用兼容面板恢复。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, Link } from "react-router"
 import { Loader2, Play, History, Workflow, RefreshCw, AlertTriangle } from "lucide-react"
@@ -35,6 +35,7 @@ import { RunConfigurationDrawer } from "@/components/workflow/RunConfigurationDr
 import { RunHistoryDrawer } from "@/components/workflow/RunHistoryDrawer"
 import { WorkflowRecoveryPanel } from "@/components/workflow/WorkflowRecoveryPanel"
 import { DocumentEditor } from "@/components/workflow/DocumentEditor"
+import { WorkflowStreamPanel } from "@/components/workflow/WorkflowStreamPanel"
 
 // 文书产物类型 → DocumentEditor.fromStage
 const DOC_ARTIFACT_KINDS = new Set<WorkflowArtifact["kind"]>([
@@ -345,6 +346,7 @@ export default function WorkflowAnalysisPage() {
     ? (docArtifact.payload as { document_version_id?: number }).document_version_id
     : undefined
   const [documentDetail, setDocumentDetail] = useState<DocumentDetail | null>(null)
+  const [isExportingDocument, setIsExportingDocument] = useState(false)
   const loadedDocKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -430,6 +432,19 @@ export default function WorkflowAnalysisPage() {
     [closeClient, resetRunStore, loadRun],
   )
 
+  const handleDocumentExport = useCallback(async () => {
+    if (!documentDetail || !runId || isExportingDocument) return
+    setIsExportingDocument(true)
+    try {
+      const check = await documentApi.exportCheck(runId, documentDetail.id)
+      if (check.passed) {
+        window.location.assign(`/cases/${caseId}/export`)
+      }
+    } finally {
+      setIsExportingDocument(false)
+    }
+  }, [caseId, documentDetail, isExportingDocument, runId])
+
   // 恢复面板重试成功 → 切换到 fork 出的新运行
   const handleRetrySuccess = useCallback(
     async (resp: { run_id: number; stream_url: string }) => {
@@ -441,6 +456,9 @@ export default function WorkflowAnalysisPage() {
   )
 
   const isFailed = run?.status === "failed"
+  const hasLegacyWorkflow = Boolean(
+    currentCase?.thread_id && currentCase.workflow_status && currentCase.workflow_status !== "idle",
+  )
 
   return (
     <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
@@ -491,34 +509,47 @@ export default function WorkflowAnalysisPage() {
           {pageError}
         </div>
       ) : !run ? (
-        <div className="rounded-2xl border border-dashed border-[#bdc6be] bg-white px-6 py-16 text-center">
-          <img
-            src="/空状态插画.png"
-            alt=""
-            aria-hidden="true"
-            className="mx-auto mb-5 w-48 max-w-[70%] object-contain"
-          />
-          <h3 className="text-lg font-semibold">尚未发起工作流分析</h3>
-          <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-            选择参与分析的证据并开始，系统将依次完成材料理解、事实核对、案件组织与文书生成。
-          </p>
-          <div className="mt-6 flex justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => setShowConfig(true)}
-              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#181b1a] px-4 text-sm font-semibold text-white hover:bg-[#2b302d]"
-            >
-              <Play className="h-4 w-4" aria-hidden="true" />
-              开始分析
-            </button>
-            <Link
-              to={`/cases/${caseId}/evidence`}
-              className="inline-flex min-h-[44px] items-center rounded-xl border border-[#d9ddd5] bg-white px-4 text-sm font-medium hover:bg-[#f1f2ee]"
-            >
-              先去上传证据
-            </Link>
+        hasLegacyWorkflow ? (
+          <section className="space-y-4 rounded-2xl border border-[#e2e6df] bg-white p-4 sm:p-5" aria-label="历史工作流分析">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#2f5947]">历史分析</p>
+              <h2 className="mt-1 text-lg font-semibold">工作流分析记录与输出</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                该案件由旧版工作流生成，历史节点、实时状态和具体输出已迁移至本页面展示。
+              </p>
+            </div>
+            <WorkflowStreamPanel caseId={caseId} />
+          </section>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-[#bdc6be] bg-white px-6 py-16 text-center">
+            <img
+              src="/空状态插画.png"
+              alt=""
+              aria-hidden="true"
+              className="mx-auto mb-5 w-48 max-w-[70%] object-contain"
+            />
+            <h3 className="text-lg font-semibold">尚未发起工作流分析</h3>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+              选择参与分析的证据并开始，系统将依次完成材料理解、事实核对、案件组织与文书生成。
+            </p>
+            <div className="mt-6 flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowConfig(true)}
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#181b1a] px-4 text-sm font-semibold text-white hover:bg-[#2b302d]"
+              >
+                <Play className="h-4 w-4" aria-hidden="true" />
+                开始分析
+              </button>
+              <Link
+                to={`/cases/${caseId}/evidence`}
+                className="inline-flex min-h-[44px] items-center rounded-xl border border-[#d9ddd5] bg-white px-4 text-sm font-medium hover:bg-[#f1f2ee]"
+              >
+                先去上传证据
+              </Link>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         <div className="space-y-5">
           {fatalError && (
@@ -587,6 +618,8 @@ export default function WorkflowAnalysisPage() {
                   docArtifact?.kind === "respond_complaint_draft" ? "respond_complaint" : "complaint"
                 }
                 isStreaming={connection === "connected" && run.status === "running"}
+                onExport={() => { void handleDocumentExport() }}
+                isExporting={isExportingDocument}
                 onJumpToEvidence={() => window.location.assign(`/cases/${caseId}/evidence`)}
                 onRegenerateFullSuccess={(resp) => void handleRetrySuccess(resp)}
               />

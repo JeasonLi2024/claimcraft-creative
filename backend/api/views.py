@@ -7,6 +7,7 @@ import secrets
 import string
 import threading
 import time
+from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib.auth import authenticate
@@ -64,6 +65,7 @@ from api.serializers import (
     EmailCodeVerifySerializer,
     EvidenceSerializer,
     EmailSendCodeSerializer,
+    ExportOptionsSerializer,
     ExtractedFieldSerializer,
     LoginSerializer,
     PasswordResetConfirmSerializer,
@@ -1581,7 +1583,10 @@ class EvidenceUploadView(APIView):
         evidence_type = data.get('evidence_type', '上传图片')
         description = data.get('description', f'{image_file.name} OCR 上传')
         source_time = data.get('source_time') or timezone.now()
-        has_sensitive_info = data.get('has_sensitive_info', False)
+        has_sensitive_info = (
+            str(data.get('has_sensitive_info', 'false')).strip().lower()
+            in {'1', 'true', 'yes', 'on'}
+        )
         # 纯物证图片标记（multipart 表单值为字符串）
         is_physical_evidence = str(data.get('is_physical_evidence', 'false')).lower() == 'true'
         physical_note = (data.get('physical_note') or '').strip()[:500]
@@ -1592,7 +1597,7 @@ class EvidenceUploadView(APIView):
             evidence_type=evidence_type,
             description=description,
             source_time=source_time,
-            has_sensitive_info=bool(has_sensitive_info),
+            has_sensitive_info=has_sensitive_info,
             order=max_order + 1,
             image=image_file,
             # 物证无需识别，直接 done；其余保持 pending，由工作流统一 OCR + LLM 抽取
@@ -1875,18 +1880,24 @@ class ExportView(APIView):
 
     def post(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
+        options = ExportOptionsSerializer(data=request.data)
+        options.is_valid(raise_exception=True)
+        template_type = options.validated_data['template_type']
+        masked = options.validated_data['masked']
 
-        template_type = request.data.get('template_type', 'platform')
-        masked = bool(request.data.get('masked', False))
+        try:
+            content = export_service.generate_export_text(
+                case, template_type=template_type, masked=masked
+            )
+        except Exception:
+            logger.exception('文本导出失败 (case=%s, template=%s)', case.id, template_type)
+            return Response(
+                {'detail': '文本导出失败，请稍后重试'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        content = export_service.generate_export_text(
-            case, template_type=template_type, masked=masked
-        )
         filename = f'claimcraft_case_{case.id}_{template_type}.txt'
-        return Response({
-            'filename': filename,
-            'content': content,
-        })
+        return Response({'filename': filename, 'content': content})
 
 
 # ===== T1 新增视图 =====
@@ -2023,18 +2034,47 @@ class MaskImageView(APIView):
         })
 
 
+def _download_response(payload, filename, content_type):
+    """构造适合公网反向代理和浏览器下载的二进制响应。"""
+    ascii_fallback = ''.join(
+        char if char.isascii() and (char.isalnum() or char in '._-') else '_'
+        for char in filename
+    )
+    response = HttpResponse(payload, content_type=content_type)
+    response['Content-Disposition'] = (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    response['X-Export-Filename'] = quote(filename)
+    response['Content-Length'] = len(payload)
+    response['Cache-Control'] = 'private, no-store, max-age=0'
+    response['Pragma'] = 'no-cache'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 class ExportPackageView(APIView):
     """证据包导出：GET /cases/<id>/export/package/?template_type=<type> 返回 ZIP 文件流。"""
 
     def get(self, request, pk):
         case = get_object_or_404(Case, pk=pk, owner=request.user)
-        template_type = request.query_params.get('template_type', 'platform')
-        buf = export_service.export_evidence_package(case, template_type=template_type)
-        resp = HttpResponse(buf.read(), content_type='application/zip')
-        resp['Content-Disposition'] = (
-            f'attachment; filename="case_{case.id}_{template_type}_package.zip"'
-        )
-        return resp
+        options = ExportOptionsSerializer(data=request.query_params)
+        options.is_valid(raise_exception=True)
+        template_type = options.validated_data['template_type']
+        try:
+            buf = export_service.export_evidence_package(
+                case, template_type=template_type
+            )
+            payload = buf.getvalue()
+            buf.close()
+        except Exception:
+            logger.exception('ZIP 导出失败 (case=%s, template=%s)', case.id, template_type)
+            return Response(
+                {'detail': '证据包生成失败，请检查案件材料后重试'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        filename = f'case_{case.id}_{template_type}_package.zip'
+        return _download_response(payload, filename, 'application/zip')
 
 
 class ExportPDFView(APIView):
@@ -2042,13 +2082,49 @@ class ExportPDFView(APIView):
 
     def get(self, request, pk):
         case = get_object_or_404(Case, pk=pk, owner=request.user)
-        template_type = request.query_params.get('template_type', 'platform')
-        buf = pdf_service.generate_complaint_pdf(case, template_type=template_type)
-        resp = HttpResponse(buf.read(), content_type='application/pdf')
-        resp['Content-Disposition'] = (
-            f'attachment; filename="case_{case.id}_{template_type}.pdf"'
+        options = ExportOptionsSerializer(data=request.query_params)
+        options.is_valid(raise_exception=True)
+        template_type = options.validated_data['template_type']
+        try:
+            buf = pdf_service.generate_complaint_pdf(
+                case, template_type=template_type
+            )
+            payload = buf.getvalue()
+            buf.close()
+        except Exception:
+            logger.exception('PDF 导出失败 (case=%s, template=%s)', case.id, template_type)
+            return Response(
+                {'detail': 'PDF 生成失败，请检查案件材料后重试'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        filename = f'case_{case.id}_{template_type}.pdf'
+        return _download_response(payload, filename, 'application/pdf')
+
+
+class ExportWordView(APIView):
+    """Word 正式文书导出：GET /cases/<id>/export/word/?template_type=<type>。"""
+
+    def get(self, request, pk):
+        case = get_object_or_404(Case, pk=pk, owner=request.user)
+        options = ExportOptionsSerializer(data=request.query_params)
+        options.is_valid(raise_exception=True)
+        template_type = options.validated_data['template_type']
+        try:
+            buf = pdf_service.generate_word_document(case, template_type=template_type)
+            payload = buf.getvalue()
+            buf.close()
+        except Exception:
+            logger.exception('Word 导出失败 (case=%s, template=%s)', case.id, template_type)
+            return Response(
+                {'detail': 'Word 生成失败，请检查案件材料或服务器 Pandoc 环境后重试'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        filename = f'case_{case.id}_{template_type}.docx'
+        return _download_response(
+            payload,
+            filename,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
-        return resp
 
 
 # ===== Task 27：案件模板预设 =====

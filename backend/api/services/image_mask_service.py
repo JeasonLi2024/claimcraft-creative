@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
-"""证据图片打码服务：基于 Tesseract OCR 定位敏感文字区域并高斯模糊。"""
-import os
-import shutil
-import logging
-import re
+"""证据图片打码：Tesseract 定位敏感文字后使用不透明遮盖。"""
 import io
+import logging
+import os
+import re
+import shutil
+import uuid
 
-from PIL import Image, ImageFilter
 import pytesseract
+from PIL import Image, ImageDraw
+from django.core.files.base import ContentFile
+from django.db import transaction
+
+from api.services.mask_service import contains_sensitive_info
 
 logger = logging.getLogger(__name__)
 
 
 def _resolve_tesseract_cmd():
-    """跨平台解析 Tesseract 可执行文件路径（与 ocr_service 一致）。"""
     env_path = os.environ.get('TESSERACT_CMD')
     if env_path and os.path.exists(env_path):
         return env_path
@@ -21,89 +25,135 @@ def _resolve_tesseract_cmd():
     if which_path:
         return which_path
     win_default = r'D:\tesseract\tesseract.exe'
-    if os.path.exists(win_default):
-        return win_default
-    return None
+    return win_default if os.path.exists(win_default) else None
 
 
-TESSERACT_CMD = _resolve_tesseract_cmd()
+def _normalize_ocr_text(value):
+    return re.sub(r'[\s\-—_]+', '', str(value or ''))
 
-# 敏感信息正则
-SENSITIVE_PATTERNS = [
-    (r'1[3-9]\d{9}', '手机号'),  # 手机号
-    (r'[\u4e00-\u9fa5]{2,6}市[\u4e00-\u9fa5\d\w号路街]+', '地址'),
-    (r'\d{17}[\dXx]', '身份证号'),
-]
+
+def _line_regions(data):
+    """合并同一 OCR 行的词，支持被空格切开的手机号和身份证号。"""
+    groups = {}
+    count = len(data.get('text', []))
+    for index in range(count):
+        text = str(data['text'][index] or '').strip()
+        if not text:
+            continue
+        key = (
+            data.get('block_num', [0] * count)[index],
+            data.get('par_num', [0] * count)[index],
+            data.get('line_num', [0] * count)[index],
+        )
+        groups.setdefault(key, []).append({
+            'text': text,
+            'left': int(data['left'][index]),
+            'top': int(data['top'][index]),
+            'width': int(data['width'][index]),
+            'height': int(data['height'][index]),
+        })
+
+    regions = []
+    for words in groups.values():
+        normalized = _normalize_ocr_text(''.join(word['text'] for word in words))
+        if not contains_sensitive_info(normalized):
+            continue
+        left = min(word['left'] for word in words)
+        top = min(word['top'] for word in words)
+        right = max(word['left'] + word['width'] for word in words)
+        bottom = max(word['top'] + word['height'] for word in words)
+        regions.append((left, top, right - left, bottom - top))
+    return regions
+
+
+def _expand_region(region, image_size):
+    x, y, width, height = region
+    image_width, image_height = image_size
+    padding = max(4, int(height * 0.2))
+    return (
+        max(0, x - padding),
+        max(0, y - padding),
+        min(image_width, x + width + padding),
+        min(image_height, y + height + padding),
+    )
 
 
 def mask_evidence_image(evidence):
-    """对证据图片执行打码，返回打码后图片路径。
-
-    C3 改造：文字定位使用 OCRPipeline 中的 Tesseract 策略（保持 image_to_data 行为）。
-    若 Tesseract 不可用，回退底部 1/3 模糊。
-    """
+    """生成打码图；无法可靠定位时抛错，不制造“已安全”的假象。"""
     if not evidence.image:
-        return None
+        raise ValueError('证据没有原始图片')
+
     image_path = evidence.image.path
-    img = Image.open(image_path).convert('RGB')
-    width, height = img.size
-    mask_regions = []
-    # 1. 尝试用 pytesseract image_to_data 获取文字坐标
-    #    （仅 Tesseract 策略支持坐标输出，其他策略仅返回文本）
-    try:
-        if TESSERACT_CMD:
-            pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
-        data = pytesseract.image_to_data(
-            img, lang='chi_sim+eng', output_type=pytesseract.Output.DICT
-        )
-        for i in range(len(data['text'])):
-            text = data['text'][i].strip()
-            if not text:
-                continue
-            for pattern, label in SENSITIVE_PATTERNS:
-                if re.search(pattern, text):
-                    x = data['left'][i]
-                    y = data['top'][i]
-                    w = data['width'][i]
-                    h = data['height'][i]
-                    mask_regions.append((x, y, w, h))
-                    break
-    except Exception as e:
-        logger.warning(f"image_to_data 失败: {e}")
-    # 2. 回退：底部 1/3 模糊
+    with Image.open(image_path) as source:
+        image = source.convert('RGB')
+
+    tesseract_cmd = _resolve_tesseract_cmd()
+    if not tesseract_cmd:
+        raise RuntimeError('Tesseract 不可用，无法安全定位敏感信息')
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+
+    data = pytesseract.image_to_data(
+        image,
+        lang='chi_sim+eng',
+        output_type=pytesseract.Output.DICT,
+    )
+    mask_regions = _line_regions(data)
     if not mask_regions:
-        mask_regions = [(0, int(height * 2 / 3), width, int(height / 3))]
-        logger.info("回退底部 1/3 模糊")
-    # 3. 对每个区域高斯模糊
-    for x, y, w, h in mask_regions:
-        region = img.crop((x, y, x + w, y + h))
-        blurred = region.filter(ImageFilter.GaussianBlur(radius=10))
-        img.paste(blurred, (x, y))
-    # 4. 保存
-    from django.core.files.base import ContentFile
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=90)
-    buf.seek(0)
-    # 文件名
-    orig_name = os.path.basename(image_path)
-    masked_name = f'masked_{orig_name}'
-    evidence.masked_image.save(masked_name, ContentFile(buf.getvalue()), save=False)
+        raise RuntimeError('未能可靠定位敏感文字，请人工检查原图')
+
+    draw = ImageDraw.Draw(image)
+    for region in mask_regions:
+        draw.rectangle(_expand_region(region, image.size), fill=(24, 24, 24))
+
+    buffer = io.BytesIO()
+    image.save(buffer, format='JPEG', quality=92, optimize=True)
+    masked_name = f'masked_{evidence.id}_{uuid.uuid4().hex[:8]}.jpg'
+    old_masked = evidence.masked_image.name if evidence.masked_image else ''
+    evidence.masked_image.save(
+        masked_name,
+        ContentFile(buffer.getvalue()),
+        save=False,
+    )
     evidence.mask_status = 'done'
-    evidence.save()
+    evidence.save(update_fields=['masked_image', 'mask_status'])
+
+    if old_masked and old_masked != evidence.masked_image.name:
+        try:
+            evidence.masked_image.storage.delete(old_masked)
+        except Exception as exc:
+            logger.warning('旧打码图清理失败 (evidence=%s): %s', evidence.id, exc)
     return evidence.masked_image.path
 
 
-def mask_case_images(case):
-    """批量打码该案件所有图片证据。"""
+def mask_case_images(case, force=False):
+    """批量打码图片；已完成的记录默认幂等跳过，并记录失败状态。"""
     results = []
-    for ev in case.evidences.exclude(image='').exclude(image__isnull=True):
-        ev.mask_status = 'pending'
-        ev.save()
+    evidence_ids = list(
+        case.evidences.exclude(image='').exclude(image__isnull=True)
+        .order_by('order', 'id').values_list('id', flat=True)
+    )
+    from api.models import Evidence
+
+    for evidence_id in evidence_ids:
+        with transaction.atomic():
+            evidence = Evidence.objects.select_for_update().get(
+                pk=evidence_id,
+                case=case,
+            )
+            if evidence.mask_status == 'done' and evidence.masked_image and not force:
+                results.append(evidence)
+                continue
+            if evidence.mask_status == 'pending' and not force:
+                results.append(evidence)
+                continue
+            evidence.mask_status = 'pending'
+            evidence.save(update_fields=['mask_status'])
+
         try:
-            mask_evidence_image(ev)
-        except Exception as e:
-            logger.error(f"证据 {ev.code} 打码失败: {e}")
-            ev.mask_status = 'none'
-            ev.save()
-        results.append(ev)
+            mask_evidence_image(evidence)
+        except Exception as exc:
+            logger.exception('证据 %s 打码失败: %s', evidence.code, exc)
+            evidence.mask_status = 'failed'
+            evidence.save(update_fields=['mask_status'])
+        results.append(evidence)
     return results

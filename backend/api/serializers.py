@@ -135,6 +135,16 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
         fields = ['display_name', 'bio', 'locale', 'timezone']
 
 
+class ExportOptionsSerializer(serializers.Serializer):
+    """导出请求参数。"""
+
+    template_type = serializers.ChoiceField(
+        choices=ComplaintTemplate.TEMPLATE_TYPE_CHOICES,
+        default=ComplaintTemplate.PLATFORM,
+    )
+    masked = serializers.BooleanField(default=False, required=False)
+
+
 class AvatarUploadSerializer(serializers.Serializer):
     """头像上传请求序列化器。"""
 

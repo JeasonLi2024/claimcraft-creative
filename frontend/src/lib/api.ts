@@ -181,13 +181,83 @@ export const maskApi = {
 }
 
 // Export
+export interface ExportFileResult {
+  blob: Blob
+  filename: string
+}
+
+function parseExportFilename(disposition: unknown, fallback: string): string {
+  if (typeof disposition !== "string") return fallback
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].replace(/^"|"$/g, ""))
+    } catch {
+      return fallback
+    }
+  }
+  const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+  const filename = plainMatch?.[1]?.trim()
+  if (!filename) return fallback
+  try {
+    return decodeURIComponent(filename)
+  } catch {
+    return filename
+  }
+}
+
+async function exportBlob(
+  url: string,
+  templateType: string,
+  fallbackFilename: string,
+): Promise<ExportFileResult> {
+  try {
+    const response = await apiClient.get<Blob>(url, {
+      params: { template_type: templateType },
+      responseType: "blob",
+    })
+    return {
+      blob: response.data,
+      filename: parseExportFilename(
+        response.headers["content-disposition"] || response.headers["x-export-filename"],
+        fallbackFilename,
+      ),
+    }
+  } catch (error: any) {
+    const blob = error?.response?.data
+    if (blob instanceof Blob && blob.type.includes("json")) {
+      try {
+        const body = JSON.parse(await blob.text()) as { detail?: string }
+        if (body.detail) error.message = body.detail
+      } catch {
+        // 保留 Axios 原始错误。
+      }
+    }
+    throw error
+  }
+}
+
 export const exportApi = {
   exportText: (caseId: number, params: { template_type: string; masked: boolean }) =>
     apiClient.post<{ content: string; filename: string }>(`/cases/${caseId}/export/`, params, { responseType: "json" }).then((r) => r.data),
   exportPackage: (caseId: number, templateType: string) =>
-    apiClient.get(`/cases/${caseId}/export/package/`, { params: { template_type: templateType }, responseType: "blob" }).then((r) => r.data),
+    exportBlob(
+      `/cases/${caseId}/export/package/`,
+      templateType,
+      `case_${caseId}_${templateType}_package.zip`,
+    ),
   exportPDF: (caseId: number, templateType: string) =>
-    apiClient.get(`/cases/${caseId}/export/pdf/`, { params: { template_type: templateType }, responseType: "blob" }).then((r) => r.data),
+    exportBlob(
+      `/cases/${caseId}/export/pdf/`,
+      templateType,
+      `case_${caseId}_${templateType}.pdf`,
+    ),
+  exportWord: (caseId: number, templateType: string) =>
+    exportBlob(
+      `/cases/${caseId}/export/word/`,
+      templateType,
+      `case_${caseId}_${templateType}.docx`,
+    ),
 }
 
 // Stats
