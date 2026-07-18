@@ -2629,6 +2629,37 @@ class CaseWorkflowStartView(APIView):
         })
 
 
+async def authenticate_sse_request(request):
+    """SSE 端点手动 JWT 认证，返回 User 或 None。
+
+    SSE 端点使用 Django 原生 View，无法走 DRF 认证，需手动解析 token。
+    支持两种传递方式：
+      1. Authorization: Bearer <token> header（标准方式）
+      2. ?token=<token> query parameter（EventSource 不支持自定义 header 时的回退）
+
+    抽取为模块级函数，供 CaseWorkflowStreamView 与 WorkflowRunEventsView 共用，
+    避免跨视图调用私有方法造成的耦合。
+    """
+    from asgiref.sync import sync_to_async
+    from rest_framework_simplejwt.tokens import AccessToken
+    from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+    else:
+        token = request.GET.get('token', '')
+
+    if not token:
+        return None
+    try:
+        access_token = AccessToken(token)
+        user_id = access_token['user_id']
+        return await sync_to_async(User.objects.get)(pk=user_id)
+    except (TokenError, InvalidToken, User.DoesNotExist):
+        return None
+
+
 class CaseWorkflowStreamView(View):
     """SSE 流式端点：GET /api/cases/<id>/workflow/stream/
 
@@ -2794,32 +2825,8 @@ class CaseWorkflowStreamView(View):
         return response
 
     async def _authenticate(self, request):
-        """手动 JWT 认证，返回 User 或 None。
-
-        SSE 端点用 Django 原生 View，需手动解析 token。
-        支持两种传递方式：
-          1. Authorization: Bearer <token> header（标准方式）
-          2. ?token=<token> query parameter（EventSource 不支持自定义 header 时的回退）
-        """
-        from asgiref.sync import sync_to_async
-        from rest_framework_simplejwt.tokens import AccessToken
-        from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-
-        # 优先从 Authorization header 读取，回退到 query parameter
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-        else:
-            token = request.GET.get('token', '')
-
-        if not token:
-            return None
-        try:
-            access_token = AccessToken(token)
-            user_id = access_token['user_id']
-            return await sync_to_async(User.objects.get)(pk=user_id)
-        except (TokenError, InvalidToken, User.DoesNotExist):
-            return None
+        """手动 JWT 认证，返回 User 或 None（委托给模块级 authenticate_sse_request）。"""
+        return await authenticate_sse_request(request)
 
 
 class CaseWorkflowResumeView(APIView):
@@ -3093,7 +3100,12 @@ class WorkflowRunCreateView(APIView):
 
 
 class WorkflowRunEventsView(View):
-    """按 WorkflowRun 提供带一次性票据鉴权的 SSE 事件流。"""
+    """按 WorkflowRun 提供带票据鉴权的 SSE 事件流。
+
+    票据鉴权语义：进入时仅校验（不撤销）。票据在事件流「正常结束」（运行进入终态）
+    时撤销；客户端中途断线不撤销，允许在票据短 TTL 内携 Last-Event-ID 用同一票据
+    重连续传。TTL 兜底防止票据被长期滥用。
+    """
 
     _terminal_events = {
         'workflow.complete',
@@ -3109,7 +3121,7 @@ class WorkflowRunEventsView(View):
         from api.models import WorkflowRun
         from api.services.sse_ticket_service import revoke_ticket, validate_ticket
 
-        user = await CaseWorkflowStreamView()._authenticate(request)
+        user = await authenticate_sse_request(request)
         if user is None:
             return HttpResponse(
                 json.dumps({'detail': '认证失败'}),
@@ -3132,7 +3144,9 @@ class WorkflowRunEventsView(View):
                 content_type='application/json',
                 status=401,
             )
-        revoke_ticket(ticket)
+        # 不在此处撤销票据：过早撤销会导致客户端携 Last-Event-ID 用同一票据重连时
+        # 校验失败、无法续传事件流。改为在 event_stream 正常结束（运行进入终态）时撤销；
+        # 中途断线（GeneratorExit）不撤销，允许在短 TTL 内以同一票据重连续传，TTL 兜底防滥用。
         try:
             last_event_id = int(
                 request.headers.get('Last-Event-ID')
@@ -3142,51 +3156,61 @@ class WorkflowRunEventsView(View):
             last_event_id = 0
 
         async def event_stream():
+            # 仅在事件流正常结束（运行终态）时置 True，用于决定是否撤销票据。
+            normal_end = False
             depot = EventDepot()
             emitter = NotifyEmitter()
-            missed = await depot.get_events_after(run.thread_id, last_event_id)
-            for event in missed:
-                yield _format_sse_event(event, thread_id=run.thread_id)
-                if event['event_type'] in self._terminal_events:
-                    return
-            current_last = missed[-1]['event_id'] if missed else last_event_id
-            if await depot.is_workflow_completed(run.thread_id):
-                return
-
-            loop = asyncio.get_running_loop()
-            queue: asyncio.Queue = asyncio.Queue()
-            stop_event = threading.Event()
-
-            def on_notify(_pid, _channel, payload):
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, int(payload))
-                except (TypeError, ValueError):
-                    pass
-
-            subscribe_task = asyncio.create_task(
-                emitter.subscribe(run.thread_id, on_notify, stop_event)
-            )
             try:
-                while True:
+                missed = await depot.get_events_after(run.thread_id, last_event_id)
+                for event in missed:
+                    yield _format_sse_event(event, thread_id=run.thread_id)
+                    if event['event_type'] in self._terminal_events:
+                        normal_end = True
+                        return
+                current_last = missed[-1]['event_id'] if missed else last_event_id
+                if await depot.is_workflow_completed(run.thread_id):
+                    normal_end = True
+                    return
+
+                loop = asyncio.get_running_loop()
+                queue: asyncio.Queue = asyncio.Queue()
+                stop_event = threading.Event()
+
+                def on_notify(_pid, _channel, payload):
                     try:
-                        await asyncio.wait_for(queue.get(), timeout=15)
-                        new_events = await depot.get_events_after(
-                            run.thread_id, current_last
-                        )
-                        for event in new_events:
-                            yield _format_sse_event(event, thread_id=run.thread_id)
-                            current_last = event['event_id']
-                            if event['event_type'] in self._terminal_events:
-                                return
-                    except asyncio.TimeoutError:
-                        yield ': heartbeat\n\n'
-            finally:
-                stop_event.set()
-                subscribe_task.cancel()
+                        loop.call_soon_threadsafe(queue.put_nowait, int(payload))
+                    except (TypeError, ValueError):
+                        pass
+
+                subscribe_task = asyncio.create_task(
+                    emitter.subscribe(run.thread_id, on_notify, stop_event)
+                )
                 try:
-                    await subscribe_task
-                except asyncio.CancelledError:
-                    pass
+                    while True:
+                        try:
+                            await asyncio.wait_for(queue.get(), timeout=15)
+                            new_events = await depot.get_events_after(
+                                run.thread_id, current_last
+                            )
+                            for event in new_events:
+                                yield _format_sse_event(event, thread_id=run.thread_id)
+                                current_last = event['event_id']
+                                if event['event_type'] in self._terminal_events:
+                                    normal_end = True
+                                    return
+                        except asyncio.TimeoutError:
+                            yield ': heartbeat\n\n'
+                finally:
+                    stop_event.set()
+                    subscribe_task.cancel()
+                    try:
+                        await subscribe_task
+                    except asyncio.CancelledError:
+                        pass
+            finally:
+                # 运行正常结束才撤销票据（此时无需再重连）；中途断线保留票据以便重连续传。
+                if normal_end:
+                    revoke_ticket(ticket)
 
         response = StreamingHttpResponse(
             event_stream(),
