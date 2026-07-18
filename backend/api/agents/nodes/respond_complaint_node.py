@@ -332,6 +332,13 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
             logger.warning(f"LLM 反证答辩重写失败，使用骨架: {e}")
             errors.append(f"LLM 反证答辩重写失败: {e}")
 
+    # 6.0 统一追加「法律依据」（引用全部真实条文）与署名，与投诉书节点行为对齐：
+    #     既满足「文书须注明引用到的全部条文」，也使导出前质量门可识别「依据段」。
+    from api.agents.utils.paragraph_splitter import finalize_legal_document
+    final_content = finalize_legal_document(
+        final_content, legal_references, case.owner.username or "答辩人"
+    )
+
     # 6. 持久化到 RespondTemplate 表（upsert）
     # 6.1 Task 4.1.3：段落级结构化（后处理切分，不修改 LLM prompt 避免回归）
     available_evidence_codes = _collect_available_evidence_codes(state)
@@ -420,7 +427,8 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
                     content={
                         "title": skeleton.get("title", "反证答辩书"),
                         "content": final_content,
-                        "template_type": template_type,
+                        # P5：产物内容用 template_variant 与文书详情端点 template_type（种类）区分
+                        "template_variant": template_type,
                         "tone": tone,
                         "legal_references": legal_references,
                         "paragraphs": paragraphs,
@@ -584,7 +592,7 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
             "complaint_draft": {
                 "title": skeleton.get("title", "反证答辩书"),
                 "content": final_content,
-                "template_type": template_type,
+                "template_variant": template_type,
                 "tone": tone,
                 "legal_references": legal_references,
                 "paragraphs": paragraphs,

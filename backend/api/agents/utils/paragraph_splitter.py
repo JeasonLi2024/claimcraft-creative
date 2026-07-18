@@ -126,6 +126,39 @@ def _strip_title_prefix(title: str) -> str:
     return t
 
 
+def finalize_legal_document(
+    content: str,
+    references: list[dict] | None,
+    signer_name: str,
+) -> str:
+    """在文书正文末尾追加「法律依据」与「署名」两节（若尚未存在）。
+
+    - 法律依据：列出所有引用到的真实法律条文（来自法律数据库检索/工具调用），
+      满足「文书须注明引用到的全部条文」的要求；标题含「法律/依据」关键词，
+      使导出前质量门可识别为「依据段」。
+    - 署名：文书落款。
+
+    references 每项为 dict，含 law_name / article_number / summary / content / source_url。
+    幂等：已存在「法律依据」或「参考法律文件」小节时不重复追加。
+    """
+    text = (content or "").strip()
+    has_basis_section = ("## 法律依据" in text) or ("## 参考法律文件" in text)
+    valid_refs = [r for r in (references or []) if isinstance(r, dict)]
+    if valid_refs and not has_basis_section:
+        lines = ["## 法律依据"]
+        for ref in valid_refs:
+            title = "《{}》{}".format(
+                ref.get("law_name", ""), ref.get("article_number", "")
+            )
+            summary = ref.get("summary") or ref.get("content") or ""
+            source = ref.get("source_url") or "本地法律文献数据库"
+            lines.append(f"- **{title}**：{summary}（来源：{source}）")
+        text = f"{text}\n\n" + "\n".join(lines)
+    if signer_name and "## 署名" not in text:
+        text = f"{text}\n\n## 署名\n{signer_name}"
+    return text.strip()
+
+
 def split_into_paragraphs(
     content: str,
     evidence_codes: list[str] | None = None,

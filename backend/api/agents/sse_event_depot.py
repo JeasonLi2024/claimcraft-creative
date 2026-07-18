@@ -307,3 +307,27 @@ class EventDepot:
                 return deleted
 
         return await sync_to_async(_cleanup_sync)()
+
+    async def clear_thread(self, thread_id: str) -> int:
+        """删除指定 thread_id 的全部事件，返回删除行数。
+
+        用于「全新运行初次启动」时清理复用同一 thread_id 的历史残留事件——
+        例如开发环境重置主库导致 run_id 重排、而事件库（可能为独立 Postgres）
+        仍留有旧 thread_id 事件时，避免历史事件被回放污染新运行的事件流。
+
+        注意：仅可在全新运行初次启动时调用；resume / fork 复用同一 thread_id
+        时不得调用，否则会删除本次运行自身的历史，破坏断线续传回放。
+        """
+
+        def _clear_sync() -> int:
+            with self.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM sse_event_depot WHERE thread_id=%s",
+                        (thread_id,)
+                    )
+                    deleted = cur.rowcount
+                conn.commit()
+                return deleted
+
+        return await sync_to_async(_clear_sync)()

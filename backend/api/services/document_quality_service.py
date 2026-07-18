@@ -390,6 +390,13 @@ def _identify_paragraph_type(paragraph: dict) -> Optional[str]:
     ):
         return 'basis'
 
+    # P6：标题未命中时，用正文关键词识别 诉求 / 事实（应对 LLM 产出未加规范标题、
+    # 段落标题为「段落 1」等自由结构的情况）。诉求优先于事实（诉求关键词更具指向性）。
+    if any(kw in content for kw in _CLAIM_KEYWORDS):
+        return 'claim'
+    if any(kw in content for kw in _FACT_KEYWORDS):
+        return 'fact'
+
     return None
 
 
@@ -402,10 +409,29 @@ def _check_required_elements(paragraphs: list[dict]) -> tuple[list[str], list[di
         - issues: 对应 ExportCheckIssue dict 列表（含 code=MISSING_ELEMENT）
     """
     found_types: set[str] = set()
+    non_basis_parts: list[str] = []
+    all_parts: list[str] = []
     for p in paragraphs or []:
         ptype = _identify_paragraph_type(p)
         if ptype:
             found_types.add(ptype)
+        text = f"{(p.get('title') or '')}\n{(p.get('content') or '')}"
+        all_parts.append(text)
+        # 事实/诉求兜底扫描时排除「依据段」正文，避免法条摘要中偶现的
+        # 「要求/情况」等关键词把 fact/claim 误判为已满足。
+        if ptype != 'basis':
+            non_basis_parts.append(text)
+
+    # P6：段落级逐段识别未覆盖时（如整篇仅一个「段落 1」同时含事实与诉求），
+    # 用关键词兜底，避免单段/自由结构文书误判为缺失必备要素。
+    non_basis_text = "\n".join(non_basis_parts)
+    all_text = "\n".join(all_parts)
+    if 'fact' not in found_types and any(kw in non_basis_text for kw in _FACT_KEYWORDS):
+        found_types.add('fact')
+    if 'claim' not in found_types and any(kw in non_basis_text for kw in _CLAIM_KEYWORDS):
+        found_types.add('claim')
+    if 'basis' not in found_types and any(kw in all_text for kw in _BASIS_KEYWORDS):
+        found_types.add('basis')
 
     required = [('fact', '事实段'), ('basis', '依据段'), ('claim', '诉求段')]
     missing = [label for key, label in required if key not in found_types]

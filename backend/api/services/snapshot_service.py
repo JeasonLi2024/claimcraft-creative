@@ -202,11 +202,50 @@ class SnapshotService:
             })
         return stages
 
+    @staticmethod
+    def _stage_blocked(stage_artifacts: list[WorkflowArtifact]) -> bool:
+        latest_quality = (stage_artifacts[-1].quality or {}) if stage_artifacts else {}
+        return latest_quality.get('status') == 'blocked'
+
+    def _terminal_stage_status(
+        self, run: WorkflowRun, stage: str, stage_order: list, stage_artifacts: list
+    ) -> str:
+        """run 进入终态（succeeded/failed/cancelled）后收敛阶段状态。
+
+        避免出现 run.status=succeeded 而 current_stage 阶段仍显示 running、
+        或 progress=1.0 却 status=running 的矛盾。
+        """
+        # current_stage 可能为空或非法（异常终态）；缺失时用最后一个阶段兜底
+        current = run.current_stage if run.current_stage in stage_order else (
+            stage_order[-1] if stage_order else stage
+        )
+        try:
+            cur_idx = stage_order.index(current)
+            stage_idx = stage_order.index(stage)
+        except ValueError:
+            return 'completed' if stage_artifacts else 'skipped'
+        if self._stage_blocked(stage_artifacts):
+            return 'blocked'
+        if run.status == 'succeeded':
+            # 成功：执行到的阶段（current 及之前，或已产出产物）判完成，其余跳过
+            return 'completed' if (stage_idx <= cur_idx or stage_artifacts) else 'skipped'
+        if run.status == 'failed':
+            if stage_idx < cur_idx:
+                return 'completed'
+            if stage_idx == cur_idx:
+                return 'failed'
+            return 'skipped'
+        # cancelled：之前阶段视为完成，current 及之后视为跳过
+        return 'completed' if stage_idx < cur_idx else 'skipped'
+
     def _compute_stage_status(
         self, run: WorkflowRun, stage: str, stage_artifacts: list[WorkflowArtifact]
     ) -> str:
         """计算阶段状态：pending / running / completed / blocked / skipped。"""
         stage_order = list(STAGE_NODE_MAP.keys())
+        # 终态收敛：run 结束后不再返回 running
+        if run.status in ('succeeded', 'failed', 'cancelled'):
+            return self._terminal_stage_status(run, stage, stage_order, stage_artifacts)
         if run.current_stage == stage:
             return 'running'
         if run.current_stage and run.current_stage in stage_order and stage in stage_order:
@@ -234,10 +273,15 @@ class SnapshotService:
         - 阶段 idx == current_stage idx：(progress - base) / stage_span
         """
         stage_order = list(STAGE_NODE_MAP.keys())
-        if not run.current_stage:
+        terminal = run.status in ('succeeded', 'failed', 'cancelled')
+        current = run.current_stage
+        # 终态且 current_stage 缺失/非法时用最后一个阶段兜底，保证进度与状态一致
+        if terminal and (not current or current not in stage_order):
+            current = stage_order[-1] if stage_order else stage
+        if not current:
             return 0.0
         try:
-            current_idx = stage_order.index(run.current_stage)
+            current_idx = stage_order.index(current)
             stage_idx = stage_order.index(stage)
         except ValueError:
             return 0.0
@@ -245,7 +289,9 @@ class SnapshotService:
             return 1.0
         if stage_idx > current_idx:
             return 0.0
-        # 同阶段：使用 run.progress 的小数部分
+        # 同阶段：成功终态直接判满，其余用 run.progress 的小数部分推算
+        if terminal and run.status == 'succeeded':
+            return 1.0
         total_stages = len(stage_order)
         base = stage_idx / total_stages
         stage_span = 1.0 / total_stages

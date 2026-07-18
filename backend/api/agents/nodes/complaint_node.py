@@ -431,7 +431,9 @@ async def complaint_node(state: CaseWorkflowState, runtime: Runtime = None) -> d
                     content={
                         "title": skeleton.get("title", "投诉标题"),
                         "content": final_content,
-                        "template_type": template_type,
+                        # P5：产物内容用 template_variant（投诉风格：platform/personal…），
+                        # 与文书详情端点的 template_type（文书种类）区分，消除同名歧义。
+                        "template_variant": template_type,
                         "tone": tone,
                         "legal_references": legal_references,
                         "paragraphs": paragraphs,
@@ -595,7 +597,7 @@ async def complaint_node(state: CaseWorkflowState, runtime: Runtime = None) -> d
             "complaint_draft": {
                 "title": skeleton.get("title", "投诉标题"),
                 "content": final_content,
-                "template_type": template_type,
+                "template_variant": template_type,
                 "tone": tone,
                 "legal_references": legal_references,
                 "paragraphs": paragraphs,
@@ -720,18 +722,9 @@ def _extract_complaint_keywords(case, all_fields: list[dict]) -> list[str]:
 
 
 def _finalize_complaint_content(content: str, references: list[dict], signer_name: str) -> str:
-    text = (content or "").strip()
-    if references and "## 参考法律文件" not in text:
-        lines = ["## 参考法律文件"]
-        for ref in references:
-            title = "《{}》{}".format(ref.get("law_name", ""), ref.get("article_number", ""))
-            summary = ref.get("summary") or ref.get("content") or ""
-            source = ref.get("source_url") or "本地法律文献数据库"
-            lines.append(f"- **{title}**：{summary}（来源：{source}）")
-        text = f"{text}\n\n" + "\n".join(lines)
-    if "## 署名" not in text:
-        text = f"{text}\n\n## 署名\n{signer_name}"
-    return text.strip()
+    """追加「法律依据」（引用全部真实条文）与「署名」两节，委托共享实现。"""
+    from api.agents.utils.paragraph_splitter import finalize_legal_document
+    return finalize_legal_document(content, references, signer_name)
 
 
 def _serialize_law_reference(article: dict) -> dict:

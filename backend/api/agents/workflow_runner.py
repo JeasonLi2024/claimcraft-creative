@@ -355,6 +355,16 @@ class WorkflowRunner:
                         f"读取用户偏好失败 (case={case_id}): {pref_err}"
                     )
 
+                # P7：全新运行初次启动前清理复用同一 thread_id 的历史残留事件，
+                # 避免旧运行（如开发环境重置主库致 run_id 重排）事件被回放污染本次流。
+                # 仅在此 fresh-start 分支调用；fork / resume 复用 thread_id 不得清理。
+                try:
+                    await depot.clear_thread(thread_id)
+                except Exception as clear_err:
+                    logger.debug(
+                        f"清理历史事件失败 (thread={thread_id}): {clear_err}"
+                    )
+
                 eid = await depot.persist(thread_id, "workflow.start", {
                     "thread_id": thread_id,
                     "case_id": case_id,

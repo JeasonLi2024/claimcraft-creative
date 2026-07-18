@@ -367,6 +367,10 @@ LOGGING = {
             'maxBytes': 10 * 1024 * 1024,
             'backupCount': 5,
             'encoding': 'utf-8',
+            # delay=True 延迟到首条日志才打开文件流，缓解 Windows + 多线程/ASGI
+            # 下 RotatingFileHandler 轮转检查时 stream 已被关闭导致的
+            # OSError: [Errno 9] Bad file descriptor。
+            'delay': True,
             'formatter': 'verbose',
         },
         'error_file': {
@@ -375,6 +379,7 @@ LOGGING = {
             'maxBytes': 10 * 1024 * 1024,
             'backupCount': 5,
             'encoding': 'utf-8',
+            'delay': True,
             'formatter': 'verbose',
         },
     },

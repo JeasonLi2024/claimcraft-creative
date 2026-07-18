@@ -2723,8 +2723,10 @@ class CaseWorkflowStreamView(View):
                 content_type='application/json',
                 status=401,
             )
-        # 一次性使用：验证通过后立即撤销，防止 SSE URL 被复制后滥用
-        revoke_ticket(ticket)
+        # 不在此处撤销：本端点由 EventSource 消费，会自动重连到同一 URL+ticket。
+        # 过早撤销会使断线自动重连、以及暂停/等待后恢复再连接时校验失败。
+        # 改为仅在事件流因运行「真正终态」（complete/error/cancelled）结束时撤销；
+        # 暂停/等待复原等中间态保留票据，允许在短 TTL 内重连续传。
 
         case = await sync_to_async(get_object_or_404)(Case, pk=pk, owner=user)
         thread_id = request.GET.get('thread_id') or case.thread_id
@@ -2745,76 +2747,88 @@ class CaseWorkflowStreamView(View):
         except (TypeError, ValueError):
             last_event_id = 0
 
+        # 结束事件流的事件（含中间态）；其中「真正终态」才撤销票据。
+        stream_end_events = {
+            'workflow.complete', 'workflow.error', 'workflow.waiting_review',
+            'workflow.paused', 'workflow.cancelled',
+        }
+        truly_terminal_events = {
+            'workflow.complete', 'workflow.error', 'workflow.cancelled',
+        }
+
         async def event_stream():
             """SSE 异步生成器：回放 + 订阅 + 心跳。"""
+            # 仅在运行进入真正终态时置 True，用于决定是否撤销票据。
+            normal_end = False
             depot = EventDepot()
             emitter = NotifyEmitter()
+            try:
+                # 1. 回放漏掉的事件（断连续传）
+                missed = await depot.get_events_after(thread_id, last_event_id)
+                for evt in missed:
+                    yield _format_sse_event(evt, thread_id=thread_id)
+                    if evt['event_type'] in stream_end_events:
+                        normal_end = evt['event_type'] in truly_terminal_events
+                        return
 
-            # 1. 回放漏掉的事件（断连续传）
-            missed = await depot.get_events_after(thread_id, last_event_id)
-            for evt in missed:
-                yield _format_sse_event(evt, thread_id=thread_id)
-                if evt['event_type'] in (
-                    'workflow.complete', 'workflow.error', 'workflow.waiting_review',
-                    'workflow.paused', 'workflow.cancelled',
-                ):
+                # 2. 检查工作流是否已结束
+                if await depot.is_workflow_completed(thread_id):
+                    normal_end = True
+                    return
+                current_case = await sync_to_async(Case.objects.get)(pk=pk)
+                if current_case.workflow_status in {'waiting_review', 'paused', 'idle'}:
+                    # 中间态：保留票据以便恢复后重连续传
                     return
 
-            # 2. 检查工作流是否已结束
-            if await depot.is_workflow_completed(thread_id):
-                return
-            current_case = await sync_to_async(Case.objects.get)(pk=pk)
-            if current_case.workflow_status in {'waiting_review', 'paused', 'idle'}:
-                return
+                # 3. 订阅 NOTIFY（通过线程桥接到 asyncio.Queue）
+                loop = asyncio.get_running_loop()
+                notify_queue: asyncio.Queue = asyncio.Queue()
+                stop_event = threading.Event()
 
-            # 3. 订阅 NOTIFY（通过线程桥接到 asyncio.Queue）
-            loop = asyncio.get_running_loop()
-            notify_queue: asyncio.Queue = asyncio.Queue()
-            stop_event = threading.Event()
-
-            def on_notify(pid, channel, payload):
-                """NOTIFY 回调（在线程中执行），通过 call_soon_threadsafe 投递到事件循环。"""
-                try:
-                    event_id = int(payload)
-                    loop.call_soon_threadsafe(notify_queue.put_nowait, event_id)
-                except (TypeError, ValueError):
-                    pass
-
-            subscribe_task = asyncio.create_task(
-                emitter.subscribe(thread_id, on_notify, stop_event)
-            )
-
-            # 4. 心跳 + 新事件推送循环
-            current_last = missed[-1]['event_id'] if missed else last_event_id
-            try:
-                while True:
+                def on_notify(pid, channel, payload):
+                    """NOTIFY 回调（在线程中执行），通过 call_soon_threadsafe 投递到事件循环。"""
                     try:
-                        # 等待通知，15s 超时则发心跳
-                        await asyncio.wait_for(notify_queue.get(), timeout=15)
-                        # 收到通知，拉取新事件
-                        new_events = await depot.get_events_after(
-                            thread_id, current_last
-                        )
-                        for evt in new_events:
-                            yield _format_sse_event(evt, thread_id=thread_id)
-                            current_last = evt['event_id']
-                            if evt['event_type'] in (
-                                'workflow.complete', 'workflow.error',
-                                'workflow.waiting_review', 'workflow.paused',
-                                'workflow.cancelled',
-                            ):
-                                return
-                    except asyncio.TimeoutError:
-                        # 心跳保活（SSE 注释行，不触发前端事件）
-                        yield ': heartbeat\n\n'
-            finally:
-                # 清理：通知订阅线程退出 + 取消任务
-                stop_event.set()
-                subscribe_task.cancel()
+                        event_id = int(payload)
+                        loop.call_soon_threadsafe(notify_queue.put_nowait, event_id)
+                    except (TypeError, ValueError):
+                        pass
+
+                subscribe_task = asyncio.create_task(
+                    emitter.subscribe(thread_id, on_notify, stop_event)
+                )
+
+                # 4. 心跳 + 新事件推送循环
+                current_last = missed[-1]['event_id'] if missed else last_event_id
                 try:
-                    await subscribe_task
-                except asyncio.CancelledError:
-                    pass
+                    while True:
+                        try:
+                            # 等待通知，15s 超时则发心跳
+                            await asyncio.wait_for(notify_queue.get(), timeout=15)
+                            # 收到通知，拉取新事件
+                            new_events = await depot.get_events_after(
+                                thread_id, current_last
+                            )
+                            for evt in new_events:
+                                yield _format_sse_event(evt, thread_id=thread_id)
+                                current_last = evt['event_id']
+                                if evt['event_type'] in stream_end_events:
+                                    normal_end = evt['event_type'] in truly_terminal_events
+                                    return
+                        except asyncio.TimeoutError:
+                            # 心跳保活（SSE 注释行，不触发前端事件）
+                            yield ': heartbeat\n\n'
+                finally:
+                    # 清理：通知订阅线程退出 + 取消任务
+                    stop_event.set()
+                    subscribe_task.cancel()
+                    try:
+                        await subscribe_task
+                    except asyncio.CancelledError:
+                        pass
+            finally:
+                # 仅运行真正终态时撤销票据；中间态/客户端断线保留，允许重连续传
+                if normal_end:
+                    revoke_ticket(ticket)
 
         response = StreamingHttpResponse(
             event_stream(), content_type='text/event-stream'

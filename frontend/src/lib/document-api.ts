@@ -206,7 +206,8 @@ export const documentApi = {
 
 /**
  * 当 /documents/{id}/ 端点不存在时，从 WorkflowArtifact 构造 DocumentDetail。
- * artifact.payload 期望含 title / paragraphs / template_type 等字段。
+ * artifact.payload 期望含 title / content / paragraphs / template_variant 等字段；
+ * 文书种类（template_type）由 artifact.kind 推导。
  */
 function artifactToDocument(
   runId: number,
@@ -216,9 +217,15 @@ function artifactToDocument(
   const payload = (artifact.payload || {}) as {
     title?: string
     content?: string
-    template_type?: string
+    // P5：产物内容里是 template_variant（投诉风格），非文书种类；
+    // 文书种类（template_type）由 artifact.kind 推导。
+    template_variant?: string
     paragraphs?: Array<Paragraph & { paragraph_id?: string }>
   }
+  // 文书种类：由产物 kind（complaint_draft / respond_complaint_draft）推导，
+  // 与后端文书详情端点 template_type=document_type 语义一致。
+  const documentType =
+    artifact.kind === 'respond_complaint_draft' ? 'respond_complaint' : 'complaint'
   // 后端段落以 paragraph_id 为键（paragraph_splitter 输出），归一化为前端契约的 id。
   const paragraphs: Paragraph[] = (Array.isArray(payload.paragraphs) ? payload.paragraphs : []).map(
     (p) => ({ ...p, id: p.id || p.paragraph_id || '' }),
@@ -237,7 +244,7 @@ function artifactToDocument(
     id: documentId,
     run_id: runId,
     title: payload.title || artifact.summary || '文书',
-    template_type: payload.template_type,
+    template_type: documentType,
     paragraphs,
     current_version: 1,
     created_at: artifact.created_at,

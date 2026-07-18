@@ -299,7 +299,10 @@ class SSEEventMapperEnvelopeTest(unittest.TestCase):
         }
         sse_events = asyncio.run(mapper.map(raw_event))
 
-        self.assertEqual(len(sse_events), 1)
+        # preclassify 的 on_chain_start 现返回 2 个事件：
+        #   node.start（旧事件，兼容旧前端）+ stage.started（追加式业务阶段事件，
+        #   preclassify 为 material_understanding 阶段首节点）。
+        self.assertEqual(len(sse_events), 2)
         evt = sse_events[0]
         self.assertEqual(evt.type, "node.start")
         # occurred_at 被 _apply_envelope 填充
@@ -307,6 +310,12 @@ class SSEEventMapperEnvelopeTest(unittest.TestCase):
         # run_id / revision 保持 None（Task 3.1 / 2.4 引入前）
         self.assertIsNone(evt.run_id)
         self.assertIsNone(evt.revision)
+
+        # 第二个事件为追加式 stage.started
+        stage_evt = sse_events[1]
+        self.assertEqual(stage_evt.type, "stage.started")
+        self.assertEqual(stage_evt.payload.get("stage"), "material_understanding")
+        self.assertEqual(stage_evt.payload.get("status"), "running")
 
     def test_map_injects_legacy_and_mapped_type_in_payload(self):
         """map() 在 payload 中注入 legacy_event_type + mapped_event_type。"""
