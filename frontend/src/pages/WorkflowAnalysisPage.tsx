@@ -531,9 +531,10 @@ export default function WorkflowAnalysisPage() {
         ) : (
           <div className="rounded-2xl border border-dashed border-[#bdc6be] bg-white px-6 py-16 text-center">
             <img
-              src="/空状态插画.png"
+              src="/empty-state.webp"
               alt=""
               aria-hidden="true"
+              loading="lazy"
               className="mx-auto mb-5 w-48 max-w-[70%] object-contain"
             />
             <h3 className="text-lg font-semibold">尚未发起工作流分析</h3>

@@ -16,9 +16,10 @@ export default function EmptyState({ icon, illustration = true, title, descripti
     <div className={cn("flex flex-col items-center justify-center py-16 text-center", className)}>
       {illustration ? (
         <img
-          src="/空状态插画.png"
+          src="/empty-state.webp"
           alt=""
           aria-hidden="true"
+          loading="lazy"
           className="mb-5 h-auto w-48 max-w-[70%] object-contain"
         />
       ) : (
