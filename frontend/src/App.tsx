@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, Outlet } from "react-router"
 import { useAuthStore } from "@/stores/auth-store"
 
 const HomePage = lazy(() => import("@/pages/HomePage"))
+const DocsPage = lazy(() => import("@/pages/DocsPage"))
 const LoginPage = lazy(() => import("@/pages/LoginPage"))
 const RegisterPage = lazy(() => import("@/pages/RegisterPage"))
 const AppLayout = lazy(() => import("@/layouts/AppLayout"))
@@ -62,6 +63,8 @@ export default function App() {
       <Routes>
         {/* 公开落地页 */}
         <Route path="/home" element={<HomePage />} />
+        <Route path="/docs" element={<DocsPage />} />
+        <Route path="/docs/:section" element={<DocsPage />} />
         <Route element={<PublicOnly />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
