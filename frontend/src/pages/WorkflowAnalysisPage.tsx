@@ -1,4 +1,5 @@
-// 工作流分析工作台（新前端统一工作流 UI 的接入页）
+// 工作流分析工作台：只负责展示工作流全过程（各阶段状态 + 各节点产物 + 质量/问题）。
+// 文书编辑不在本页，收敛到投诉页(/complaint)或反证页(/respond)——本页提供跳转入口。
 //
 // 数据流：
 //   listRuns → active_run_id → streamTicket + getSnapshot(归一化) → applySnapshot → SSE
@@ -8,21 +9,31 @@
 // 新旧工作流统一在本页展示：WorkflowRun 使用新工作台，历史 thread 使用兼容面板恢复。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams, Link } from "react-router"
-import { Loader2, Play, History, Workflow, RefreshCw, AlertTriangle } from "lucide-react"
+import type { ReactNode } from "react"
+import {
+  Loader2,
+  Play,
+  History,
+  Workflow,
+  RefreshCw,
+  AlertTriangle,
+  FileText,
+  PenLine,
+} from "lucide-react"
 
 import { useCaseStore } from "@/stores/case-store"
 import { useAuthStore } from "@/stores/auth-store"
+import { useStatus } from "@/composables/useStatus"
 import { useWorkflowRunStore } from "@/stores/workflow-run-store"
 import {
   useInterventionStore,
   configureInterventionSubmitHandler,
 } from "@/stores/intervention-store"
 import { workflowRunApi, isRevisionConflictError } from "@/lib/api"
-import { documentApi } from "@/lib/document-api"
 import { createSSEClient, type SSEClient } from "@/lib/sse-client"
 import { normalizeSnapshot } from "@/lib/workflow-adapters"
-import type { QualityReport, Issue, WorkflowArtifact } from "@/types/workflow"
-import type { DocumentDetail } from "@/types/document"
+import { findDocumentArtifact } from "@/lib/workflow-document"
+import type { QualityReport, Issue } from "@/types/workflow"
 
 import { WorkflowCommandBar, type ConnectionStatus } from "@/components/workflow/WorkflowCommandBar"
 import { BusinessStageStepper } from "@/components/workflow/BusinessStageStepper"
@@ -34,22 +45,12 @@ import { ArtifactTimeline } from "@/components/workflow/ArtifactTimeline"
 import { RunConfigurationDrawer } from "@/components/workflow/RunConfigurationDrawer"
 import { RunHistoryDrawer } from "@/components/workflow/RunHistoryDrawer"
 import { WorkflowRecoveryPanel } from "@/components/workflow/WorkflowRecoveryPanel"
-import { DocumentEditor } from "@/components/workflow/DocumentEditor"
 import { WorkflowStreamPanel } from "@/components/workflow/WorkflowStreamPanel"
 
-// 文书产物类型 → DocumentEditor.fromStage
-const DOC_ARTIFACT_KINDS = new Set<WorkflowArtifact["kind"]>([
-  "complaint_draft",
-  "respond_complaint_draft",
-])
-
-function findDocumentArtifact(artifacts: WorkflowArtifact[]): WorkflowArtifact | null {
-  // 取最近一个文书产物（document_generation 阶段）
-  for (let i = artifacts.length - 1; i >= 0; i--) {
-    const a = artifacts[i]
-    if (DOC_ARTIFACT_KINDS.has(a.kind) || a.stage === "document_generation") return a
-  }
-  return null
+// 文书产物种类 → 中文名（用于「编辑文书」入口卡）
+const DOC_KIND_LABELS: Record<string, string> = {
+  complaint_draft: "投诉书",
+  respond_complaint_draft: "反证答辩书",
 }
 
 // store 连接态 → CommandBar 连接态
@@ -69,6 +70,31 @@ const REFETCH_EVENTS = new Set([
   "review.resumed",
 ])
 
+// ---------- 统一卡片外壳（对齐 Timeline/Export 视觉规范） ----------
+
+function SectionCard({
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  eyebrow: string
+  title: string
+  description?: string
+  children: ReactNode
+}) {
+  return (
+    <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
+      <div className="mb-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">{eyebrow}</p>
+        <h2 className="mt-1 text-lg font-semibold tracking-tight">{title}</h2>
+        {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 export default function WorkflowAnalysisPage() {
   const { caseId: caseIdParam } = useParams<{ caseId: string }>()
   const caseId = Number(caseIdParam)
@@ -77,6 +103,7 @@ export default function WorkflowAnalysisPage() {
   const fetchEvidences = useCaseStore((s) => s.fetchEvidences)
   const evidences = useCaseStore((s) => s.evidences)
   const currentCase = useCaseStore((s) => s.currentCase)
+  const { disputeLabel } = useStatus()
 
   const run = useWorkflowRunStore((s) => s.run)
   const runId = useWorkflowRunStore((s) => s.runId)
@@ -168,10 +195,13 @@ export default function WorkflowAnalysisPage() {
         url: streamUrl,
         accessToken: accessToken ?? undefined,
         onConnect: () => {
-          reconnectAttemptsRef.current = 0
           setConnection("connected")
         },
         onEvent: (event) => {
+          // 收到事件才证明连接真正健康，此时才清零重连计数。
+          // 避免「connect → 立即断开」反复发生时（onConnect 每次清零）永远触不到
+          // 重连上限，导致连接状态无限次在「已连接 / 重连中」之间闪烁。
+          reconnectAttemptsRef.current = 0
           const result = applySSEEvent(event)
           const type = String(event.event_type ?? "")
           if (result.needsSnapshotRefetch || REFETCH_EVENTS.has(type)) {
@@ -347,39 +377,13 @@ export default function WorkflowAnalysisPage() {
       .map((i) => ({ title: "证据类型匹配度偏低", detail: i.message }))
   }, [issues])
 
-  // ---------- 派生：文书产物 ----------
+  // ---------- 派生：文书产物（仅用于「编辑文书」入口存在性判断） ----------
 
   const docArtifact = useMemo(() => findDocumentArtifact(artifacts), [artifacts])
-  const documentVersionId = docArtifact
-    ? (docArtifact.payload as { document_version_id?: number }).document_version_id
-    : undefined
-  const [documentDetail, setDocumentDetail] = useState<DocumentDetail | null>(null)
-  const [isExportingDocument, setIsExportingDocument] = useState(false)
-  const loadedDocKeyRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (!runId || !docArtifact) {
-      setDocumentDetail(null)
-      loadedDocKeyRef.current = null
-      return
-    }
-    const docId = documentVersionId != null ? String(documentVersionId) : String(docArtifact.id)
-    const key = `${runId}:${docId}`
-    if (loadedDocKeyRef.current === key) return
-    loadedDocKeyRef.current = key
-    let cancelled = false
-    ;(async () => {
-      try {
-        const detail = await documentApi.getDocument(runId, docId, docArtifact)
-        if (!cancelled) setDocumentDetail(detail)
-      } catch {
-        if (!cancelled) setDocumentDetail(null)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [runId, docArtifact, documentVersionId])
+  const isRespondMode = currentCase?.case_mode === "respond"
+  const editPath = isRespondMode ? "respond" : "complaint"
+  const editLabel = isRespondMode ? "反证答辩" : "投诉文本"
+  const docKindLabel = docArtifact ? DOC_KIND_LABELS[docArtifact.kind] ?? "文书" : "文书"
 
   // ---------- 动作 ----------
 
@@ -440,19 +444,6 @@ export default function WorkflowAnalysisPage() {
     [closeClient, resetRunStore, loadRun],
   )
 
-  const handleDocumentExport = useCallback(async () => {
-    if (!documentDetail || !runId || isExportingDocument) return
-    setIsExportingDocument(true)
-    try {
-      const check = await documentApi.exportCheck(runId, documentDetail.id)
-      if (check.passed) {
-        window.location.assign(`/cases/${caseId}/export`)
-      }
-    } finally {
-      setIsExportingDocument(false)
-    }
-  }, [caseId, documentDetail, isExportingDocument, runId])
-
   // 恢复面板重试成功 → 切换到 fork 出的新运行
   const handleRetrySuccess = useCallback(
     async (resp: { run_id: number; stream_url: string }) => {
@@ -468,43 +459,72 @@ export default function WorkflowAnalysisPage() {
     currentCase?.thread_id && currentCase.workflow_status && currentCase.workflow_status !== "idle",
   )
 
+  // hero 统计
+  const heroStats = [
+    { label: "分析进度", value: `${Math.round((run?.progress ?? 0) * 100)}%` },
+    { label: "工作流产物", value: artifacts.length },
+    { label: "待办问题", value: issues.length },
+  ]
+
   return (
-    <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-      {/* 头部 */}
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#e7eee9] text-[#2f5947]">
-            <Workflow className="h-5 w-5" aria-hidden="true" />
-          </span>
+    <div className="space-y-5 pb-8">
+      {/* 深色 hero：对齐 Timeline/Export */}
+      <section className="relative overflow-hidden rounded-[28px] bg-[#17231d] text-white shadow-[0_22px_65px_rgba(23,35,29,.14)]">
+        <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-[#6f9f83]/20 blur-3xl" />
+        <div className="relative grid gap-7 p-6 sm:p-8 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">工作流分析</h1>
-            <p className="text-sm text-muted-foreground">
-              {currentCase?.title ?? `案件 #${caseId}`}
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs text-white/70">
+              <Workflow className="h-3.5 w-3.5 text-[#d8b967]" />
+              智能分析工作流
+            </div>
+            <h1 className="mt-5 text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">工作流分析</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+              依次完成材料理解、事实核对、案件组织与文书生成。本页展示各阶段状态与产物；文书编辑请前往{editLabel}页。
             </p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">
+                {currentCase?.title || `案件 #${caseId}`}
+              </span>
+              {currentCase?.case_type && (
+                <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">
+                  {disputeLabel(currentCase.case_type)}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col justify-between gap-4">
+            <div className="flex justify-start gap-2 xl:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowHistory(true)}
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3.5 text-sm font-medium text-white transition-colors hover:bg-white/15"
+              >
+                <History className="h-4 w-4" aria-hidden="true" />
+                运行历史
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowConfig(true)}
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-white px-3.5 text-sm font-semibold text-[#17231d] transition-opacity hover:opacity-90"
+              >
+                <Play className="h-4 w-4" aria-hidden="true" />
+                开始分析
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {heroStats.map((item) => (
+                <div key={item.label} className="rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-sm">
+                  <span className="text-xs text-white/45">{item.label}</span>
+                  <div className="mt-2 text-2xl font-semibold">{item.value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowHistory(true)}
-            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-[#d9ddd5] bg-white px-3.5 text-sm font-medium hover:bg-[#f1f2ee]"
-          >
-            <History className="h-4 w-4" aria-hidden="true" />
-            运行历史
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowConfig(true)}
-            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#181b1a] px-3.5 text-sm font-semibold text-white hover:bg-[#2b302d]"
-          >
-            <Play className="h-4 w-4" aria-hidden="true" />
-            开始分析
-          </button>
-        </div>
-      </header>
+      </section>
 
       {loading ? (
-        <div className="flex items-center justify-center py-24 text-muted-foreground">
+        <div className="flex items-center justify-center rounded-[24px] border border-border bg-card py-24 text-muted-foreground">
           <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
           正在加载运行状态…
         </div>
@@ -518,18 +538,15 @@ export default function WorkflowAnalysisPage() {
         </div>
       ) : !run ? (
         hasLegacyWorkflow ? (
-          <section className="space-y-4 rounded-2xl border border-[#e2e6df] bg-white p-4 sm:p-5" aria-label="历史工作流分析">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#2f5947]">历史分析</p>
-              <h2 className="mt-1 text-lg font-semibold">工作流分析记录与输出</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                该案件由旧版工作流生成，历史节点、实时状态和具体输出已迁移至本页面展示。
-              </p>
-            </div>
+          <SectionCard
+            eyebrow="历史分析"
+            title="工作流分析记录与输出"
+            description="该案件由旧版工作流生成，历史节点、实时状态和具体输出已迁移至本页面展示。"
+          >
             <WorkflowStreamPanel caseId={caseId} />
-          </section>
+          </SectionCard>
         ) : (
-          <div className="rounded-2xl border border-dashed border-[#bdc6be] bg-white px-6 py-16 text-center">
+          <div className="rounded-[24px] border border-dashed border-[#bdc6be] bg-card px-6 py-16 text-center">
             <img
               src="/empty-state.webp"
               alt=""
@@ -545,14 +562,14 @@ export default function WorkflowAnalysisPage() {
               <button
                 type="button"
                 onClick={() => setShowConfig(true)}
-                className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#181b1a] px-4 text-sm font-semibold text-white hover:bg-[#2b302d]"
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-[#17231d] px-4 text-sm font-semibold text-white hover:opacity-90"
               >
                 <Play className="h-4 w-4" aria-hidden="true" />
                 开始分析
               </button>
               <Link
                 to={`/cases/${caseId}/evidence`}
-                className="inline-flex min-h-[44px] items-center rounded-xl border border-[#d9ddd5] bg-white px-4 text-sm font-medium hover:bg-[#f1f2ee]"
+                className="inline-flex min-h-[44px] items-center rounded-xl border border-border bg-white px-4 text-sm font-medium hover:bg-muted"
               >
                 先去上传证据
               </Link>
@@ -587,7 +604,9 @@ export default function WorkflowAnalysisPage() {
             onCancel={handleCancel}
           />
 
-          <BusinessStageStepper stages={stages} currentStage={run.current_stage} />
+          <SectionCard eyebrow="业务阶段" title="四阶段处理进度" description="材料理解 → 事实核对 → 案件组织 → 文书生成。">
+            <BusinessStageStepper stages={stages} currentStage={run.current_stage} />
+          </SectionCard>
 
           {activeIntervention && (
             <InterventionPanel
@@ -609,31 +628,54 @@ export default function WorkflowAnalysisPage() {
           )}
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <SectionCard
+              eyebrow="工作流产物"
+              title="各阶段节点输出"
+              description="按时间展示每个节点生成的产物；展开可查看内容与来源依据。"
+            >
+              <div className="space-y-4">
+                <CurrentActivityPanel run={run} artifacts={artifacts} issues={issues} />
+                <ArtifactTimeline artifacts={artifacts} />
+              </div>
+            </SectionCard>
+
             <div className="space-y-5">
-              <CurrentActivityPanel run={run} artifacts={artifacts} issues={issues} />
-              <ArtifactTimeline artifacts={artifacts} />
-            </div>
-            <div className="space-y-5">
-              <QualitySummary quality={quality} warnings={qualityWarnings} />
-              <IssueList issues={issues} onEvidenceClick={handleEvidenceClick} onIssueClick={handleIssueEvidenceClick} />
+              <SectionCard eyebrow="质量与问题" title="质量摘要">
+                <div className="space-y-4">
+                  <QualitySummary quality={quality} warnings={qualityWarnings} />
+                  <IssueList
+                    issues={issues}
+                    onEvidenceClick={handleEvidenceClick}
+                    onIssueClick={handleIssueEvidenceClick}
+                  />
+                </div>
+              </SectionCard>
+
+              {docArtifact && (
+                <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)]">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-secondary">
+                      <FileText className="h-5 w-5" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">文书产物</p>
+                      <h2 className="text-sm font-semibold">{docKindLabel}已生成</h2>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                    文书编辑（逐段修改、AI 重写、法律依据核对）已收敛到{editLabel}页。
+                  </p>
+                  <Link
+                    to={`/cases/${caseId}/${editPath}`}
+                    className="mt-4 inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#17231d] px-4 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                  >
+                    <PenLine className="h-4 w-4" aria-hidden="true" />
+                    编辑文书
+                  </Link>
+                </section>
+              )}
             </div>
           </div>
-
-          {documentDetail && (
-            <section aria-label="文书工作台" className="rounded-2xl border border-[#e2e6df] bg-white p-1">
-              <DocumentEditor
-                document={documentDetail}
-                fromStage={
-                  docArtifact?.kind === "respond_complaint_draft" ? "respond_complaint" : "complaint"
-                }
-                isStreaming={connection === "connected" && run.status === "running"}
-                onExport={() => { void handleDocumentExport() }}
-                isExporting={isExportingDocument}
-                onJumpToEvidence={() => window.location.assign(`/cases/${caseId}/evidence`)}
-                onRegenerateFullSuccess={(resp) => void handleRetrySuccess(resp)}
-              />
-            </section>
-          )}
         </div>
       )}
 

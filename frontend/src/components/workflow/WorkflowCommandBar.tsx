@@ -304,6 +304,10 @@ export function WorkflowCommandBar({
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${statusConfig.dotClass}`} aria-hidden="true" />
           {statusConfig.label}
         </span>
+        {/* 暂停为「阶段边界」生效：明确告知用户暂停请求已提交但需当前阶段完成，避免误判为无效 */}
+        {isPausing && (
+          <span className="text-[11px] text-amber-700">将在当前阶段完成后生效</span>
+        )}
       </div>
 
       {/* 中间：进度 + 当前阶段 */}

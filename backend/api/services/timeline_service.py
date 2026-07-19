@@ -2,6 +2,7 @@
 """时间线相关业务逻辑。"""
 import re
 from datetime import datetime
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from api.models import TimelineNode
@@ -12,19 +13,37 @@ DATE_PATTERNS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y年%m月%
 def get_sorted_timeline(case):
     return list(case.timeline_nodes.order_by("datetime", "order", "id"))
 
+def _coerce_tz(dt):
+    """将 datetime 归一化到与项目 USE_TZ 约定一致的形态。
+
+    项目 USE_TZ=False + MySQL 后端只接受 naive datetime，且排序时 naive/aware 混用会抛
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``。此处统一：
+    - USE_TZ=False → 返回 naive（aware 按当前时区换算为本地 naive）
+    - USE_TZ=True  → 返回 aware（naive 按当前时区补齐）
+    """
+    if dt is None:
+        return None
+    if settings.USE_TZ:
+        return (
+            timezone.make_aware(dt, timezone.get_current_timezone())
+            if timezone.is_naive(dt) else dt
+        )
+    return (
+        timezone.make_naive(dt, timezone.get_current_timezone())
+        if timezone.is_aware(dt) else dt
+    )
+
 def _parse_datetime(value):
     if not value:
         return None
     text = re.sub(r"\s+", " ", str(value).strip().replace("/", "-").replace(".", "-"))
     for fmt in DATE_PATTERNS:
         try:
-            dt = datetime.strptime(text[:19], fmt)
-            return timezone.make_aware(dt, timezone.get_current_timezone())
+            return _coerce_tz(datetime.strptime(text[:19], fmt))
         except ValueError:
             continue
     try:
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return timezone.make_aware(dt, timezone.get_current_timezone()) if timezone.is_naive(dt) else dt
+        return _coerce_tz(datetime.fromisoformat(text.replace("Z", "+00:00")))
     except ValueError:
         return None
 
@@ -50,7 +69,8 @@ def rebuild_timeline(case):
                 candidates.append((dt, evidence.code, _event_from_field(evidence, field)))
         if evidence.source_time:
             event = evidence.description or evidence.ocr_summary or "证据材料记录"
-            candidates.append((evidence.source_time, evidence.code, f"[{evidence.code}] {event}"))
+            # 统一时区形态，避免与 _parse_datetime 结果混排时抛 TypeError
+            candidates.append((_coerce_tz(evidence.source_time), evidence.code, f"[{evidence.code}] {event}"))
     seen = set()
     for dt, code, event in sorted(candidates, key=lambda item: item[0]):
         key = (dt.isoformat(), code, event)

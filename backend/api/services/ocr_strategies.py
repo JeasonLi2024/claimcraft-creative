@@ -22,11 +22,35 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
     before_sleep_log,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# 非瞬时错误：文件缺失/权限/路径类错误（均继承自 OSError），重试不会让文件出现，
+# 只会在每个策略上空耗 max_attempts × 指数退避，叠加多级降级链后拖垮 OCR 节点超时
+# （180s）。因此这些错误必须快速失败，不进入重试。
+_NON_RETRYABLE_OCR_ERRORS = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+)
+# 瞬时错误：网络超时/连接问题/其余 OS 层错误可重试。
+_RETRYABLE_OCR_ERRORS = (TimeoutError, ConnectionError, OSError)
+
+
+def _is_retryable_ocr_error(exc: BaseException) -> bool:
+    """判断 OCR 异常是否可重试。
+
+    先排除非瞬时文件系统错误（FileNotFoundError 等，继承自 OSError），再对瞬时错误放行。
+    避免「文件不存在」这类永不自愈的错误被反复重试导致节点超时。
+    """
+    if isinstance(exc, _NON_RETRYABLE_OCR_ERRORS):
+        return False
+    return isinstance(exc, _RETRYABLE_OCR_ERRORS)
 
 
 def _get_ocr_retry_config() -> dict:
@@ -48,7 +72,7 @@ def _build_ocr_retry():
     return retry(
         stop=stop_after_attempt(cfg['max_attempts']),
         wait=wait_exponential(multiplier=1, min=cfg['wait_min'], max=cfg['wait_max']),
-        retry=retry_if_exception_type((TimeoutError, ConnectionError, OSError)),
+        retry=retry_if_exception(_is_retryable_ocr_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )

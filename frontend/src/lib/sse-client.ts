@@ -319,6 +319,11 @@ export class FetchStreamSSEClient {
 
         buffer += decoder.decode(value, { stream: true })
 
+        // 收到任意数据（含服务端 `: heartbeat` 注释、未成块的分片）即视为连接存活，
+        // 立即重置心跳超时。否则长耗时节点（OCR / LLM 生成）在 heartbeatTimeoutMs
+        // 内不产出「可解析事件」时会误判超时 → 断开重连，导致连接状态反复闪烁。
+        this.resetHeartbeat()
+
         // SSE 事件块以空行（\n\n）分隔
         let separatorIdx: number
         while ((separatorIdx = buffer.indexOf("\n\n")) !== -1) {
@@ -327,7 +332,6 @@ export class FetchStreamSSEClient {
 
           const event = this.parseEvent(rawEvent)
           if (event) {
-            this.resetHeartbeat()
             this.handleEvent(event)
           }
         }

@@ -109,6 +109,20 @@ def _update_workflow_run(run_id: int, **fields):
 
 
 @sync_to_async
+def _get_workflow_run_status(run_id: int) -> Optional[str]:
+    """读取 WorkflowRun.status（协作式取消轮询用）。
+
+    用户点「终止」后，cancel 端点将 status 置为 cancelled。runner 在 astream_events
+    循环内节流轮询此状态，发现 cancelled 即停止消费事件流并干净退出，不再推进
+    complete_processing / 覆盖状态，从而让「终止」对运行本身真正生效。
+    """
+    from api.models import WorkflowRun
+    return (
+        WorkflowRun.objects.filter(pk=run_id).values_list('status', flat=True).first()
+    )
+
+
+@sync_to_async
 def _create_workflow_run(
     case_id: int,
     selected_evidence_ids: list,
@@ -530,6 +544,10 @@ class WorkflowRunner:
             token_started_at: float | None = None
             token_limit = max(1, int(os.environ.get("SSE_TOKEN_BATCH_SIZE", "50")))
             token_interval = max(0.05, float(os.environ.get("SSE_TOKEN_BATCH_INTERVAL", "0.5")))
+            # 协作式取消：节流轮询 WorkflowRun.status，发现 cancelled 即停止推进。
+            cancelled_by_user = False
+            last_cancel_check = 0.0
+            cancel_check_interval = 2.0
 
             async def flush_tokens() -> None:
                 nonlocal token_started_at
@@ -545,6 +563,21 @@ class WorkflowRunner:
                 await emitter.notify(thread_id, eid)
 
             async for raw_event in stream:
+                # 协作式取消：节流检查用户是否已点「终止」。发现取消则跳出事件消费循环，
+                # 后续跳过 complete_processing / 状态覆盖分支，保留 cancelled 状态。
+                if run_id is not None:
+                    now_ts = asyncio.get_running_loop().time()
+                    if now_ts - last_cancel_check >= cancel_check_interval:
+                        last_cancel_check = now_ts
+                        try:
+                            if await _get_workflow_run_status(run_id) == 'cancelled':
+                                cancelled_by_user = True
+                                break
+                        except Exception as cancel_err:
+                            logger.debug(
+                                f"检查取消状态失败 (run_id={run_id}): {cancel_err}"
+                            )
+
                 try:
                     sse_events = await mapper.map(raw_event)
                 except Exception as map_err:
@@ -590,7 +623,24 @@ class WorkflowRunner:
                     eid = await depot.persist(thread_id, sse_event.type, sse_payload)
                     await emitter.notify(thread_id, eid)
 
-            await flush_tokens()
+            if not cancelled_by_user:
+                await flush_tokens()
+
+            # 协作式取消：循环内已发现取消，或恰好在事件流结束时被取消（竞态兜底再查一次）。
+            # 命中则干净退出：不推进 complete_processing、不覆盖 cancelled 状态。
+            # cancel 端点已发出 workflow.cancelled 终止事件通知前端，无需在此重复发送。
+            if run_id is not None and not cancelled_by_user:
+                try:
+                    if await _get_workflow_run_status(run_id) == 'cancelled':
+                        cancelled_by_user = True
+                except Exception as cancel_err:
+                    logger.debug(f"检查取消状态失败 (run_id={run_id}): {cancel_err}")
+            if cancelled_by_user:
+                logger.info(
+                    f"工作流被用户终止，停止推进 (thread={thread_id}, "
+                    f"case={case_id}, run_id={run_id})"
+                )
+                return
 
             # 4. 区分阶段暂停、HITL 审核中断与图真正结束。
             snapshot = await workflow.aget_state(config)

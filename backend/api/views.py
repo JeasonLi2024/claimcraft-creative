@@ -3670,6 +3670,8 @@ class WorkflowRunCancelView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, run_id: int):
+        from asgiref.sync import async_to_sync
+        from api.agents import EventDepot, NotifyEmitter
         from api.models import WorkflowRun
         from api.services.case_lifecycle_service import cancel_workflow_run
 
@@ -3699,6 +3701,18 @@ class WorkflowRunCancelView(APIView):
             workflow_paused_after='',
             workflow_finished_at=timezone.now(),
         )
+
+        # 发出 workflow.cancelled 终止事件：连接中的 SSE 客户端据此立即结束事件流并停止
+        # 展示。后台运行器随后在 astream 循环的协作式取消点检测到 cancelled 状态并停止推进。
+        if run.thread_id:
+            depot = EventDepot()
+            event_id = async_to_sync(depot.persist)(run.thread_id, 'workflow.cancelled', {
+                'thread_id': run.thread_id,
+                'case_id': run.case_id,
+                'run_id': run.id,
+                'ts': timezone.now().isoformat(),
+            })
+            async_to_sync(NotifyEmitter().notify)(run.thread_id, event_id)
 
         return Response({
             "run_id": run.id,
