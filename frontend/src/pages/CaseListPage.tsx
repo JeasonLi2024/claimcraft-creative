@@ -208,7 +208,7 @@ export default function CaseListPage() {
       {!loading && cases.length === 0 && (
         <div className="relative overflow-hidden rounded-2xl border border-dashed border-[#bdc6be] bg-white px-6 py-14 text-center">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(63,107,87,.08),transparent_55%)]" />
-          <img src="/空状态插画.png" alt="" aria-hidden="true" className="relative mx-auto w-52 max-w-[75%] object-contain" />
+          <img src="/empty-state.webp" alt="" aria-hidden="true" loading="lazy" className="relative mx-auto w-52 max-w-[75%] object-contain" />
           <h3 className="relative mt-5 text-xl font-semibold">{hasFilters ? "没有符合条件的案件" : "创建你的第一个案件工作区"}</h3>
           <p className="relative mx-auto mt-2 max-w-md text-sm leading-6 text-[#777e79]">{hasFilters ? "尝试更换搜索词或清除筛选条件。" : "从上传第一份证据开始，逐步完成事实时间线、投诉文稿和安全导出。"}</p>
           <div className="relative mt-6 flex justify-center gap-3">{hasFilters ? <button onClick={clearFilters} className="rounded-xl border border-[#d9ddd5] bg-white px-4 py-2.5 text-sm font-semibold hover:bg-[#f1f2ee]">清除筛选</button> : <button onClick={() => openCreate()} className="inline-flex items-center gap-2 rounded-xl bg-[#181b1a] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#2b302d]"><Plus className="h-4 w-4" />新建第一个案件</button>}</div>

@@ -28,7 +28,7 @@ const evidenceCards = [
 function BrandMark({ inverse = false }: { inverse?: boolean }) {
   return (
     <img
-      src="/logo.jpg"
+      src="/logo.webp"
       alt="ClaimCraft logo"
       className={`h-9 w-9 rounded-xl object-cover ${inverse ? "ring-1 ring-white/30" : ""}`}
     />
@@ -205,9 +205,10 @@ export default function AuthShell({ eyebrow, title, description, children }: Aut
       >
         <FlowingBackground reduce={reduce} />
         <img
-          src="/登录页视觉图.png"
+          src="/login-visual.webp"
           alt=""
           aria-hidden="true"
+          loading="lazy"
           className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-35 mix-blend-luminosity"
         />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#17231d]/30 via-[#17231d]/48 to-[#17231d]/92" />

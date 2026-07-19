@@ -92,7 +92,7 @@ const safetyItems = [
 ]
 
 function BrandMark({ className = "" }: { className?: string }) {
-  return <img src="/logo.jpg" alt="ClaimCraft logo" className={`h-8 w-8 rounded-lg object-cover ${className}`} />
+  return <img src="/logo.webp" alt="ClaimCraft logo" className={`h-8 w-8 rounded-lg object-cover ${className}`} />
 }
 
 function GitHubMark({ className = "" }: { className?: string }) {
@@ -263,7 +263,7 @@ export default function HomePage() {
       <main id="main-content">
         <section className="relative overflow-hidden border-b border-[#d9ddd5]">
           <img
-            src="/首页 Hero 背景.png"
+            src="/hero-bg.webp"
             alt=""
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center opacity-50"
