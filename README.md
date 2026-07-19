@@ -671,9 +671,16 @@ claimcraft-creative/
 │   ├── package.json
 │   └── vite.config.ts
 ├── docs/
+├── docker/
+│   ├── mysql-init/01-create-db-users.sql         # MySQL 首次启动初始化脚本
+│   └── postgres-init/01-create-db-users.sh       # PostgreSQL 首次启动初始化脚本
+├── scripts/
+│   └── init-shared-db.sh                         # 共享 DB 一次性初始化（创建用户/库 + 克隆数据）
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
-├── docker-compose.yml
+├── docker-compose.db.yml                         # 共享数据库层（MySQL + PostgreSQL）
+├── docker-compose.yml                            # 正式应用层
+├── docker-compose.test.yml                       # 测试应用层
 ├── nginx.conf
 ├── .env.example
 └── README.md
@@ -833,21 +840,30 @@ python manage.py cleanup_checkpoints --days=30 --dry-run
 
 ## 13. Docker 容器模式
 
-> 项目提供两套隔离的 Compose 配置：正式侧 `docker-compose.yml`（project 名 `claimcraft-creative`）与测试侧 `docker-compose.test.yml`（project 名 `claimcraft-test`）。两侧共享同一台主机的 `.env`，但拥有独立的网络、命名卷、容器名和镜像 tag，互不影响。
+> v2 架构（2026-07-19）：项目提供三层 Compose 配置：
+> - **共享数据库层** `docker-compose.db.yml`（project 名 `claimcraft-db`）：托管 MySQL + PostgreSQL 单实例，被正式/测试两侧复用
+> - **正式应用层** `docker-compose.yml`（project 名 `claimcraft-creative`）：仅 backend + frontend
+> - **测试应用层** `docker-compose.test.yml`（project 名 `claimcraft-test`）：仅 backend + frontend，按需启停
+>
+> 两侧通过 `external network: claimcraft-db_default` 接入共享 DB 实例，使用独立逻辑库与独立用户实现严格隔离：
+> - MySQL：`claimcraft` 库 / `claimcraft` 用户（正式）  ↔  `claimcraft_test` 库 / `claimcraft_test` 用户（测试）
+> - PostgreSQL：`claimcraft_checkpoints` 库 / `claimcraft` 用户（正式）  ↔  `claimcraft_test_checkpoints` 库 / `claimcraft_test` 用户（测试）
+>
+> 正式镜像使用不可变日期 tag（如 `claimcraft-creative-backend:20260719`），每次发布产出新 tag，旧 tag 永不覆盖。测试镜像仍用 `claimcraft-test-*:latest`，便于反复重建。
 
 ### 13.1 端口与服务概览
 
-| 服务 | 正式侧端口 | 测试侧端口 | 作用 |
-|---|---|---|---|
-| frontend | 80 | 8081 | Nginx 托管 React 并反代 API/SSE/media/static |
-| backend | 内部 8000 | 内部 8000 | Django + Uvicorn，启动时迁移、创建演示管理员、加载种子数据 |
-| mysql | 3306 | 3307 | MySQL 业务数据库 |
-| postgres-checkpointer | 5432 | 5433 | checkpoint、Store、SSE、法条向量（pgvector） |
+| 服务 | 项目 | 正式侧端口 | 测试侧端口 | 作用 |
+|---|---|---|---|---|
+| mysql | claimcraft-db | 3306 | 3306（共享） | MySQL 业务数据库（共享实例，逻辑库隔离） |
+| postgres-checkpointer | claimcraft-db | 5432 | 5432（共享） | checkpoint、Store、SSE、法条向量（pgvector，共享实例，逻辑库隔离） |
+| backend | claimcraft-creative / claimcraft-test | 内部 8000 | 内部 8000 | Django + Uvicorn，启动时迁移、创建演示管理员、加载种子数据 |
+| frontend | claimcraft-creative / claimcraft-test | 80 | 8081 | Nginx 托管 React 并反代 API/SSE/media/static |
 
 | 镜像 tag | 归属 | 说明 |
 |---|---|---|
-| `claimcraft-creative-backend:latest` | 正式侧 | 由 `docker-compose.yml` 的 `build:` 产出 |
-| `claimcraft-creative-frontend:latest` | 正式侧 | 同上 |
+| `claimcraft-creative-backend:YYYYMMDD` | 正式侧 | 由 `docker-compose.yml` 的 `build:` 产出，不可变日期 tag（如 `20260719`） |
+| `claimcraft-creative-frontend:YYYYMMDD` | 正式侧 | 同上 |
 | `claimcraft-test-backend:latest` | 测试侧 | 由 `docker-compose.test.yml` 的 `build:` 产出，独立 tag |
 | `claimcraft-test-frontend:latest` | 测试侧 | 同上 |
 
@@ -856,24 +872,42 @@ python manage.py cleanup_checkpoints --days=30 --dry-run
 ### 13.2 配置文件
 
 ```text
-docker-compose.yml          # 正式侧配置
-docker-compose.test.yml     # 测试侧配置（独立镜像 tag + build，端口避让 8081/3307/5433）
-.env                        # 两侧共享：数据库密码、SECRET_KEY、LLM 凭据等
+docker-compose.db.yml       # 共享数据库层（project: claimcraft-db，MySQL + PostgreSQL 单实例）
+docker-compose.yml          # 正式应用层（project: claimcraft-creative，backend + frontend）
+docker-compose.test.yml     # 测试应用层（project: claimcraft-test，backend + frontend，按需启停）
+docker/mysql-init/01-create-db-users.sql        # MySQL 首次启动初始化（创建 claimcraft/claimcraft_test 用户与库）
+docker/postgres-init/01-create-db-users.sh      # PostgreSQL 首次启动初始化（创建 claimcraft_test 角色与库）
+scripts/init-shared-db.sh  # 共享 DB 一次性初始化脚本（创建用户/库 + 从正式侧克隆数据到测试侧）
+.env                        # 两侧共享：数据库密码、SECRET_KEY、LLM 凭据、IMAGE_TAG 等
 Dockerfile.backend          # 后端镜像构建（Python 3.11 + Node 22 + Agent Mail CLI）
 Dockerfile.frontend         # 前端镜像构建（Node 22 build + Nginx Alpine）
 nginx.conf                  # 前端 Nginx 配置（SPA fallback + /api/、/media/、/static/ 反代）
 ```
 
 > 当前正式侧 Compose 含服务器特定 bind mount：`/srv/claimcraft/.agently-home`、`/home/ubuntu/claimcraft-creative/logs/backend|frontend`。测试侧对应改为 `.agently-home-test`、`logs/backend-test|frontend-test`。在 macOS、Windows 或其他 Linux 环境应改为本机路径或命名 volume。
+>
+> 共享 DB 层使用外部卷 `claimcraft-creative_mysql_data`、`claimcraft-creative_pg_checkpoints_data`（沿用历史命名以复用生产数据），并通过外部网络 `claimcraft-db_default` 暴露给正式/测试两侧。`docker-compose.db.yml` 内置 init 脚本挂载到 `/docker-entrypoint-initdb.d:ro`，仅在卷为空（首次初始化）时执行。
 
 ### 13.3 正式侧启动与维护
+
+> 正式侧启动依赖共享 DB 层已运行。首次部署需先启动 DB 层并执行一次性初始化；后续重启只需 DB 层健康即可。
 
 ```bash
 # Linux（需 sudo 访问 docker）
 cd /home/ubuntu/claimcraft-creative
 cp .env.example .env           # 首次部署：修改数据库密码、SECRET_KEY 和模型凭据
 
-# 构建并启动全部服务
+# ── 步骤 1：启动共享数据库层（仅在未运行时执行）──
+sudo docker compose -f docker-compose.db.yml -p claimcraft-db up -d
+# 等待 mysql 与 postgres-checkpointer 进入 healthy
+sudo docker compose -f docker-compose.db.yml -p claimcraft-db ps
+
+# ── 步骤 2：首次部署执行共享 DB 初始化（幂等，可重复执行）──
+# 创建正式/测试独立用户与库，并从正式侧克隆数据到测试侧
+bash scripts/init-shared-db.sh
+
+# ── 步骤 3：构建并启动正式应用层 ──
+# IMAGE_TAG 默认为 .env 中的日期 tag（如 20260719）
 sudo docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
 
 # 访问 http://<服务器IP>/
@@ -881,6 +915,8 @@ sudo docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
 
 ```bash
 # Windows / macOS（docker desktop，无需 sudo）
+docker compose -f docker-compose.db.yml -p claimcraft-db up -d
+bash scripts/init-shared-db.sh
 docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
 ```
 
@@ -888,41 +924,50 @@ docker compose -f docker-compose.yml -p claimcraft-creative up -d --build
 
 ```bash
 PROD="sudo docker compose -f docker-compose.yml -p claimcraft-creative"
+DB="sudo docker compose -f docker-compose.db.yml -p claimcraft-db"
 
-$PROD ps                                    # 查看状态
+$PROD ps                                    # 查看正式应用状态
+$DB ps                                      # 查看共享 DB 状态
 $PROD logs -f --tail 100 backend            # 跟踪日志
-$PROD restart backend                       # 重启单个服务
-$PROD stop                                  # 停止（保留容器）
-$PROD down                                  # 停止并删除容器（保留卷）
-$PROD down -v                               # 停止并删除容器+卷（慎用，数据丢失）
+$PROD restart backend                       # 重启单个应用服务
+$PROD stop                                  # 停止正式应用（保留容器，DB 不受影响）
+$PROD down                                  # 停止并删除正式应用容器（保留卷与 DB）
+
+# 共享 DB 层独立管理（仅在需要时执行，会影响两侧应用连接）
+$DB stop                                    # 停止 DB 容器（正式+测试都会断连）
+$DB down                                    # 停止并删除 DB 容器（保留外部卷）
 
 # 进入容器
 sudo docker exec -it claimcraft-creative-backend-1 bash
 sudo docker exec claimcraft-creative-backend-1 python manage.py shell
 sudo docker exec claimcraft-creative-backend-1 python manage.py createsuperuser
 
-# 代码更新后重建正式侧
-$PROD build backend frontend
-$PROD up -d --force-recreate backend frontend
+# 代码更新后发布新正式镜像（产出新日期 tag，旧 tag 永不覆盖）
+# 1) 修改 .env 中 IMAGE_TAG 为当天日期（如 20260720）
+# 2) 一键构建镜像 + 重建容器
+$PROD up -d --build --force-recreate backend frontend
+# 等价于分两步：$PROD build backend frontend && $PROD up -d --force-recreate backend frontend
 ```
 
 ### 13.4 测试侧启动与维护
 
-测试侧与正式侧完全隔离，可独立构建、重启、销毁，不影响正式环境。
+测试侧应用容器与正式侧独立，可按需启停；共享 DB 实例由 `docker-compose.db.yml` 单独管理，测试侧 down 不会影响正式侧应用与数据。
 
 **首次启动（含从正式库克隆数据）：**
 
 ```bash
 cd /home/ubuntu/claimcraft-creative
+
+# 1) 确保共享 DB 层已启动（首次部署见 13.3 步骤 1）
+sudo docker compose -f docker-compose.db.yml -p claimcraft-db up -d
+sudo docker compose -f docker-compose.db.yml -p claimcraft-db ps   # 等待 healthy
+
+# 2) 首次部署执行共享 DB 初始化（创建测试用户/库 + 从正式侧克隆数据，见 13.5）
+bash scripts/init-shared-db.sh
+
+# 3) 构建并启动测试应用层
 TEST="sudo docker compose -f docker-compose.test.yml -p claimcraft-test"
-
-# 1) 仅启动测试 DB 容器并等待 healthy
-$TEST up -d mysql postgres-checkpointer
-
-# 2) 从正式库克隆数据到测试库（见 13.5 节）
-
-# 3) 启动测试应用容器
-$TEST up -d backend frontend
+$TEST up -d --build
 # 访问 http://<服务器IP>:8081/
 ```
 
@@ -932,20 +977,15 @@ $TEST up -d backend frontend
 cd /home/ubuntu/claimcraft-creative
 TEST="sudo docker compose -f docker-compose.test.yml -p claimcraft-test"
 
-# 重建测试镜像（只动 claimcraft-test-* tag，不碰正式镜像）
-$TEST build backend frontend
-
-# 用新镜像重建测试容器（DB 容器与数据不动）
-$TEST up -d --force-recreate backend frontend
-
-# 一行命令版本
-$TEST build backend frontend && $TEST up -d --force-recreate backend frontend
+# 一键构建镜像 + 重建容器（共享 DB 与数据不动）
+$TEST up -d --build --force-recreate backend frontend
+# 等价于：$TEST build backend frontend && $TEST up -d --force-recreate backend frontend
 
 # 查看启动日志确认就绪（看到 "Uvicorn running" 即可）
 sudo docker logs -f claimcraft-test-backend
 ```
 
-> 关键隔离保证：测试侧镜像 tag 为 `claimcraft-test-*`，与正式侧 `claimcraft-creative-*` 完全独立。重建测试镜像不会覆盖正式镜像 tag；运行中的正式容器绑定的是镜像 ID，更不会被影响。只要测试侧永远只用 `-f docker-compose.test.yml -p claimcraft-test` 操作，正式侧永远只用 `-f docker-compose.yml -p claimcraft-creative`，两边互不干扰。
+> 关键隔离保证：测试侧镜像 tag 为 `claimcraft-test-*:latest`，与正式侧 `claimcraft-creative-*:YYYYMMDD` 完全独立。重建测试镜像不会覆盖正式镜像 tag；运行中的正式容器绑定的是镜像 ID，更不会被影响。两侧通过 `claimcraft-db_default` 外部网络连入同一 DB 实例，但使用独立的逻辑库与用户，DB 层不会混淆数据。
 
 测试侧常用维护：
 
@@ -953,73 +993,108 @@ sudo docker logs -f claimcraft-test-backend
 $TEST ps
 $TEST logs -f --tail 100 backend
 $TEST restart backend
-$TEST down                                   # 删容器保卷
-$TEST down -v                                # 删容器+卷（完全重置）
+$TEST down                                   # 删除测试应用容器（保留共享 DB 与卷）
+# 注意：测试侧不再使用 down -v，因为卷由共享 DB 层管理
 
 sudo docker exec -it claimcraft-test-backend bash
 sudo docker exec claimcraft-test-backend python manage.py shell
 ```
 
-**测试环境完全重置：**
+**测试环境完全重置（重新克隆数据）：**
 
 ```bash
-$TEST down -v                                # 删容器+卷
-$TEST up -d mysql postgres-checkpointer      # 起空库
-# 等待 healthy 后重新克隆正式数据（13.5），再:
-$TEST up -d backend frontend
+# 测试侧 down 应用容器（共享 DB 与数据不受影响）
+$TEST down
+
+# 重新执行初始化脚本（幂等：会重建测试库与用户并重新克隆正式侧数据）
+bash scripts/init-shared-db.sh
+
+# 重新启动测试应用
+$TEST up -d
 ```
+
+> 测试环境按需运行：日常不使用时执行 `$TEST down` 停掉测试应用容器即可，共享 DB 层可保持运行以服务正式侧。若需要彻底释放资源，可执行 `$TEST down && $DB down`（DB 层停止后正式侧应用也会断连，仅在维护窗口执行）。
 
 ### 13.5 从正式库克隆数据到测试库
 
+数据克隆由 `scripts/init-shared-db.sh` 统一完成，无需手动执行 mysqldump / pg_dump。脚本逻辑：
+
+1. **MySQL 正式侧用户**：创建 `claimcraft` 用户并授予 `claimcraft` 库权限
+2. **MySQL 测试侧库**：创建 `claimcraft_test` 库与 `claimcraft_test` 用户，使用 `mysqldump --single-transaction --routines --triggers --no-tablespaces` 从 `claimcraft` 克隆全部表结构与数据（含法条库 `api_lawarticle` 2260 条）
+3. **PostgreSQL 测试侧用户/库**：创建 `claimcraft_test` 角色与 `claimcraft_test_checkpoints` 库，启用 pgvector 扩展
+4. **PostgreSQL 数据克隆**：使用 `pg_dump --no-owner --no-privileges | psql -U claimcraft_test` 从 `claimcraft_checkpoints` 克隆全部表（含 `law_article_vectors` 2260 条向量、checkpoint、SSE 事件），克隆表自动归 `claimcraft_test` 所有
+
 ```bash
-# === MySQL（使用容器内 MYSQL_ROOT_PASSWORD 环境变量，避免特殊字符转义）===
-sudo docker exec claimcraft-creative-mysql-1 sh -c \
-  'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --no-tablespaces claimcraft' \
-  > /tmp/prod_mysql.sql
-
-sudo docker exec -i claimcraft-test-mysql sh -c \
-  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" claimcraft' \
-  < /tmp/prod_mysql.sql
-
-# === PostgreSQL ===
-sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
-  sh -c 'exec pg_dump -Uclaimcraft -dclaimcraft_checkpoints' > /tmp/prod_pg.sql
-
-sudo docker exec -i claimcraft-test-postgres \
-  sh -c 'exec psql -Uclaimcraft -dclaimcraft_checkpoints' \
-  < /tmp/prod_pg.sql
-
-# 清理临时文件
-rm -f /tmp/prod_mysql.sql /tmp/prod_pg.sql
+cd /home/ubuntu/claimcraft-creative
+bash scripts/init-shared-db.sh
 ```
 
-> 克隆需在测试 DB 容器 healthy 之后、backend 启动之前执行。数据密码两侧一致（共享 `.env`）。
+> 脚本幂等，可重复执行：已存在的用户会被跳过或重置密码，测试库会被 DROP 后重建以避免残留旧表。密码来源于 `.env`（`DB_PASSWORD` / `DB_PASSWORD_TEST` / `CHECKPOINTER_PG_PASSWORD` / `CHECKPOINTER_PG_PASSWORD_TEST`），两侧密码可以不同以增强隔离。
+>
+> 执行时机：共享 DB 容器 healthy 之后、测试 backend 启动之前。克隆期间正式侧应用可继续运行（`mysqldump --single-transaction` 不锁表，`pg_dump` 读取快照）。
 
 ### 13.6 通用容器运维
 
 ```bash
-# 所有 claimcraft 容器一览（正式+测试）
+# 所有 claimcraft 容器一览（正式+测试+共享DB）
 sudo docker ps -a --filter "name=claimcraft" \
   --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 
-# 资源占用
+# 资源占用（6 个在运行容器）
 sudo docker stats --no-stream \
-  claimcraft-creative-backend-1 claimcraft-test-backend
+  claimcraft-db-mysql claimcraft-db-postgres \
+  claimcraft-creative-backend-1 claimcraft-creative-frontend-1 \
+  claimcraft-test-backend claimcraft-test-frontend
 
-# 网络与卷
+# 网络、卷、镜像一览
 sudo docker network ls | grep claimcraft
 sudo docker volume ls | grep claimcraft
-sudo docker images | grep claimcraft
-
-# 清理悬空镜像（不影响在用镜像）
-sudo docker image prune -f
+sudo docker images --filter "reference=claimcraft-*" \
+  --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}"
 ```
+
+**一键构建并重建容器**（最常用发布/迭代指令）：
+
+```bash
+# 正式侧：先更新 .env 中 IMAGE_TAG 为当天日期（如 20260720），再执行
+PROD="sudo docker compose -f docker-compose.yml -p claimcraft-creative"
+$PROD up -d --build --force-recreate backend frontend
+# 等价于：$PROD build backend frontend && $PROD up -d --force-recreate backend frontend
+# --build 触发镜像重建（产出新日期 tag），--force-recreate 强制重建容器
+
+# 测试侧：测试镜像始终使用 latest tag，可直接重建
+TEST="sudo docker compose -f docker-compose.test.yml -p claimcraft-test"
+$TEST up -d --build --force-recreate backend frontend
+```
+
+> `up -d --build --force-recreate` 是单条命令同时完成「构建镜像 + 重建容器」的最简形式；Docker Compose 会自动判断哪些服务需要重建。共享 DB 层不需要参与应用迭代，无需带上 `mysql`/`postgres-checkpointer`。
+
+**镜像与卷清理**：
+
+```bash
+# 清理悬空镜像（不影响在用镜像，安全）
+sudo docker image prune -f
+
+# 清理 v2 架构下已废弃的旧 latest tag 正式镜像（已被日期 tag 取代）
+# 仅在确认无容器引用时执行；正式侧应只保留日期 tag
+sudo docker rmi claimcraft-creative-backend:latest claimcraft-creative-frontend:latest 2>/dev/null || true
+
+# 清理 Build Cache（释放磁盘空间，但会拖慢下次构建，按需执行）
+sudo docker builder prune -f
+
+# 查看磁盘占用（识别可回收资源）
+sudo docker system df
+```
+
+> v2 架构下不再使用 `down -v` 删除卷：共享 DB 卷由 `claimcraft-db` 层管理，应用层 down 不会删除 DB 数据。若需重置测试数据，使用 `bash scripts/init-shared-db.sh`（幂等）；若需彻底重置环境（含生产数据），需手动 `sudo docker volume rm` 对应卷。
 
 ---
 
 ## 14. 数据库配置与法律知识库构建
 
 > 法律知识库由 MySQL `LawArticle`/`PlatformRule`（结构化条文）+ PostgreSQL `law_article_vectors`（pgvector 向量）组成。完整构建流程见 [`docs/linux-kb-build-guide.md`](docs/linux-kb-build-guide.md)，本节给出常用指令。
+>
+> **Docker 部署**：本节描述的手动建库/建用户步骤已由 `docker-compose.db.yml` 的 init 脚本与 `scripts/init-shared-db.sh` 自动完成（详见第 13 节）。本节内容主要用于本地非容器部署、手动修复或离线导入法律知识库场景。
 
 ### 14.1 MySQL 初始化
 
@@ -1038,10 +1113,12 @@ FLUSH PRIVILEGES;
 ```bash
 # Linux 进入 MySQL
 mysql -uroot -p
-# 或容器内（正式侧）
-sudo docker exec -it claimcraft-creative-mysql-1 mysql -uroot -p
-# 测试侧
-sudo docker exec -it claimcraft-test-mysql mysql -uroot -p
+# 或容器内（共享 DB 层，正式/测试都在同一实例）
+sudo docker exec -it claimcraft-db-mysql mysql -uroot -p
+# 进入正式库
+sudo docker exec -it claimcraft-db-mysql mysql -uclaimcraft -p claimcraft
+# 进入测试库
+sudo docker exec -it claimcraft-db-mysql mysql -uclaimcraft_test -p claimcraft_test
 ```
 
 ### 14.2 PostgreSQL + pgvector 初始化
@@ -1068,10 +1145,9 @@ sudo -u postgres psql -c "CREATE DATABASE claimcraft_checkpoints;"
 sudo -u postgres psql -c "CREATE USER claimcraft WITH PASSWORD 'claimcraft_dev_2025';"
 sudo -u postgres psql -d claimcraft_checkpoints -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
-# 容器内（正式侧）
-sudo docker exec -it claimcraft-creative-postgres-checkpointer-1 psql -Uclaimcraft -dclaimcraft_checkpoints
-# 测试侧
-sudo docker exec -it claimcraft-test-postgres psql -Uclaimcraft -dclaimcraft_checkpoints
+# 容器内（共享 DB 层，正式/测试都在同一实例）
+sudo docker exec -it claimcraft-db-postgres psql -Uclaimcraft -dclaimcraft_checkpoints
+sudo docker exec -it claimcraft-db-postgres psql -Uclaimcraft_test -dclaimcraft_test_checkpoints
 ```
 
 > Windows 下安装 PostgreSQL 后通过 Stack Builder 或手动编译 pgvector；或直接使用 Docker 的 `pgvector/pgvector:pg16` 镜像。容器化部署已内置 pgvector，无需手动安装。
@@ -1198,24 +1274,27 @@ python manage.py cleanup_checkpoints --days=30 --dry-run
 
 ### 14.7 数据库备份与恢复
 
+> v2 架构下，正式/测试库都在同一共享 DB 实例中。备份使用 `claimcraft-db-mysql` / `claimcraft-db-postgres` 容器名；从正式侧克隆到测试侧的常用做法是直接执行 `bash scripts/init-shared-db.sh`（见 13.5）。下列命令仅用于离线归档或跨实例迁移场景。
+
 ```bash
-# === MySQL 备份（正式侧）===
-sudo docker exec claimcraft-creative-mysql-1 sh -c \
+# === MySQL 备份（正式侧 claimcraft 库）===
+sudo docker exec claimcraft-db-mysql sh -c \
   'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --no-tablespaces claimcraft' \
   > /tmp/prod_mysql_$(date +%Y%m%d).sql
 
-# === MySQL 恢复（到测试侧）===
-sudo docker exec -i claimcraft-test-mysql sh -c \
-  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" claimcraft' \
+# === MySQL 恢复（到测试侧 claimcraft_test 库）===
+sudo docker exec -i claimcraft-db-mysql sh -c \
+  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" claimcraft_test' \
   < /tmp/prod_mysql_YYYYMMDD.sql
 
-# === PostgreSQL 备份（正式侧）===
-sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
-  sh -c 'exec pg_dump -Uclaimcraft -dclaimcraft_checkpoints' > /tmp/prod_pg_$(date +%Y%m%d).sql
+# === PostgreSQL 备份（正式侧 claimcraft_checkpoints 库）===
+sudo docker exec claimcraft-db-postgres \
+  sh -c 'exec pg_dump -Uclaimcraft -dclaimcraft_checkpoints --no-owner --no-privileges' \
+  > /tmp/prod_pg_$(date +%Y%m%d).sql
 
-# === PostgreSQL 恢复（到测试侧）===
-sudo docker exec -i claimcraft-test-postgres \
-  sh -c 'exec psql -Uclaimcraft -dclaimcraft_checkpoints' \
+# === PostgreSQL 恢复（到测试侧 claimcraft_test_checkpoints 库）===
+sudo docker exec -i claimcraft-db-postgres \
+  sh -c 'exec psql -Uclaimcraft_test -dclaimcraft_test_checkpoints' \
   < /tmp/prod_pg_YYYYMMDD.sql
 ```
 
@@ -1223,18 +1302,22 @@ sudo docker exec -i claimcraft-test-postgres \
 
 ```bash
 cd backend
-# 验证 MySQL 法条数量
-python manage.py shell -c "
+# 验证 MySQL 法条数量（容器内执行也可）
+sudo docker exec claimcraft-creative-backend-1 python manage.py shell -c "
 from api.models import LawArticle, PlatformRule
 print(f'LawArticle: {LawArticle.objects.count()}')
 print(f'PlatformRule: {PlatformRule.objects.count()}')
 "
 
-# 验证 PostgreSQL 向量数量
-sudo docker exec claimcraft-creative-postgres-checkpointer-1 \
+# 验证 PostgreSQL 向量数量（正式侧）
+sudo docker exec claimcraft-db-postgres \
   psql -Uclaimcraft -dclaimcraft_checkpoints -c \
   "SELECT COUNT(*) AS total, COUNT(DISTINCT law_name) AS laws FROM law_article_vectors;"
-# 预期: total=1646, laws=17
+
+# 验证 PostgreSQL 向量数量（测试侧，确认与正式侧一致）
+sudo docker exec claimcraft-db-postgres \
+  psql -Uclaimcraft_test -dclaimcraft_test_checkpoints -c \
+  "SELECT COUNT(*) AS total FROM law_article_vectors;"
 
 # 验证 RAG 检索
 python manage.py shell -c "

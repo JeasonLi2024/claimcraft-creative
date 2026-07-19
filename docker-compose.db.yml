@@ -1,0 +1,84 @@
+# ============================================================
+# 共享数据库 Compose 配置（生产 + 测试共用同一实例）
+# ------------------------------------------------------------
+# 设计目标：
+#   - 合并原 claimcraft-creative 与 claimcraft-test 两套独立 MySQL/PG
+#   - 单实例 + 逻辑库隔离：每侧独立 database + 独立用户 + 独立密码
+#   - 复用生产侧已有数据卷（claimcraft-creative_mysql_data /
+#     claimcraft-creative_pg_checkpoints_data），生产数据零丢失
+#   - 测试库通过初始化脚本从生产库克隆（含法律知识库向量）
+#
+# 网络拓扑：
+#   - 自带 default 网络，服务名为 mysql / postgres-checkpointer
+#   - 生产 compose (docker-compose.yml) 与测试 compose (docker-compose.test.yml)
+#     均通过 external network 方式接入 claimcraft-db_default，复用同一 DNS 名
+#
+# 启动顺序：
+#   1) sudo docker compose -f docker-compose.db.yml -p claimcraft-db up -d
+#   2) 等待 healthy 后执行一次性初始化（创建测试库与用户、克隆数据）：
+#      bash scripts/init-shared-db.sh
+#   3) 启动正式侧：sudo docker compose -f docker-compose.yml -p claimcraft-creative up -d
+#   4) 启动测试侧：sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d
+# ============================================================
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: claimcraft-db-mysql
+    environment:
+      # 首次启动只创建生产库 claimcraft；测试库由 init 脚本克隆
+      MYSQL_DATABASE: claimcraft
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-claimcraft_dev_2025}
+    volumes:
+      # 复用原生产卷（保留 2260 条法条、用户、案例等所有数据）
+      - mysql_data:/var/lib/mysql
+      # 仅在空卷首次初始化时执行；已有数据的卷不会触发
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  postgres-checkpointer:
+    image: pgvector/pgvector:pg16
+    container_name: claimcraft-db-postgres
+    environment:
+      # 首次启动只创建生产库 claimcraft_checkpoints；测试库由 init 脚本克隆
+      POSTGRES_DB: claimcraft_checkpoints
+      POSTGRES_USER: claimcraft
+      POSTGRES_PASSWORD: ${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}
+    volumes:
+      # 复用原生产卷（保留 2260 条法条向量、checkpoints、SSE 事件等）
+      - pg_checkpoints_data:/var/lib/postgresql/data
+      # 仅在空卷首次初始化时执行；已有数据的卷不会触发
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimcraft -d claimcraft_checkpoints"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  mysql_data:
+    external: true
+    name: claimcraft-creative_mysql_data
+  pg_checkpoints_data:
+    external: true
+    name: claimcraft-creative_pg_checkpoints_data

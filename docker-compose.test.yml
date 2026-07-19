@@ -1,62 +1,27 @@
 # ============================================================
-# 测试环境 Compose 配置
+# 测试环境 Compose 配置（仅应用容器）
 # ------------------------------------------------------------
-# 与正式环境 (docker-compose.yml) 隔离运行：
-#   - 独立 project 名: claimcraft-test  (需用 -p claimcraft-test 启动)
-#   - 独立网络 / 命名卷 / 容器名 (自动按 project 名前缀隔离)
-#   - 端口避让: frontend 8081, mysql 3307, postgres 5433
-#   - 复用正式环境已构建的镜像 (claimcraft-creative-backend / frontend)
-#   - 复用 .env 中的 LLM / 外部 API Key 与数据库密码 (克隆数据密码需一致)
-# 服务名保持与正式环境一致 (mysql / postgres-checkpointer / backend / frontend)，
-# 以便镜像内 nginx.conf 的 http://backend:8000 与 backend 的 DB_HOST=mysql 在
-# 测试网络内正确解析。
+# v2 架构变更（2026-07-19）：
+#   - 不再启动独立的 MySQL/PG 容器，复用 docker-compose.db.yml 的共享实例
+#   - 测试侧使用共享实例中的独立逻辑库与独立用户：
+#       MySQL:    claimcraft_test 库 / claimcraft_test 用户
+#       PostgreSQL: claimcraft_test_checkpoints 库 / claimcraft_test 用户
+#   - 通过 external network 接入 claimcraft-db_default
+#   - 测试镜像仍用独立 tag claimcraft-test-*:latest，可按需启停
+#
+# 启动前置：
+#   1) sudo docker compose -f docker-compose.db.yml -p claimcraft-db up -d
+#   2) 首次需执行 bash scripts/init-shared-db.sh 创建测试库与用户、克隆数据
 #
 # 启动:
-#   sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d mysql postgres-checkpointer
-#   # 克隆正式库数据后:
-#   sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d backend frontend
-# 访问: http://<服务器IP>:8081
+#   sudo docker compose -f docker-compose.test.yml -p claimcraft-test up -d
+# 访问: http://<服务器IP>:8081/
 # 停止: sudo docker compose -f docker-compose.test.yml -p claimcraft-test down
 # ============================================================
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: claimcraft-test-mysql
-    environment:
-      MYSQL_DATABASE: claimcraft
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-claimcraft_dev_2025}
-    volumes:
-      - mysql_data:/var/lib/mysql
-    ports:
-      - "3307:3306"
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  postgres-checkpointer:
-    image: pgvector/pgvector:pg16
-    container_name: claimcraft-test-postgres
-    environment:
-      POSTGRES_DB: claimcraft_checkpoints
-      POSTGRES_USER: claimcraft
-      POSTGRES_PASSWORD: ${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}
-    volumes:
-      - pg_checkpoints_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U claimcraft -d claimcraft_checkpoints"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   backend:
-    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-backend:latest
+    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-backend:YYYYMMDD
     image: claimcraft-test-backend:latest
     container_name: claimcraft-test-backend
     build:
@@ -66,11 +31,12 @@ services:
       - DJANGO_DEBUG=True
       - DJANGO_SECRET_KEY=${SECRET_KEY:-claimcraft-prod-secret-change-me}
       - DJANGO_ALLOWED_HOSTS=*
+      # 业务数据库（共享 MySQL 实例的 claimcraft_test 库）
       - DB_HOST=mysql
       - DB_PORT=3306
-      - DB_NAME=claimcraft
-      - DB_USER=root
-      - DB_PASSWORD=${DB_PASSWORD:-claimcraft_dev_2025}
+      - DB_NAME=claimcraft_test
+      - DB_USER=claimcraft_test
+      - DB_PASSWORD=${DB_PASSWORD_TEST:-claimcraft_test_2025}
       # 文本 LLM 配置
       - LLM_PROVIDER=${LLM_PROVIDER:-siliconflow}
       - LLM_API_KEY=${LLM_API_KEY:-}
@@ -130,8 +96,8 @@ services:
       - PADDLE_PDX_CACHE_HOME=${PADDLE_PDX_CACHE_HOME:-/app/.paddlex_cache}
       - FLAGS_enable_pir_in_executor=${FLAGS_enable_pir_in_executor:-0}
       - FLAGS_enable_pir_api=${FLAGS_enable_pir_api:-0}
-      # LangGraph Checkpointer 持久化（PostgreSQL，独立于业务 MySQL）
-      - CHECKPOINTER_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
+      # LangGraph Checkpointer 持久化（共享 PG 实例的 claimcraft_test_checkpoints 库）
+      - CHECKPOINTER_DB_URL=postgresql://claimcraft_test:${CHECKPOINTER_PG_PASSWORD_TEST:-claimcraft_test_2025}@postgres-checkpointer:5432/claimcraft_test_checkpoints
       - CHECKPOINTER_POOL_SIZE=${CHECKPOINTER_POOL_SIZE:-20}
       # v3 新增：连接池调优参数
       - CHECKPOINTER_POOL_MIN_SIZE=${CHECKPOINTER_POOL_MIN_SIZE:-5}
@@ -175,13 +141,10 @@ services:
       # v10 新增：Tools 工具集配置
       - TOOLS_ENABLED=${TOOLS_ENABLED:-true}
       - TOOLS_MAX_ITERATIONS=${TOOLS_MAX_ITERATIONS:-5}
-      # v10 新增：法律知识库向量库连接（复用 checkpointer PG 实例）
-      - LAW_VECTOR_DB_URL=postgresql://claimcraft:${CHECKPOINTER_PG_PASSWORD:-claimcraft_dev_2025}@postgres-checkpointer:5432/claimcraft_checkpoints
-    depends_on:
-      mysql:
-        condition: service_healthy
-      postgres-checkpointer:
-        condition: service_healthy
+      # v10 新增：法律知识库向量库连接（共享 PG 实例的 claimcraft_test_checkpoints 库）
+      - LAW_VECTOR_DB_URL=postgresql://claimcraft_test:${CHECKPOINTER_PG_PASSWORD_TEST:-claimcraft_test_2025}@postgres-checkpointer:5432/claimcraft_test_checkpoints
+    # DB 容器由 docker-compose.db.yml 托管，本 compose 通过 external network 接入
+    # backend 启动时会用 restart: unless-stopped 重试，直到 DB 就绪
     command: >
       sh -c "mkdir -p /app/logs &&
              python manage.py migrate &&
@@ -199,9 +162,12 @@ services:
       options:
         max-size: "100m"
         max-file: "5"
+    networks:
+      - default
+      - claimcraft-db
 
   frontend:
-    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-frontend:latest
+    # 测试侧独立镜像 tag，重建不会覆盖正式侧 claimcraft-creative-frontend:YYYYMMDD
     image: claimcraft-test-frontend:latest
     container_name: claimcraft-test-frontend
     build:
@@ -221,7 +187,10 @@ services:
         max-file: "5"
 
 volumes:
-  mysql_data:
   media_data:
-  pg_checkpoints_data:
   paddlex_cache:
+
+networks:
+  claimcraft-db:
+    external: true
+    name: claimcraft-db_default
