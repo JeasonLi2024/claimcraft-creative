@@ -9,12 +9,43 @@
 - 向量维度 1024（与 pgvector 索引一致）
 - 同步 + 异步双接口（embed_query / aembed_query）
 - 模型专为中文检索优化，适合法律文本向量化
+- LRU 查询向量缓存（v2 2026-07-19）：相同 query 复用向量，避免重复 HTTP 调用
 """
 import os
 import logging
 from functools import lru_cache
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 查询向量 LRU 缓存（v2 2026-07-19 新增）
+# ------------------------------------------------------------
+# RAG 检索中相同 query 会被反复调用（pre_retrieve + 多轮工具调用 lookup_law），
+# 每次 HTTP 请求 SiliconFlow API 耗时 0.3~3 秒。缓存命中可省掉这步开销。
+# 容量 256 条 × 1024 维 float32 ≈ 1MB，可接受。
+# ============================================================
+_EMBEDDING_QUERY_CACHE: OrderedDict = OrderedDict()
+_EMBEDDING_QUERY_CACHE_MAX_SIZE = 256
+
+
+def _get_cached_query_embedding(text: str):
+    """从 LRU 缓存中获取查询向量，未命中返回 None。"""
+    return _EMBEDDING_QUERY_CACHE.get(text)
+
+
+def _set_cached_query_embedding(text: str, embedding):
+    """写入查询向量到 LRU 缓存，超出容量时淘汰最旧条目。"""
+    _EMBEDDING_QUERY_CACHE[text] = embedding
+    while len(_EMBEDDING_QUERY_CACHE) > _EMBEDDING_QUERY_CACHE_MAX_SIZE:
+        _EMBEDDING_QUERY_CACHE.popitem(last=False)
+
+
+def invalidate_embedding_cache():
+    """清空 embedding 缓存（ embedding 模型切换时调用）。"""
+    _EMBEDDING_QUERY_CACHE.clear()
+    logger.info('[Embedding] 查询向量缓存已清空')
 
 
 def _get_embedding_config() -> dict:
@@ -96,6 +127,9 @@ def embed_query_sync(text: str) -> list[float]:
 async def embed_query(text: str) -> list[float]:
     """异步生成文本向量（1024 维）。
 
+    优先查 LRU 缓存，未命中才调用 embedding API。相同 query 在多轮工具调用
+    场景下可省掉重复 HTTP 请求，显著降低 RAG 检索延迟。
+
     Args:
         text: 待向量化的文本
 
@@ -106,8 +140,16 @@ async def embed_query(text: str) -> list[float]:
         text = '空'
     else:
         text = text[:500]  # bge-large-zh-v1.5 限制 512 token
+
+    # 查缓存（命中直接返回，避免重复 HTTP 调用）
+    cached = _get_cached_query_embedding(text)
+    if cached is not None:
+        return cached
+
     llm = get_embedding_llm()
-    return await llm.aembed_query(text)
+    embedding = await llm.aembed_query(text)
+    _set_cached_query_embedding(text, embedding)
+    return embedding
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:

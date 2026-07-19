@@ -138,6 +138,15 @@ services:
       - RAG_ENABLED=${RAG_ENABLED:-true}
       - RAG_TOP_K=${RAG_TOP_K:-5}
       - RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD:-0.3}
+      # v10 新增：Rerank 重排配置（Cross-Encoder 精排，未配置 API Key 时自动降级为 RRF 顺序截断）
+      - RERANK_API_KEY=${RERANK_API_KEY:-}
+      - RERANK_BASE_URL=${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      - RERANK_MODEL=${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      - RERANK_TOP_N=${RERANK_TOP_N:-10}
+      - RERANK_CANDIDATE_LIMIT=${RERANK_CANDIDATE_LIMIT:-50}
+      - RERANK_SCORE_THRESHOLD=${RERANK_SCORE_THRESHOLD:-0.0}
+      - RERANK_TIMEOUT=${RERANK_TIMEOUT:-30}
+      - RERANK_MAX_RETRIES=${RERANK_MAX_RETRIES:-2}
       # v10 新增：Tools 工具集配置
       - TOOLS_ENABLED=${TOOLS_ENABLED:-true}
       - TOOLS_MAX_ITERATIONS=${TOOLS_MAX_ITERATIONS:-5}

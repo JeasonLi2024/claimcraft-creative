@@ -25,6 +25,11 @@ langsmith>=0.3.0
 psycopg[binary,pool]>=3.1
 # ===== pgvector（v10 新增：RAG 知识库向量检索）=====
 pgvector>=0.3.0
+# ===== BM25 检索（v10 新增：法条关键词检索 + RRF 融合）=====
+# rank_bm25 提供 BM25Okapi 算法实现；jieba 提供中文分词
+# 缺失会导致 rag_service._bm25_search() 静默返回空列表（BM25 永远为 0）
+rank_bm25>=0.2.2
+jieba>=0.42.1
 # ===== LLM 服务支撑 =====
 httpx>=0.27
 python-dotenv>=1.0
