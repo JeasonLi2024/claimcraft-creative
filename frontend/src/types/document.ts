@@ -63,6 +63,15 @@ export interface DocumentVersion {
 
 // ===== 文书详情 =====
 
+/** 输入数据充分性等级（input-quality-guard Gate 3） */
+export type DataSufficiencyLevel = 'sufficient' | 'sparse' | 'critically_sparse'
+
+export interface DataSufficiency {
+  score: number
+  level: DataSufficiencyLevel
+  missing_dimensions: string[]
+}
+
 export interface DocumentDetail {
   id: string
   run_id: number
@@ -75,6 +84,8 @@ export interface DocumentDetail {
   created_at?: string
   /** 最后更新时间 ISO 8601 */
   updated_at?: string
+  /** 输入数据充分性（Gate 3；null/缺省表示未评估或充分） */
+  data_sufficiency?: DataSufficiency | null
 }
 
 // ===== 导出前质量门（对齐后端 document_quality_service.run_export_check）=====

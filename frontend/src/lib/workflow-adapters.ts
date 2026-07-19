@@ -159,6 +159,9 @@ export function normalizeIntervention(raw: unknown): WorkflowIntervention | null
     impact: asRaw(r.impact),
     created_at: asString(r.created_at),
     submitted_at: asStringOrNull(r.submitted_at),
+    // input-quality-guard：后端从 impact 派生 reason/diagnostics，回退到 impact 内嵌值
+    reason: asString(r.reason) || asString(asRaw(r.impact).reason) || undefined,
+    diagnostics: asRaw(r.diagnostics ?? asRaw(r.impact).diagnostics),
   }
 }
 

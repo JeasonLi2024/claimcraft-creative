@@ -1,6 +1,7 @@
 // 介入表单单字段编辑组件
 // 对齐 spec 第 6.7 节 / Task 2.5.2
-// 支持 text / textarea / number / select / evidence_link 五种字段类型
+// 支持 text / textarea / number / select / radio / evidence_link 六种字段类型
+// （radio 由 input-quality-guard Gate 2 的「处理方式」单选引入）
 import { RotateCcw, ExternalLink } from "lucide-react"
 
 // ---------- form_schema 字段类型 ----------
@@ -10,6 +11,7 @@ export type FormFieldType =
   | "textarea"
   | "number"
   | "select"
+  | "radio"
   | "evidence_link"
 
 export interface FormFieldOption {
@@ -182,6 +184,40 @@ export function InterventionField({
             </option>
           ))}
         </select>
+      )}
+
+      {field.type === "radio" && (
+        <div
+          role="radiogroup"
+          aria-label={field.label}
+          {...(error ? { "aria-invalid": true as const, "aria-describedby": errorId } : {})}
+          className="space-y-2"
+        >
+          {(field.options || []).map((opt) => {
+            const checked = formatValue(value) === opt.value
+            return (
+              <label
+                key={opt.value}
+                className={
+                  "flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm transition " +
+                  (checked
+                    ? "border-amber-400 bg-amber-50 text-slate-900"
+                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50")
+                }
+              >
+                <input
+                  type="radio"
+                  name={`intervention-field-${field.name}`}
+                  value={opt.value}
+                  checked={checked}
+                  onChange={() => onChange(opt.value)}
+                  className="mt-0.5 h-4 w-4 flex-shrink-0 accent-amber-500"
+                />
+                <span className="leading-5">{opt.label}</span>
+              </label>
+            )
+          })}
+        </div>
       )}
 
       {/* evidence_link 类型：查看证据按钮 */}

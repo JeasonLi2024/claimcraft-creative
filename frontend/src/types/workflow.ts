@@ -136,6 +136,10 @@ export interface WorkflowIntervention {
   impact: Record<string, unknown>
   created_at: string
   submitted_at?: string | null
+  /** 介入原因说明（后端从 impact.reason 派生；input-quality-guard Gate 2 等场景使用） */
+  reason?: string
+  /** 诊断数据（missing_information 类型：上传张数/有效证据/置信度/字段数） */
+  diagnostics?: Record<string, unknown>
 }
 
 // ===== 业务阶段（4 阶段聚合）=====

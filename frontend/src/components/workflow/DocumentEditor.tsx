@@ -418,8 +418,31 @@ export function DocumentEditor({
 
   const showScrollToBottom = isStreaming && !isFollowing
 
+  // Gate 3：输入数据稀疏时顶部提示（input-quality-guard）
+  const sufficiencyLevel = document.data_sufficiency?.level
+  const showSparseBanner =
+    sufficiencyLevel === 'sparse' || sufficiencyLevel === 'critically_sparse'
+
   return (
     <div className="flex h-full flex-col bg-[#f8f8f5]">
+      {/* Gate 3：基于有限证据生成的提示 Banner */}
+      {showSparseBanner && (
+        <div
+          role="note"
+          className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 sm:px-4"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-amber-600" aria-hidden="true" />
+          <span>
+            提示：本文书基于有限证据生成
+            {sufficiencyLevel === 'critically_sparse' ? '（可用证据极少）' : ''}
+            ，建议审核后补充证据并重新生成，或手动编辑完善。
+            {document.data_sufficiency?.missing_dimensions?.length
+              ? `缺失：${document.data_sufficiency.missing_dimensions.join('、')}。`
+              : ''}
+          </span>
+        </div>
+      )}
+
       {/* 顶部工具栏 */}
       <header className="flex flex-wrap items-center gap-2 border-b border-[#EAEAEA] bg-white px-3 py-2 sm:px-4">
         {/* 标题 */}

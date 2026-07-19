@@ -339,6 +339,14 @@ export default function WorkflowAnalysisPage() {
     }
   }, [stages, issues])
 
+  // Gate 1（input-quality-guard）：从 issues 派生「证据类型匹配度偏低」橙色告警，
+  // 由 classify_node 以 code=material.evidence_low_relevance 的 warning 发出。
+  const qualityWarnings = useMemo(() => {
+    return issues
+      .filter((i) => i.code === "material.evidence_low_relevance")
+      .map((i) => ({ title: "证据类型匹配度偏低", detail: i.message }))
+  }, [issues])
+
   // ---------- 派生：文书产物 ----------
 
   const docArtifact = useMemo(() => findDocumentArtifact(artifacts), [artifacts])
@@ -605,7 +613,7 @@ export default function WorkflowAnalysisPage() {
               <ArtifactTimeline artifacts={artifacts} />
             </div>
             <div className="space-y-5">
-              <QualitySummary quality={quality} />
+              <QualitySummary quality={quality} warnings={qualityWarnings} />
               <IssueList issues={issues} onEvidenceClick={handleEvidenceClick} onIssueClick={handleIssueEvidenceClick} />
             </div>
           </div>

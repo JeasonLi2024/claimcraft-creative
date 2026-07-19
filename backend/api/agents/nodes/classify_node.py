@@ -20,6 +20,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from asgiref.sync import sync_to_async
+
 from api.agents.state import CaseWorkflowState
 from api.agents.schemas import QualityReport
 from api.agents.utils.node_result_builder import (
@@ -57,6 +59,108 @@ CATEGORY_LABELS = {
 # 触发 LLM 细化的置信度阈值（< 此值时进入低置信度子集并行 refine）
 # 注：与 preclassify_node.PRECLASSIFY_CONFIDENCE_THRESHOLD 保持一致
 LOW_CONFIDENCE_THRESHOLD = 0.8
+
+# ============================================================================
+# Gate 1：证据-案件类型相关性评分（input-quality-guard）
+# ============================================================================
+# 案件类型 → 预期证据类别集合。用于评估用户填报的 case_type 与实际证据内容是否吻合。
+# "other" 及未列出的类型不做限制（任何类别均视为相关）。
+CASE_TYPE_EXPECTED_CATEGORIES: dict[str, set[str]] = {
+    "shopping": {
+        "chat_screenshot", "product_order", "logistics_tracking",
+        "payment_record", "invoice",
+    },
+    "service": {
+        "service_contract", "communication_record", "work_record",
+        "chat_screenshot",
+    },
+    "secondhand": {
+        "chat_screenshot", "product_order", "payment_record",
+        "communication_record",
+    },
+}
+
+# 相关性评分低于此阈值时写入 warn（仅警告，不阻塞流程）。
+RELEVANCE_WARN_THRESHOLD = 0.3
+
+# 案件类型 → 中文标签（用于相关性警告文案）
+CASE_TYPE_LABELS: dict[str, str] = {
+    "shopping": "网购纠纷",
+    "service": "服务纠纷",
+    "secondhand": "二手交易纠纷",
+    "other": "其他纠纷",
+}
+
+
+async def _get_case_type(case_id: int) -> str:
+    """读取案件类型（用于 Gate 1 相关性评分）。取不到时返回空串（视为不限制）。"""
+    from api.models import Case
+    try:
+        case_type = await sync_to_async(
+            lambda: Case.objects.filter(pk=case_id)
+            .values_list("case_type", flat=True)
+            .first()
+        )()
+        return case_type or ""
+    except Exception as e:  # pragma: no cover - 防御性降级
+        logger.debug(f"[分类] 读取案件类型失败（忽略，按不限制处理）: {e}")
+        return ""
+
+
+def _compute_evidence_relevance(
+    case_type: str,
+    classify_results: list[dict],
+) -> dict:
+    """计算证据与案件类型的相关性（Gate 1）。
+
+    Args:
+        case_type: 用户填报的案件类型（shopping/service/secondhand/other/...）
+        classify_results: 分类结果列表，每项含 evidence_category
+
+    Returns:
+        {
+          "relevance_ratio": float,      # 相关证据占比 0.0-1.0
+          "expected_categories": list,   # 该案件类型的预期证据类别（已排序）
+          "matched_count": int,          # 命中预期类别的证据数
+          "total_count": int,
+          "all_other": bool,             # 是否全部归类为 other
+        }
+    """
+    if not classify_results:
+        return {
+            "relevance_ratio": 0.0,
+            "expected_categories": [],
+            "matched_count": 0,
+            "total_count": 0,
+            "all_other": True,
+        }
+
+    expected = CASE_TYPE_EXPECTED_CATEGORIES.get(case_type, set())
+    all_other = all(
+        r.get("evidence_category") == "other" for r in classify_results
+    )
+    if not expected:
+        # "other" 或未知案件类型不做限制，全部视为相关
+        return {
+            "relevance_ratio": 1.0,
+            "expected_categories": [],
+            "matched_count": len(classify_results),
+            "total_count": len(classify_results),
+            "all_other": all_other,
+        }
+
+    matched = sum(
+        1 for r in classify_results
+        if r.get("evidence_category") in expected
+    )
+    ratio = matched / len(classify_results)
+    return {
+        "relevance_ratio": round(ratio, 3),
+        "expected_categories": sorted(expected),
+        "matched_count": matched,
+        "total_count": len(classify_results),
+        "all_other": all_other,
+    }
 
 
 @traceable(name="证据分类节点", run_type="chain")
@@ -124,6 +228,9 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
             legacy_fields={
                 "evidence_classify_results": results,
                 "errors": error_dicts,
+                # Gate 1：降级路径全部 other，供下游/审计读取
+                "evidence_relevance_ratio": 0.0,
+                "evidence_all_other": True,
             },
         )
 
@@ -189,6 +296,32 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
     for r in classify_results:
         cat = r.get("evidence_category", "other")
         category_distribution[cat] = category_distribution.get(cat, 0) + 1
+
+    # Gate 1：证据-案件类型相关性评分（仅警告，不阻塞流程）
+    case_type = await _get_case_type(state["case_id"])
+    relevance = _compute_evidence_relevance(case_type, classify_results)
+    relevance_warnings: list[dict] = []
+    if relevance["relevance_ratio"] < RELEVANCE_WARN_THRESHOLD:
+        # 相关性极低时降为 warn（已经是 warn 则不变）
+        quality_status = "warn"
+    if relevance["all_other"] and relevance["relevance_ratio"] < RELEVANCE_WARN_THRESHOLD:
+        # 触发相关性警告：并入 issues 供前端「材料理解」质量面板呈现橙色提示
+        expected_labels = "、".join(
+            CATEGORY_LABELS.get(c, c) for c in relevance["expected_categories"]
+        ) or "相关证据材料"
+        type_label = CASE_TYPE_LABELS.get(case_type, case_type or "未知")
+        relevance_warnings.append({
+            "code": "material.evidence_low_relevance",
+            "message": (
+                f"上传的证据类型与所选案件类型（{type_label}）匹配度较低"
+                f"（{round(relevance['relevance_ratio'] * 100)}%），"
+                f"预期证据类型：{expected_labels}。建议确认上传的图片是否为相关证据材料。"
+            ),
+            "severity": "warning",
+            "evidence_id": None,
+            "stage": "classify",
+        })
+
     error_dicts = convert_string_errors_to_dicts(errors, stage="classify")
     provenance = [
         {
@@ -215,14 +348,59 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
             details={
                 "avg_confidence": avg_confidence,
                 "category_distribution": category_distribution,
+                # Gate 1 相关性详情
+                "evidence_relevance_ratio": relevance["relevance_ratio"],
+                "evidence_all_other": relevance["all_other"],
+                "evidence_expected_categories": relevance["expected_categories"],
+                "evidence_matched_count": relevance["matched_count"],
+                "evidence_total_count": relevance["total_count"],
             },
         ),
-        warnings=[],
+        warnings=relevance_warnings,
         errors=error_dicts,
         provenance=provenance,
         start_time=start_time,
         model_calls=len(low_confidence),
     )
+
+    # Gate 1：仅在相关性告警触发时创建 classify_result 产物承载该警告，使其经
+    # snapshot（仅聚合 artifacts 的 issues）透出到前端 QualitySummary / IssueList。
+    # 正常运行不创建此产物，行为与改造前一致。
+    workflow_run_id = state.get("workflow_run_id")
+    if relevance_warnings and workflow_run_id:
+        try:
+            from api.agents.artifact_service import create_artifact
+            warning_provenance = list(provenance) + [{
+                "node": "classify",
+                "code": "material.evidence_low_relevance",
+                "warning": relevance_warnings[0]["message"],
+                "source_ref": "classify:relevance",
+                "ts": start_time.isoformat(),
+            }]
+            await sync_to_async(create_artifact)(
+                workflow_run_id=workflow_run_id,
+                case_id=state["case_id"],
+                artifact_type="classify_result",
+                stage="material_understanding",
+                node_name="classify",
+                content={
+                    "evidence_count": len(classify_results),
+                    "category_distribution": category_distribution,
+                    "evidence_relevance_ratio": relevance["relevance_ratio"],
+                    "evidence_all_other": relevance["all_other"],
+                    "evidence_expected_categories": relevance["expected_categories"],
+                },
+                summary={
+                    "evidence_relevance_ratio": relevance["relevance_ratio"],
+                    "evidence_all_other": relevance["all_other"],
+                },
+                quality=node_result.get("quality", {}),
+                provenance=warning_provenance,
+                revision=state.get("revision", 0) + 1,
+            )
+        except Exception as e:  # pragma: no cover - 产物创建失败不阻塞主流程
+            logger.warning(f"[分类] 创建低相关性告警产物失败（忽略）: {e}")
+
     return make_node_partial_update(
         node_name="classify",
         stage="material_understanding",
@@ -232,6 +410,9 @@ async def classify_node(state: CaseWorkflowState) -> dict[str, Any]:
         legacy_fields={
             "evidence_classify_results": classify_results,
             "errors": error_dicts,
+            # Gate 1：供下游节点/审计读取的分类质量概览
+            "evidence_relevance_ratio": relevance["relevance_ratio"],
+            "evidence_all_other": relevance["all_other"],
         },
     )
 

@@ -249,6 +249,26 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
         tone = user_pref_tone
         logger.info(f"应用用户偏好语气: {tone}")
 
+    # 4.1 Gate 3：评估输入数据充分性（input-quality-guard，与 complaint_node 对称）
+    from api.agents.utils.data_sufficiency import (
+        assess_data_sufficiency,
+        build_sparse_data_notice,
+    )
+    acknowledged_low_quality = state.get("low_quality_evidence_acknowledged", False)
+    data_sufficiency = assess_data_sufficiency(
+        all_fields=all_fields,
+        evidence_chain=state.get("evidence_chain", []),
+        case_description=case.description or "",
+        acknowledged_low_quality=acknowledged_low_quality,
+    )
+    data_is_sparse = data_sufficiency["level"] in ("sparse", "critically_sparse")
+    if data_is_sparse:
+        logger.info(
+            f"[反证答辩生成] 输入数据{data_sufficiency['level']}"
+            f"（score={data_sufficiency['score']}, "
+            f"acknowledged={acknowledged_low_quality}），注入稀疏数据告知段落"
+        )
+
     # 5. LLM 重写（若可用）
     final_content = skeleton.get("content", "")
     tool_call_log = []
@@ -301,6 +321,14 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
                     case.case_type, SCENARIO_DESCRIPTIONS["other"]
                 ),
             )
+
+            # Gate 3：数据稀疏时追加告知段落，强约束 LLM 不得捏造事实
+            if data_is_sparse:
+                prompt += "\n\n" + build_sparse_data_notice(
+                    fields_count=len(all_fields),
+                    chain_count=len(state.get("evidence_chain", [])),
+                    desc_len=len((case.description or "").strip()),
+                )
 
             if tools_enabled:
                 await emit_progress(
@@ -433,6 +461,8 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
                         "legal_references": legal_references,
                         "paragraphs": paragraphs,
                         "document_version_id": document_version_id,
+                        # Gate 3：数据充分性（供文书详情端点透出 → 前端 Banner）
+                        "data_sufficiency": data_sufficiency,
                     },
                     summary={
                         "title": skeleton.get("title", "反证答辩书"),
@@ -518,6 +548,10 @@ async def respond_complaint_node(state: CaseWorkflowState, runtime: Runtime = No
                 "legal_validation_total_refs": legal_validation_result.total_refs,
                 "legal_validation_valid_refs": legal_validation_result.valid_refs,
                 "legal_validation_invalid_refs": legal_validation_result.invalid_refs,
+                # Gate 3：数据充分性
+                "data_sufficiency_score": data_sufficiency["score"],
+                "data_sufficiency_level": data_sufficiency["level"],
+                "missing_dimensions": data_sufficiency["missing_dimensions"],
             },
         ),
         warnings=[],

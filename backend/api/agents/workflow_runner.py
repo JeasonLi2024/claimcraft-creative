@@ -624,6 +624,52 @@ class WorkflowRunner:
                     )
                     await emitter.notify(thread_id, intervention_eid)
 
+            # 输入质量门 Gate 2：用户在 extract_node 选择终止（abort）时，节点已
+            # Command(goto=END) 跳过文书生成并写入 workflow_aborted_by_user=True。
+            # 此处优先检测该标记并 fail_processing，给出精确失败信息，避免落入
+            # 「未生成有效文稿」的通用 complete_processing 失败分支。
+            final_values = snapshot.values if snapshot and snapshot.values else {}
+            if final_values.get("workflow_aborted_by_user"):
+                abort_message = (
+                    "用户主动终止：证据质量不足，请重新上传证据后再次启动工作流"
+                )
+                try:
+                    await sync_to_async(fail_processing, thread_sensitive=True)(
+                        case_id, abort_message
+                    )
+                except Exception as state_err:
+                    logger.error(
+                        f"同步用户终止失败状态异常 (case={case_id}): {state_err}"
+                    )
+                if run_id is not None:
+                    try:
+                        from django.utils import timezone as _tz
+                        await _update_workflow_run(
+                            run_id,
+                            status='failed',
+                            finished_at=_tz.now(),
+                            error_message=abort_message,
+                        )
+                    except Exception as run_err:
+                        logger.warning(
+                            f"标记 WorkflowRun failed（用户终止）失败 "
+                            f"(run_id={run_id}): {run_err}"
+                        )
+                abort_eid = await depot.persist(thread_id, "workflow.error", {
+                    "message": abort_message,
+                    "node": "extract",
+                    "run_id": run_id,
+                    "recoverable": False,
+                    "aborted_by_user": True,
+                    "ts": _utcnow_iso(),
+                })
+                await emitter.notify(thread_id, abort_eid)
+                logger.info(
+                    f"工作流被用户终止 (thread={thread_id}, case={case_id}, "
+                    f"run_id={run_id})"
+                )
+                return
+
             stage_pause = next(
                 (
                     interrupt_value(item)

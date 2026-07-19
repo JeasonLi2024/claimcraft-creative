@@ -115,12 +115,22 @@ function MetricCard({ label, value, caption, config, progress, icon: Icon }: Met
 
 // ---------- 主组件 ----------
 
-export interface QualitySummaryProps {
-  quality: QualityReport | null
+export interface QualitySummaryWarning {
+  title: string
+  detail: string
 }
 
-export function QualitySummary({ quality }: QualitySummaryProps) {
-  if (!quality) {
+export interface QualitySummaryProps {
+  quality: QualityReport | null
+  /**
+   * 额外告警（input-quality-guard Gate 1：证据类型匹配度偏低等）。
+   * 由页面从 issues 派生传入，渲染为橙色告警条。
+   */
+  warnings?: QualitySummaryWarning[]
+}
+
+export function QualitySummary({ quality, warnings = [] }: QualitySummaryProps) {
+  if (!quality && warnings.length === 0) {
     return (
       <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
         暂无质量报告
@@ -128,12 +138,12 @@ export function QualitySummary({ quality }: QualitySummaryProps) {
     )
   }
 
-  const coverage = quality.coverage ?? 0
-  const score = quality.score ?? 0
-  const blockingCount = quality.blocking_issues?.length ?? 0
+  const coverage = quality?.coverage ?? 0
+  const score = quality?.score ?? 0
+  const blockingCount = quality?.blocking_issues?.length ?? 0
 
   const coverageCfg = metricConfigFromStatus(coverageStatus(coverage))
-  const scoreCfg = metricConfigFromStatus(scoreStatus(score, quality.status))
+  const scoreCfg = metricConfigFromStatus(scoreStatus(score, quality?.status ?? "warn"))
   const riskCfg = metricConfigFromStatus(riskStatus(blockingCount))
 
   const riskCaption =
@@ -142,36 +152,55 @@ export function QualitySummary({ quality }: QualitySummaryProps) {
       : `${blockingCount} 个阻塞问题需处理`
 
   return (
-    <div
-      className="grid grid-cols-1 gap-3 sm:grid-cols-3"
-      role="region"
-      aria-label="质量摘要"
-    >
-      <MetricCard
-        label="完整度"
-        value={formatPercent(coverage)}
-        caption={`字段覆盖率${coverage >= 0.9 ? "良好" : coverage >= 0.7 ? "一般" : "偏低"}`}
-        config={coverageCfg}
-        progress={coverage}
-        icon={CheckCircle2}
-      />
-      <MetricCard
-        label="可信度"
-        value={formatPercent(score)}
-        caption={
-          score >= 0.85 ? "高可信" : score >= 0.6 ? "建议核对" : "必须确认"
-        }
-        config={scoreCfg}
-        progress={score}
-        icon={AlertTriangle}
-      />
-      <MetricCard
-        label="风险"
-        value={String(blockingCount)}
-        caption={riskCaption}
-        config={riskCfg}
-        icon={ShieldAlert}
-      />
+    <div className="space-y-3" role="region" aria-label="质量摘要">
+      {/* Gate 1：证据类型匹配度偏低等橙色告警 */}
+      {warnings.length > 0 && (
+        <div className="space-y-2">
+          {warnings.map((w, idx) => (
+            <div
+              key={idx}
+              role="alert"
+              className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" aria-hidden="true" />
+              <div>
+                <p className="font-medium">{w.title}</p>
+                {w.detail && <p className="mt-0.5 text-amber-700">{w.detail}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {quality && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <MetricCard
+            label="完整度"
+            value={formatPercent(coverage)}
+            caption={`字段覆盖率${coverage >= 0.9 ? "良好" : coverage >= 0.7 ? "一般" : "偏低"}`}
+            config={coverageCfg}
+            progress={coverage}
+            icon={CheckCircle2}
+          />
+          <MetricCard
+            label="可信度"
+            value={formatPercent(score)}
+            caption={
+              score >= 0.85 ? "高可信" : score >= 0.6 ? "建议核对" : "必须确认"
+            }
+            config={scoreCfg}
+            progress={score}
+            icon={AlertTriangle}
+          />
+          <MetricCard
+            label="风险"
+            value={String(blockingCount)}
+            caption={riskCaption}
+            config={riskCfg}
+            icon={ShieldAlert}
+          />
+        </div>
+      )}
     </div>
   )
 }

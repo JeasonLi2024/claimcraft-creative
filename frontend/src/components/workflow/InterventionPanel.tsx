@@ -30,6 +30,44 @@ const INTERVENTION_TYPE_CONFIG: Record<string, InterventionTypeConfig> = {
     iconClass: "text-sky-600",
     badgeClass: "bg-sky-50 border-sky-200 text-sky-700",
   },
+  legal_confirmation: {
+    label: "法律风险确认",
+    icon: ShieldCheck,
+    iconClass: "text-indigo-600",
+    badgeClass: "bg-indigo-50 border-indigo-200 text-indigo-700",
+  },
+  // input-quality-guard Gate 2：证据质量不足需用户决策
+  missing_information: {
+    label: "证据质量不足",
+    icon: AlertTriangle,
+    iconClass: "text-orange-600",
+    badgeClass: "bg-orange-50 border-orange-200 text-orange-700",
+  },
+}
+
+// missing_information 诊断字段 → 中文标签（input-quality-guard Gate 2）
+const DIAGNOSTICS_LABELS: Record<string, string> = {
+  evidence_count: "上传图片",
+  avg_preclassify_confidence: "平均识别置信度",
+  total_extracted_fields: "提取的结构化字段",
+  all_classified_other: "是否全部归类为“其他”",
+}
+
+function formatDiagnosticValue(key: string, value: unknown): string {
+  if (key === "avg_preclassify_confidence" && typeof value === "number") {
+    return `${Math.round(value * 100)}%`
+  }
+  if (key === "evidence_count" && typeof value === "number") {
+    return `${value} 张`
+  }
+  if (key === "total_extracted_fields" && typeof value === "number") {
+    return `${value} 个`
+  }
+  if (key === "all_classified_other" && typeof value === "boolean") {
+    return value ? "是（全部为“其他”类型）" : "否"
+  }
+  if (value == null) return "--"
+  return String(value)
 }
 
 const STAGE_NAME_ZH: Record<string, string> = {
@@ -334,6 +372,44 @@ export function InterventionPanel({
             </div>
           </div>
         )}
+
+        {/* 介入原因说明（input-quality-guard Gate 2 等场景） */}
+        {intervention.reason && (
+          <div
+            className="mx-5 mt-4 flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2.5 text-xs leading-5 text-orange-800"
+            role="note"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-orange-600" aria-hidden="true" />
+            <p>{intervention.reason}</p>
+          </div>
+        )}
+
+        {/* 诊断数据区块（missing_information：证据分析结果） */}
+        {intervention.intervention_type === "missing_information" &&
+          intervention.diagnostics &&
+          Object.keys(intervention.diagnostics).length > 0 && (
+            <div className="mx-5 mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <Info className="h-3 w-3" aria-hidden="true" />
+                证据分析结果
+              </p>
+              <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                {Object.entries(intervention.diagnostics)
+                  .filter(([k]) => k in DIAGNOSTICS_LABELS)
+                  .map(([k, v]) => (
+                    <div key={k} className="flex items-baseline justify-between gap-2 text-[12px]">
+                      <dt className="text-slate-600">{DIAGNOSTICS_LABELS[k]}</dt>
+                      <dd className="font-mono font-medium text-slate-800">
+                        {formatDiagnosticValue(k, v)}
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+              <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                继续生成的文书将主要基于您填写的案件描述，而非实际证据内容，输出质量可能显著偏低。
+              </p>
+            </div>
+          )}
 
         {/* 主体：动态表单字段 */}
         <form

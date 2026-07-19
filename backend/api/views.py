@@ -3923,7 +3923,7 @@ class WorkflowRunDocumentDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, run_id: int, document_id: int):
-        from api.models import DocumentVersion, WorkflowRun
+        from api.models import DocumentVersion, WorkflowArtifact, WorkflowRun
 
         run = get_object_or_404(WorkflowRun, pk=run_id, case__owner=request.user)
         doc = get_object_or_404(DocumentVersion, pk=document_id, workflow_run=run)
@@ -3934,6 +3934,22 @@ class WorkflowRunDocumentDetailView(APIView):
             .values_list('version', flat=True)
             .first()
         )
+        # input-quality-guard Gate 3：透出数据充分性（存于 complaint/respond 产物
+        # content.data_sufficiency），供前端 DocumentEditor 顶部 Banner 提示。
+        data_sufficiency = None
+        draft_artifact = (
+            WorkflowArtifact.objects
+            .filter(
+                workflow_run=run,
+                artifact_type__in=['complaint_draft', 'respond_complaint_draft'],
+            )
+            .order_by('-created_at')
+            .first()
+        )
+        if draft_artifact and isinstance(draft_artifact.content, dict):
+            ds = draft_artifact.content.get('data_sufficiency')
+            if isinstance(ds, dict):
+                data_sufficiency = ds
         return Response({
             'id': str(doc.id),
             'run_id': run.id,
@@ -3944,6 +3960,7 @@ class WorkflowRunDocumentDetailView(APIView):
             'current_version': latest_version or doc.version,
             'created_at': doc.created_at.isoformat(),
             'updated_at': doc.created_at.isoformat(),
+            'data_sufficiency': data_sufficiency,
         })
 
 

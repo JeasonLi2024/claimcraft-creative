@@ -160,6 +160,9 @@ class SnapshotService:
             'status': intervention.status,
             'required': bool(impact.get('required', False)),
             'reason': str(impact.get('reason', '')),
+            # input-quality-guard：Gate 2（missing_information）诊断数据存于 impact，
+            # 供前端介入面板展示「上传张数 / 有效证据 / 置信度 / 字段数」诊断区块。
+            'diagnostics': impact.get('diagnostics', {}) if isinstance(impact.get('diagnostics'), dict) else {},
             'base_revision': intervention.base_revision,
             'form_schema': intervention.form_schema,
             'initial_values': intervention.initial_values,

@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from asgiref.sync import sync_to_async
+from langgraph.graph import END
+from langgraph.types import Command, interrupt
 
 from api.agents.state import CaseWorkflowState
 from api.agents.schemas import QualityReport
@@ -83,9 +85,49 @@ FIELD_CATEGORY_MAP = {
 CACHE_HIT_FIELD_COUNT = 3
 CACHE_HIT_CONFIDENCE = 0.9
 
+# ============================================================================
+# Gate 2：证据质量硬性拦截门（input-quality-guard）
+# ============================================================================
+# 预分类平均置信度低于此值视为「LLM 本身也没把握」。
+CRITICAL_PRECLASSIFY_CONFIDENCE = 0.5
+
+
+def _is_evidence_critically_insufficient(
+    classify_results: list[dict],
+    preclassify_results: list[dict],
+    total_fields: int,
+) -> bool:
+    """判断证据质量是否低到必须阻断流程的程度（Gate 2，严格 AND）。
+
+    三条件同时满足才触发：
+    1. 所有证据均被分类为 other（all_other）
+    2. 预分类平均置信度 < CRITICAL_PRECLASSIFY_CONFIDENCE（LLM 本身没把握）
+    3. 全流程未提取到任何有效字段（total_fields == 0）
+
+    任一不满足即不触发（如：物证图片全 other 但描述充分 fields>0 → 不触发）。
+    """
+    if not classify_results:
+        # 无证据是另一个问题（preclassify_node 已处理），此处不拦截
+        return False
+
+    all_other = all(
+        r.get("evidence_category") == "other" for r in classify_results
+    )
+    if not all_other:
+        return False
+
+    if preclassify_results:
+        avg_confidence = sum(
+            r.get("confidence", 0.0) for r in preclassify_results
+        ) / len(preclassify_results)
+    else:
+        avg_confidence = 0.0
+
+    return avg_confidence < CRITICAL_PRECLASSIFY_CONFIDENCE and total_fields == 0
+
 
 @traceable(name="字段抽取节点", run_type="chain")
-async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
+async def extract_node(state: CaseWorkflowState) -> "dict[str, Any] | Command":
     """字段抽取节点（async）：循环处理每条证据。
 
     优先级链：
@@ -341,6 +383,157 @@ async def extract_node(state: CaseWorkflowState) -> dict[str, Any]:
         start_time=start_time,
         model_calls=len(ocr_results),
     )
+
+    # ========================================================================
+    # Gate 2：证据质量硬性拦截门（input-quality-guard）
+    # 三条件（全 other + 预分类均值 < 0.5 + 零字段）同时满足时 interrupt，
+    # 让用户选择「确认继续」或「终止重传」，避免 LLM 在无有效输入上捏造内容。
+    # 幂等：create_intervention 用 update_or_create；resume 时整节点重跑，
+    # 抽取命中缓存（source_hash 未变）跳过 LLM，不重复建介入记录。
+    # ========================================================================
+    preclassify_results = state.get("evidence_preclassify_results", [])
+    if _is_evidence_critically_insufficient(
+        classify_results, preclassify_results, total_fields
+    ):
+        from api.services.intervention_service import create_intervention
+
+        if preclassify_results:
+            avg_confidence = sum(
+                r.get("confidence", 0.0) for r in preclassify_results
+            ) / len(preclassify_results)
+        else:
+            avg_confidence = 0.0
+        base_revision = state.get("revision", 0)
+        workflow_run_id = state.get("workflow_run_id")
+        evidence_count = len(classify_results)
+        reason = (
+            f"上传的 {evidence_count} 张图片均无法识别为有效证据材料"
+            f"（平均识别置信度 {avg_confidence:.0%}），且未能提取任何结构化字段。"
+            "如继续生成，文书内容将主要基于案件描述而非实际证据。"
+        )
+        diagnostics = {
+            "evidence_count": evidence_count,
+            "avg_preclassify_confidence": round(avg_confidence, 3),
+            "total_extracted_fields": total_fields,
+            "all_classified_other": True,
+        }
+        form_schema = {
+            "fields": [
+                {
+                    "name": "action",
+                    "label": "处理方式",
+                    "type": "radio",
+                    "required": True,
+                    "initial_value": "confirm_continue",
+                    "options": [
+                        {
+                            "value": "confirm_continue",
+                            "label": "我了解风险，继续生成（输出质量可能较低）",
+                        },
+                        {
+                            "value": "abort",
+                            "label": "终止本次工作流，我将重新上传证据",
+                        },
+                    ],
+                },
+                {
+                    "name": "notes",
+                    "label": "补充说明（可选）",
+                    "type": "textarea",
+                    "required": False,
+                },
+            ]
+        }
+        initial_values = {
+            "action": "confirm_continue",
+            "evidence_count": evidence_count,
+            "avg_confidence": round(avg_confidence, 3),
+            "total_fields": total_fields,
+        }
+        # reason / required / diagnostics 写入 impact：WorkflowIntervention 模型无这些
+        # 字段，snapshot_service 从 impact 派生后透出给前端面板。
+        impact = {
+            "downstream_nodes": ["evidence_chain", "complaint", "respond_complaint"],
+            "rerun_required": False,
+            "required": True,
+            "reason": reason,
+            "diagnostics": diagnostics,
+        }
+
+        intervention = await sync_to_async(create_intervention)(
+            workflow_run_id=workflow_run_id,
+            case_id=case_id,
+            intervention_type="missing_information",
+            stage="fact_checking",
+            base_revision=base_revision,
+            form_schema=form_schema,
+            initial_values=initial_values,
+            impact=impact,
+        )
+
+        payload = {
+            "interrupt_type": "missing_information",
+            "intervention_id": intervention.id,
+            "intervention_kind": "missing_information",
+            "required": True,
+            "stage": "fact_checking",
+            "reason": reason,
+            "base_revision": base_revision,
+            "form_schema": form_schema,
+            "initial_values": initial_values,
+            "impact": impact,
+            "diagnostics": diagnostics,
+        }
+
+        resume_value = interrupt(payload)
+
+        # ===== resume 后执行 =====
+        # 解析用户选择（对齐 views.py submit → Command(resume={..., submitted_values})）
+        if isinstance(resume_value, dict):
+            submitted = resume_value.get("submitted_values")
+            submitted = submitted if isinstance(submitted, dict) else {}
+            action = submitted.get("action") or resume_value.get("action") or "confirm_continue"
+        else:
+            action = "confirm_continue"
+
+        if action == "abort":
+            logger.info("[抽取] 用户在 Gate 2 选择终止工作流（证据质量不足）")
+            abort_errors = error_dicts + convert_string_errors_to_dicts(
+                ["用户终止：证据质量不足，请重新上传证据"], stage="extract"
+            )
+            partial = make_node_partial_update(
+                node_name="extract",
+                stage="fact_checking",
+                progress=0.45,
+                state=state,
+                node_result=node_result,
+                legacy_fields={
+                    "evidence_extract_results": extract_results,
+                    "needs_human_review": False,
+                    "errors": abort_errors,
+                    "workflow_aborted_by_user": True,
+                },
+            )
+            # 直接路由到 END，跳过 evidence_chain / complaint，避免生成文书。
+            # workflow_runner 结束后读取 workflow_aborted_by_user 并 fail_processing。
+            return Command(update=partial, goto=END)
+
+        # confirm_continue：记录用户已知晓低质量，complaint_node 据此注入稀疏告知
+        logger.info("[抽取] 用户在 Gate 2 确认在低质量证据下继续工作流")
+        return make_node_partial_update(
+            node_name="extract",
+            stage="fact_checking",
+            progress=0.45,
+            state=state,
+            node_result=node_result,
+            legacy_fields={
+                "evidence_extract_results": extract_results,
+                "needs_human_review": any_needs_review,
+                "errors": error_dicts,
+                "low_quality_evidence_acknowledged": True,
+            },
+        )
+
     return make_node_partial_update(
         node_name="extract",
         stage="fact_checking",

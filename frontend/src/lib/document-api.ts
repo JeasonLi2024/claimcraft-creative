@@ -221,6 +221,8 @@ function artifactToDocument(
     // 文书种类（template_type）由 artifact.kind 推导。
     template_variant?: string
     paragraphs?: Array<Paragraph & { paragraph_id?: string }>
+    // Gate 3：数据充分性（input-quality-guard）
+    data_sufficiency?: import("@/types/document").DataSufficiency | null
   }
   // 文书种类：由产物 kind（complaint_draft / respond_complaint_draft）推导，
   // 与后端文书详情端点 template_type=document_type 语义一致。
@@ -249,6 +251,7 @@ function artifactToDocument(
     current_version: 1,
     created_at: artifact.created_at,
     updated_at: artifact.updated_at || undefined,
+    data_sufficiency: payload.data_sufficiency ?? null,
   }
 }
 

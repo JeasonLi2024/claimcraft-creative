@@ -161,3 +161,15 @@ class CaseWorkflowState(TypedDict):
     # 的 model_dump() 存入此字段。运行时类型为 Optional[dict]，避免 TypedDict 直接
     # 依赖 Pydantic 模型导致的循环 import；下游节点与 SSE mapper 通过 dict key 访问。
     node_result: Optional[dict]
+
+    # ===== 输入质量门新增字段（input-quality-guard，默认覆盖无 reducer） =====
+    # Gate 2：用户在证据质量硬拦截门（extract_node）确认低质量后继续（complaint_node
+    #   读取后注入稀疏数据告知段落，避免 LLM 捏造）。
+    low_quality_evidence_acknowledged: bool
+    # Gate 2：用户在硬拦截门选择终止；extract_node 返回 Command(goto=END)，
+    #   workflow_runner 检测到后 fail_processing（不再生成文书）。
+    workflow_aborted_by_user: bool
+    # Gate 1：证据内容与案件类型的相关性比例（classify_node 写入，供下游/审计读取）。
+    evidence_relevance_ratio: float
+    # Gate 1：是否全部证据被分类为 other。
+    evidence_all_other: bool
