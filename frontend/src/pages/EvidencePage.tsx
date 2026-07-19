@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import {
   Upload, ChevronRight, Trash2, X, Loader2,
   Clock, Package, Images, Sparkles, Layers3,
+  Lock,
 } from "lucide-react"
 
 export default function EvidencePage() {
@@ -35,6 +36,7 @@ export default function EvidencePage() {
   }
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
+  const [demoDeleteToast, setDemoDeleteToast] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -115,8 +117,15 @@ export default function EvidencePage() {
   }
 
   async function handleDelete(evId: number) {
+    if (currentCase?.is_demo) {
+      setDemoDeleteToast(true)
+      setTimeout(() => setDemoDeleteToast(false), 3000)
+      return
+    }
     try { await removeEvidence(evId) } catch {}
   }
+
+  const isDemo = !!currentCase?.is_demo
 
   const imageCount = evidences.filter((ev) => !!ev.image).length
   const physicalCount = evidences.filter((ev) => ev.is_physical_evidence).length
@@ -150,6 +159,13 @@ export default function EvidencePage() {
       </section>
 
       {error && <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
+
+      {isDemo && (
+        <div className="flex items-center gap-3 rounded-xl border border-[#e5d9b5] bg-[#fef9ec] px-4 py-3 text-sm">
+          <Lock className="h-4 w-4 shrink-0 text-[#9a7b2f]" />
+          <span className="text-[#7a6425]">这是示例案件，已有证据不可删除，但仍可上传新证据或编辑案件信息。</span>
+        </div>
+      )}
 
       <section>
         <div
@@ -200,10 +216,17 @@ export default function EvidencePage() {
                 </div>
                 <button
                   onClick={() => handleDelete(ev.id)}
-                  className="rounded-xl border border-transparent p-2 text-muted-foreground transition-colors hover:border-destructive/15 hover:bg-destructive/8 hover:text-destructive"
-                  aria-label={`删除证据 ${ev.code}`}
+                  disabled={isDemo}
+                  className={cn(
+                    "rounded-xl border border-transparent p-2 transition-colors",
+                    isDemo
+                      ? "cursor-not-allowed text-muted-foreground/40"
+                      : "text-muted-foreground hover:border-destructive/15 hover:bg-destructive/8 hover:text-destructive"
+                  )}
+                  aria-label={isDemo ? "示例案件证据不可删除" : `删除证据 ${ev.code}`}
+                  title={isDemo ? "示例案件证据不可删除" : undefined}
                 >
-                  <Trash2 className="h-4 w-4" />
+                  {isDemo ? <Lock className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
                 </button>
               </div>
 
@@ -395,6 +418,12 @@ export default function EvidencePage() {
             alt="证据大图"
             className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain"
           />
+        </div>
+      )}
+      {/* Demo delete toast */}
+      {demoDeleteToast && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-[#e5d9b5] bg-[#fef9ec] px-5 py-3 text-sm font-medium text-[#7a6425] shadow-[0_10px_40px_rgba(120,90,30,.12)]">
+          示例案件的证据不可删除
         </div>
       )}
     </div>

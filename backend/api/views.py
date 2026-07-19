@@ -22,6 +22,7 @@ from django.views import View
 from django_fsm import can_proceed
 from datetime import timedelta
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.generics import (
     ListCreateAPIView,
@@ -1509,6 +1510,11 @@ class CaseUpdateDeleteView(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         return Case.objects.filter(owner=self.request.user)
 
+    def perform_destroy(self, instance):
+        if instance.is_demo:
+            raise ValidationError({'detail': '示例案件不可删除'})
+        return super().perform_destroy(instance)
+
 
 # ===== 证据视图 =====
 
@@ -1631,6 +1637,13 @@ class EvidenceDeleteView(APIView):
         evidence = get_object_or_404(
             Evidence, pk=pk, case__owner=request.user
         )
+
+        # 示例案件的已有证据禁止删除
+        if evidence.case.is_demo:
+            return Response(
+                {'detail': '示例案件的证据不可删除'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         code = evidence.code
         case = evidence.case

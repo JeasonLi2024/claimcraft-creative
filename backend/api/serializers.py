@@ -361,12 +361,13 @@ class CaseSerializer(serializers.ModelSerializer):
             'image_evidence_count', 'extracted_field_count',
             'thread_id', 'workflow_status', 'workflow_started_at', 'workflow_finished_at',
             'workflow_error', 'workflow_revision', 'document_stale', 'archived_at',
+            'is_demo',
             'progress',
         ]
         read_only_fields = [
             'status', 'created_at', 'updated_at', 'owner', 'thread_id', 'workflow_status',
             'workflow_started_at', 'workflow_finished_at', 'workflow_error',
-            'workflow_revision', 'document_stale', 'archived_at', 'progress',
+            'workflow_revision', 'document_stale', 'archived_at', 'is_demo', 'progress',
         ]
 
     def get_evidence_count(self, obj):
@@ -410,10 +411,12 @@ class CaseListSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'owner',
             'evidence_count', 'image_evidence_count',
             'extracted_field_count',
+            'is_demo',
         ]
         read_only_fields = [
             'status', 'workflow_status', 'document_stale',
             'created_at', 'updated_at', 'owner',
+            'is_demo',
         ]
 
     def get_evidence_count(self, obj):

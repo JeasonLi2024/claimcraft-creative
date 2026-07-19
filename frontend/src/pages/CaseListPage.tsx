@@ -71,6 +71,7 @@ export default function CaseListPage() {
   const [status, setStatus] = useState("")
   const [showCreate, setShowCreate] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null)
+  const [demoToast, setDemoToast] = useState("")
   const [newTitle, setNewTitle] = useState("")
   const [newDesc, setNewDesc] = useState("")
   const [newType, setNewType] = useState("shopping")
@@ -135,6 +136,16 @@ export default function CaseListPage() {
 
   async function handleDelete(id: number) {
     try { await deleteCase(id); setDeleteTarget(null) } catch {}
+  }
+
+  function requestDelete(id: number) {
+    const target = cases.find((c) => c.id === id)
+    if (target?.is_demo) {
+      setDemoToast("示例案件不可删除，但可编辑案件信息")
+      setTimeout(() => setDemoToast(""), 3000)
+      return
+    }
+    setDeleteTarget(id)
   }
 
   const greeting = user && user.username ? `${user.username}，欢迎回来` : "欢迎回到案件工作区"
@@ -215,7 +226,7 @@ export default function CaseListPage() {
         </div>
       )}
 
-      {!loading && cases.length > 0 && <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{cases.map((item) => <CaseCard key={item.id} caseData={item} onDelete={(id) => setDeleteTarget(id)} />)}</div>}
+      {!loading && cases.length > 0 && <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{cases.map((item) => <CaseCard key={item.id} caseData={item} onDelete={(id) => requestDelete(id)} />)}</div>}
 
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#111713]/55 p-4 backdrop-blur-sm" onClick={() => setShowCreate(false)}>
@@ -230,6 +241,12 @@ export default function CaseListPage() {
               <div className="flex justify-end gap-3 pt-2"><button type="button" onClick={() => setShowCreate(false)} className="rounded-xl border border-[#d9ddd5] bg-white px-4 py-2.5 text-sm font-semibold hover:bg-[#f1f2ee]">取消</button><button type="submit" disabled={creating} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-[#181b1a] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#2b302d] disabled:opacity-50">{creating ? <><Loader2 className="h-4 w-4 animate-spin" />创建中</> : <>创建案件<ArrowRight className="h-4 w-4" /></>}</button></div>
             </form>
           </div>
+        </div>
+      )}
+
+      {demoToast && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-[#e5d9b5] bg-[#fef9ec] px-5 py-3 text-sm font-medium text-[#7a6425] shadow-[0_10px_40px_rgba(120,90,30,.12)]">
+          {demoToast}
         </div>
       )}
 
