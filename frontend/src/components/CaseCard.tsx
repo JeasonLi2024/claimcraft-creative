@@ -12,6 +12,8 @@ import {
   MessageSquareText,
   ShieldCheck,
   Trash2,
+  Star,
+  Lock,
 } from "lucide-react"
 import type { Case } from "@/types"
 
@@ -48,6 +50,11 @@ export default function CaseCard({ caseData, onDelete, className }: CaseCardProp
               <span className={`rounded-lg bg-gradient-to-r px-2.5 py-1 text-[11px] font-semibold ${typeAccent[caseData.case_type] || typeAccent.other}`}>{disputeLabel(caseData.case_type)}</span>
               <StatusTag status={caseData.status} />
               <span className="rounded-lg bg-[#f1f2ee] px-2 py-1 text-[10px] font-medium text-[#69706b]">{caseData.case_mode === "respond" ? "商家反证" : "维权投诉"}</span>
+              {caseData.is_demo && (
+                <span className="inline-flex items-center gap-1 rounded-lg bg-[#fef9ec] px-2.5 py-1 text-[10px] font-semibold text-[#9a7b2f]">
+                  <Star className="h-3 w-3" />示例
+                </span>
+              )}
             </div>
             <h3 className="mt-4 line-clamp-1 text-lg font-semibold tracking-[-0.02em] text-[#181b1a] transition-colors group-hover:text-[#2f5947]">{caseData.title}</h3>
           </div>
@@ -76,8 +83,13 @@ export default function CaseCard({ caseData, onDelete, className }: CaseCardProp
         </div>
       </Link>
 
-      {onDelete && (
+      {onDelete && !caseData.is_demo && (
         <button onClick={() => onDelete(caseData.id)} className="absolute right-4 top-[76px] rounded-lg p-2 text-[#8b918c] opacity-0 transition-all hover:bg-[#fff0ee] hover:text-[#b5493e] focus:opacity-100 group-hover:opacity-100" title="删除案件" aria-label={`删除案件：${caseData.title}`}><Trash2 className="h-4 w-4" /></button>
+      )}
+      {caseData.is_demo && (
+        <span className="absolute right-4 top-[76px] flex items-center gap-1 rounded-lg bg-[#fef9ec] px-2 py-1 text-[10px] font-medium text-[#9a7b2f] opacity-0 transition-opacity group-hover:opacity-100">
+          <Lock className="h-3 w-3" />示例不可删除
+        </span>
       )}
       {caseData.extracted_field_count > 0 && <div className="pointer-events-none absolute bottom-[73px] right-5 hidden items-center gap-1 text-[9px] text-[#65806f] sm:flex"><ShieldCheck className="h-3 w-3" />已抽取 {caseData.extracted_field_count} 个字段</div>}
     </article>

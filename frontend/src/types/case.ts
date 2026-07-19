@@ -24,6 +24,7 @@ export interface Case {
   workflow_paused_after?: string | null
   // Task 1.6.3 新增：当前活动工作流运行 ID（Task 3.1 引入 WorkflowRun 后双写兼容）
   active_workflow_run_id?: number | null
+  is_demo?: boolean
   created_at: string
   updated_at: string
 }

@@ -116,6 +116,7 @@ class Case(models.Model):
         verbose_name='当前活动运行',
         help_text='指向案件最近一次活动的工作流运行；保留旧 thread_id / workflow_status 双写兼容'
     )
+    is_demo = models.BooleanField('示例案例', default=False, help_text='标记为示例案例，禁止删除案件及其已有证据')
     document_stale = models.BooleanField('文稿是否已过期', default=False)
     archived_at = models.DateTimeField('归档时间', null=True, blank=True)
 
