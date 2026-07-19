@@ -6,7 +6,7 @@
 //   平板 768-1279px：右栏可收起（默认收起，点击展开覆盖）
 //   移动端 <768px：上下堆叠（文书在上，依据在下，可滑动切换 tab）
 //
-// 顶部工具栏：文档标题 + 版本号 + 保存状态 + 全文重新生成按钮 + 版本历史按钮
+// 顶部工具栏：文档标题 + 编辑提示 + 版本号 + 保存状态 + 复制全文 + 全文重新生成 + 版本历史
 //
 // 自动保存（debounce 1s）：编辑段落后调用 documentApi.regenerateParagraph，
 //   创建新 DocumentVersion（created_by_type="user"）
@@ -67,6 +67,31 @@ function formatHM(d: Date): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
+}
+
+/**
+ * Clipboard API 仅在 HTTPS / localhost 等安全上下文可用。
+ * 部署在普通 HTTP IP 地址时回退到 execCommand，避免按钮点击无反应。
+ */
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText && globalThis.isSecureContext !== false) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = globalThis.document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  globalThis.document.body.appendChild(textarea)
+  textarea.select()
+  textarea.setSelectionRange(0, textarea.value.length)
+  try {
+    if (!globalThis.document.execCommand('copy')) throw new Error('copy command failed')
+  } finally {
+    textarea.remove()
+  }
 }
 
 // ---------- 主组件 ----------
@@ -305,8 +330,23 @@ export function DocumentEditor({
   async function copyParagraph(paragraph: Paragraph) {
     closeMenu()
     try {
-      await navigator.clipboard.writeText(paragraph.content)
+      await writeClipboardText(paragraph.content)
       showToast('段落内容已复制', 'success')
+    } catch {
+      showToast('复制失败，请手动选择文本', 'error')
+    }
+  }
+
+  async function copyFullText() {
+    const body = paragraphs.map((paragraph) => paragraph.content.trim()).filter(Boolean).join('\n\n')
+    const fullText = [document.title.trim(), body].filter(Boolean).join('\n\n')
+    if (!fullText) {
+      showToast('暂无可复制的文书内容', 'info')
+      return
+    }
+    try {
+      await writeClipboardText(fullText)
+      showToast('全文已复制', 'success')
     } catch {
       showToast('复制失败，请手动选择文本', 'error')
     }
@@ -447,11 +487,17 @@ export function DocumentEditor({
       <header className="flex flex-wrap items-center gap-2 border-b border-[#EAEAEA] bg-white px-3 py-2 sm:px-4">
         {/* 标题 */}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold text-[#111111] sm:text-base">
-            {document.title}
-          </h1>
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-sm font-semibold text-[#111111] sm:text-base">
+              {document.title}
+            </h1>
+            <span className="hidden shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 sm:inline">
+              可直接编辑
+            </span>
+          </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-[#787774]">
             <span className="font-mono">v{currentVersion}</span>
+            <span>· 编辑后自动保存</span>
             {document.template_type && <span>· {document.template_type}</span>}
             {isStreaming && (
               <span className="inline-flex items-center gap-1 text-[#3f6b57]" role="status">
@@ -504,6 +550,18 @@ export function DocumentEditor({
           >
             <History className="h-3.5 w-3.5" aria-hidden="true" />
             <span className="hidden sm:inline">版本历史</span>
+          </button>
+
+          {/* 复制全文 */}
+          <button
+            type="button"
+            onClick={() => void copyFullText()}
+            disabled={paragraphs.length === 0}
+            aria-label="复制全文"
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-[#EAEAEA] bg-white px-2 py-1.5 text-xs text-[#565652] transition hover:bg-[#F7F6F3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3f6b57] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Clipboard className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">复制全文</span>
           </button>
 
           {/* 全文重新生成 */}
@@ -696,7 +754,7 @@ export function DocumentEditor({
                       </div>
                     </div>
 
-                    {/* 段落内容：可编辑 */}
+                    {/* 段落内容：点击正文即可编辑，修改后 1 秒自动保存 */}
                     {isRegenerating ? (
                       <div
                         className="flex items-center gap-2 py-2 text-xs text-amber-700"

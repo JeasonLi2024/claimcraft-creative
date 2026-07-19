@@ -7,6 +7,7 @@
  * 3. Escape 关闭版本历史抽屉
  * 4. prefers-reduced-motion 适配（motion-safe 类存在）
  * 5. 双栏 tabpanel 结构
+ * 6. 文书编辑提示与复制全文
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
@@ -88,6 +89,57 @@ beforeAll(() => {
   if (!Element.prototype.scrollTo) {
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   }
+})
+
+// ---------- 编辑与复制测试 ----------
+
+describe("DocumentEditor 编辑与复制", () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+
+  beforeEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    })
+  })
+
+  it("明确显示可编辑和自动保存提示", () => {
+    render(<DocumentEditor document={mockDocument} />)
+
+    expect(screen.getByText("可直接编辑")).toBeInTheDocument()
+    expect(screen.getByText("· 编辑后自动保存")).toBeInTheDocument()
+    expect(screen.getAllByRole("textbox")).toHaveLength(2)
+  })
+
+  it("复制全文时包含标题和全部段落", async () => {
+    render(<DocumentEditor document={mockDocument} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "复制全文" }))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        "测试投诉书\n\n这是第一段内容。\n\n这是第二段内容。",
+      )
+    })
+    expect(await screen.findByText("全文已复制")).toBeInTheDocument()
+  })
+
+  it("复制全文使用当前编辑内容", async () => {
+    render(<DocumentEditor document={mockDocument} />)
+
+    fireEvent.change(screen.getByRole("textbox", { name: "段落 1 内容" }), {
+      target: { value: "用户修改后的第一段。" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "复制全文" }))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        "测试投诉书\n\n用户修改后的第一段。\n\n这是第二段内容。",
+      )
+    })
+  })
 })
 
 // ---------- 移动端布局测试 ----------

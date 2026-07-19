@@ -1868,7 +1868,7 @@ class MaskView(APIView):
 
     def get(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
-        result = mask_service.mask_case_sensitive_info(case)
+        result = mask_service.scan_case_sensitive_info_cached(case)
         return Response({
             'case_id': case.id,
             'count': len(result),
@@ -1878,7 +1878,7 @@ class MaskView(APIView):
     def post(self, request, case_id):
         case = get_object_or_404(Case, pk=case_id, owner=request.user)
 
-        result = mask_service.mask_case_sensitive_info(case)
+        result = mask_service.scan_case_sensitive_info_cached(case)
         return Response({
             'case_id': case.id,
             'count': len(result),
@@ -2045,6 +2045,41 @@ class MaskImageView(APIView):
             'count': len(results),
             'items': serializer.data,
         })
+
+
+class EvidenceMaskImageView(APIView):
+    """单张证据图片（重）打码：POST /evidences/<evidence_id>/mask-image/。
+
+    用于失败重试、卡住的 pending 恢复与逐图处理。强制重跑定位与渲染，
+    返回该证据序列化结果（含最新 mask_status / masked_image）。
+    """
+
+    def post(self, request, evidence_id):
+        from api.models import Evidence
+
+        evidence = get_object_or_404(
+            Evidence, pk=evidence_id, case__owner=request.user
+        )
+        if not evidence.image:
+            return Response(
+                {'detail': '该证据没有原始图片，无法打码'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            image_mask_service.mask_evidence_image(evidence)
+        except Exception as exc:
+            logger.exception('证据 %s 单图打码失败: %s', evidence.code, exc)
+            evidence.mask_status = 'failed'
+            evidence.save(update_fields=['mask_status'])
+            evidence.refresh_from_db()
+            serializer = EvidenceSerializer(evidence, context={'request': request})
+            return Response(
+                {'detail': str(exc), 'evidence': serializer.data},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        evidence.refresh_from_db()
+        serializer = EvidenceSerializer(evidence, context={'request': request})
+        return Response(serializer.data)
 
 
 def _download_response(payload, filename, content_type):

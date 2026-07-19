@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Link } from "react-router"
 import { motion, useReducedMotion } from "framer-motion"
 import {
@@ -129,12 +129,37 @@ function SectionHeading({ eyebrow, title, description }: { eyebrow: string; titl
 
 function PreviewPanel() {
   const [activeTab, setActiveTab] = useState<PreviewTab>("evidence")
+  const [autoPlay, setAutoPlay] = useState(true)
   const reduce = useReducedMotion()
   const activeMeta = previewTabs.find((tab) => tab.id === activeTab) ?? previewTabs[0]
   const ActiveIcon = activeMeta.icon
 
+  useEffect(() => {
+    if (reduce || !autoPlay) return
+    const timer = window.setInterval(() => {
+      setActiveTab((current) => {
+        const index = previewTabs.findIndex((tab) => tab.id === current)
+        return previewTabs[(index + 1) % previewTabs.length].id
+      })
+    }, 3600)
+    return () => window.clearInterval(timer)
+  }, [autoPlay, reduce])
+
   return (
-    <motion.div id="product-preview" initial={reduce ? false : { opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.72, delay: 0.12, ease: EASE }} className="relative" aria-label="ClaimCraft 产品界面预览">
+    <motion.div
+      id="product-preview"
+      initial={reduce ? false : { opacity: 0, y: 22 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.72, delay: 0.12, ease: EASE }}
+      className="relative"
+      aria-label="ClaimCraft 产品界面预览"
+      onMouseEnter={() => setAutoPlay(false)}
+      onMouseLeave={() => setAutoPlay(true)}
+      onFocusCapture={() => setAutoPlay(false)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAutoPlay(true)
+      }}
+    >
       <div className="absolute -left-5 top-8 hidden h-[78%] w-3 rounded-md bg-[#3f6b57] lg:block" aria-hidden="true" />
       <div className="rounded-2xl border border-[#d9ddd5] bg-[#ebece7] p-2 shadow-[0_28px_80px_rgba(31,45,38,.10)]">
         <div className="overflow-hidden rounded-xl border border-[#d9ddd5] bg-[#f8f8f5]">
@@ -151,8 +176,18 @@ function PreviewPanel() {
                 const Icon = tab.icon
                 const active = activeTab === tab.id
                 return (
-                  <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`flex flex-1 items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition-colors md:flex-none ${focusRing} ${active ? "bg-[#e7eee9] text-[#2f5947]" : "text-[#6c706b] hover:bg-[#f1f2ee] hover:text-[#181b1a]"}`} aria-pressed={active}>
+                  <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={`relative flex flex-1 items-center justify-center gap-2 overflow-hidden px-4 py-3 text-sm font-medium transition-colors md:flex-none ${focusRing} ${active ? "bg-[#e7eee9] text-[#2f5947]" : "text-[#6c706b] hover:bg-[#f1f2ee] hover:text-[#181b1a]"}`} aria-pressed={active}>
                     <Icon className="h-4 w-4" strokeWidth={1.6} aria-hidden="true" />{tab.label}
+                    {active && autoPlay && !reduce && (
+                      <motion.span
+                        key={tab.id}
+                        className="absolute inset-x-0 bottom-0 h-0.5 origin-left bg-[#3f6b57]"
+                        initial={{ scaleX: 0 }}
+                        animate={{ scaleX: 1 }}
+                        transition={{ duration: 3.6, ease: "linear" }}
+                        aria-hidden="true"
+                      />
+                    )}
                   </button>
                 )
               })}
@@ -279,9 +314,9 @@ export default function HomePage() {
             </motion.div>
             <motion.div initial={reduce ? false : { opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.7, delay: 0.08, ease: EASE }} className="min-w-0"><PreviewPanel /></motion.div>
           </div>
-          <div className="relative z-10 mx-auto grid max-w-[1400px] grid-cols-2 border-x border-b border-t border-[#cfd5cc] bg-white sm:grid-cols-4">
-            {outcomes.map(({ title, icon: Icon }, index) => <div key={title} className={`flex items-center gap-3 px-5 py-5 transition-colors hover:bg-[#f4f5f1] ${index % 2 ? "border-l border-[#cfd5cc]" : ""} ${index > 1 ? "border-t border-[#cfd5cc] sm:border-t-0" : ""} ${index > 0 ? "sm:border-l border-[#cfd5cc]" : ""}`}><Icon className="h-4 w-4 shrink-0 text-[#3f6b57]" /><span className="text-xs font-medium sm:text-sm">{title}</span></div>)}
-          </div>
+          <motion.div variants={stagger} initial="hidden" whileInView="visible" viewport={{ once: true, amount: 0.5 }} className="relative z-10 mx-auto grid max-w-[1400px] grid-cols-2 border-x border-b border-t border-[#cfd5cc] bg-white sm:grid-cols-4">
+            {outcomes.map(({ title, icon: Icon }, index) => <motion.div variants={reveal} key={title} className={`group flex items-center gap-3 px-5 py-5 transition-colors hover:bg-[#f4f5f1] ${index % 2 ? "border-l border-[#cfd5cc]" : ""} ${index > 1 ? "border-t border-[#cfd5cc] sm:border-t-0" : ""} ${index > 0 ? "sm:border-l border-[#cfd5cc]" : ""}`}><Icon className="h-4 w-4 shrink-0 text-[#3f6b57] transition-transform duration-300 group-hover:scale-110" /><span className="text-xs font-medium sm:text-sm">{title}</span></motion.div>)}
+          </motion.div>
         </section>
 
         <section className="border-b border-[#d9ddd5] px-4 py-16 sm:px-6 lg:px-8 lg:py-24">
@@ -298,7 +333,7 @@ export default function HomePage() {
                     <div className="flex items-center justify-between"><span className="font-mono text-xs font-semibold text-[#3f6b57]">{item.label}</span><item.icon className="h-5 w-5 text-[#3f6b57]" /></div>
                     <h3 className="mt-8 text-xl font-semibold">{item.title}</h3><div className="mt-5 space-y-3">{item.items.map((text) => <p key={text} className="flex items-center gap-3 text-sm text-[#5f6661]"><Check className="h-4 w-4 shrink-0 text-[#3f6b57]" />{text}</p>)}</div>
                   </motion.article>
-                  {index < 2 && <div className="hidden items-center justify-center lg:flex"><ArrowRight className="h-5 w-5 text-[#9aa19b]" /></div>}
+                  {index < 2 && <div className="hidden items-center justify-center lg:flex"><motion.span animate={reduce ? undefined : { x: [0, 4, 0] }} transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}><ArrowRight className="h-5 w-5 text-[#9aa19b]" /></motion.span></div>}
                 </div>
               ))}
             </motion.div>
@@ -336,7 +371,7 @@ export default function HomePage() {
         <section className="border-b border-[#d9ddd5] px-4 py-16 sm:px-6 lg:px-8 lg:py-24">
           <div className="mx-auto grid max-w-[1400px] overflow-hidden rounded-2xl border border-[#d9ddd5] bg-white lg:grid-cols-2">
             <div className="p-6 sm:p-8 lg:p-12"><div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#181b1a] text-white"><LockKeyhole className="h-5 w-5" /></div><p className="mt-10 text-sm font-semibold text-[#3f6b57]">安全与人工控制</p><h2 className="mt-3 max-w-[13ch] text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">自动整理，但不替你做事实判断</h2><p className="mt-5 max-w-[54ch] text-base leading-7 text-[#5f6661]">ClaimCraft 将原始材料、识别结果和生成文稿并排组织，让每次修改都有依据。</p></div>
-            <div className="border-t border-[#d9ddd5] bg-[#f1f2ee] p-6 sm:p-8 lg:border-l lg:border-t-0 lg:p-12"><div className="grid gap-3">{safetyItems.map((item) => <div key={item} className="flex items-start gap-3 rounded-xl border border-[#d9ddd5] bg-white p-4"><CircleCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#3f6b57]" /><span className="text-sm leading-6">{item}</span></div>)}</div></div>
+            <div className="border-t border-[#d9ddd5] bg-[#f1f2ee] p-6 sm:p-8 lg:border-l lg:border-t-0 lg:p-12"><motion.div variants={stagger} initial="hidden" whileInView="visible" viewport={{ once: true, amount: 0.4 }} className="grid gap-3">{safetyItems.map((item) => <motion.div variants={reveal} key={item} className="flex items-start gap-3 rounded-xl border border-[#d9ddd5] bg-white p-4"><CircleCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#3f6b57]" /><span className="text-sm leading-6">{item}</span></motion.div>)}</motion.div></div>
           </div>
         </section>
 

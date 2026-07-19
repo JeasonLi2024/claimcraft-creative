@@ -2,7 +2,13 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
-from api.models import Case, Evidence
+from api.models import (
+    Case,
+    ComplaintTemplate,
+    Evidence,
+    ExtractedField,
+    TimelineNode,
+)
 from api.services.mask_service import (
     contains_sensitive_info,
     detect_sensitive_type,
@@ -65,3 +71,83 @@ class MaskCaseTests(TestCase):
         result = mask_case_sensitive_info(self.case)
         self.assertEqual(result[0]['type'], 'unknown')
         self.assertEqual(result[0]['masked'], '姓名张三')
+
+    def test_description_item_carries_source_metadata_and_risk_level(self):
+        Evidence.objects.create(
+            case=self.case,
+            code='E1',
+            evidence_type='实名信息',
+            description='身份证 130101199003078888',
+            source_time=timezone.now(),
+        )
+        item = mask_case_sensitive_info(self.case)[0]
+        self.assertEqual(item['source_type'], 'evidence')
+        self.assertEqual(item['type'], 'id_card')
+        self.assertEqual(item['risk_level'], 'high')
+        self.assertIn('E1', item['source_label'])
+
+
+class MaskCaseMultiSourceTests(TestCase):
+    def setUp(self):
+        user = User.objects.create_user(username='multi-source-owner')
+        self.case = Case.objects.create(title='多来源脱敏', owner=user)
+        self.evidence = Evidence.objects.create(
+            case=self.case,
+            code='E1',
+            evidence_type='聊天记录',
+            description='无敏感描述',
+            extracted_text='联系电话 13800138000',
+            source_time=timezone.now(),
+        )
+
+    def _by_source(self, results):
+        return {item['source_type'] for item in results}
+
+    def test_scans_ocr_extracted_field_timeline_and_document(self):
+        ExtractedField.objects.create(
+            evidence=self.evidence,
+            field_name='收件人电话',
+            field_value='13900139000',
+            confidence=0.9,
+        )
+        TimelineNode.objects.create(
+            case=self.case,
+            datetime=timezone.now(),
+            event='买家身份证 130101199003078888 已核验',
+            order=0,
+            category='其他',
+            auto_generated=True,
+        )
+        ComplaintTemplate.objects.create(
+            case=self.case,
+            template_type=ComplaintTemplate.PLATFORM,
+            title='投诉书',
+            content='投诉人手机号 13700137000，请依法处理。',
+        )
+        results = mask_case_sensitive_info(self.case)
+        sources = self._by_source(results)
+        self.assertIn('ocr', sources)
+        self.assertIn('extracted_field', sources)
+        self.assertIn('timeline', sources)
+        self.assertIn('document', sources)
+        # 时间线里的身份证应判为高风险
+        timeline_item = next(i for i in results if i['source_type'] == 'timeline')
+        self.assertEqual(timeline_item['risk_level'], 'high')
+        # 不下发原文
+        self.assertTrue(all('original' not in i for i in results))
+
+    def test_same_value_within_evidence_is_deduped(self):
+        # 描述与 OCR 文本命中同一手机号 → 只保留一项
+        self.evidence.description = '电话 13800138000'
+        self.evidence.save(update_fields=['description'])
+        results = mask_case_sensitive_info(self.case)
+        phone_items = [
+            i for i in results
+            if i.get('evidence_code') == 'E1' and i['type'] == 'phone'
+        ]
+        self.assertEqual(len(phone_items), 1)
+
+    def test_include_original_passes_through_raw(self):
+        results = mask_case_sensitive_info(self.case, include_original=True)
+        ocr_item = next(i for i in results if i['source_type'] == 'ocr')
+        self.assertEqual(ocr_item['original'], '联系电话 13800138000')

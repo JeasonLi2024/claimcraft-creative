@@ -5,7 +5,6 @@ import {
   Bell,
   BriefcaseBusiness,
   Check,
-  ChevronRight,
   CircleUserRound,
   ExternalLink,
   FileText,
@@ -41,6 +40,14 @@ const defaultPreferences: UserPreferences = {
   default_case_mode: "complain",
   default_template_type: "platform",
 }
+
+const profileSections = [
+  { id: "profile-basic", label: "基本信息", description: "资料与头像", icon: CircleUserRound },
+  { id: "profile-email", label: "邮箱验证", description: "验证或更换邮箱", icon: Mail },
+  { id: "profile-preferences", label: "使用偏好", description: "默认流程与提醒", icon: Palette },
+  { id: "profile-security", label: "密码与安全", description: "验证并更新密码", icon: KeyRound },
+  { id: "profile-sessions", label: "设备会话", description: "管理登录设备", icon: Smartphone },
+] as const
 
 function SettingSwitch({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: () => void; label: string; disabled?: boolean }) {
   return (
@@ -98,6 +105,7 @@ export default function ProfilePage() {
   const [sessionLoading, setSessionLoading] = useState(false)
   const [logoutAllLoading, setLogoutAllLoading] = useState(false)
   const [savedSection, setSavedSection] = useState<"profile" | "preferences" | null>(null)
+  const [activeSection, setActiveSection] = useState<(typeof profileSections)[number]["id"]>("profile-basic")
   const [pageError, setPageError] = useState("")
   const [passwordError, setPasswordError] = useState("")
   const [passwordSuccess, setPasswordSuccess] = useState("")
@@ -193,6 +201,26 @@ export default function ProfilePage() {
     changePasswordCodeVerified,
     changePasswordCodeVerifying,
   ])
+
+  useEffect(() => {
+    if (loading) return
+    const sections = profileSections
+      .map(({ id }) => document.getElementById(id))
+      .filter((section): section is HTMLElement => section !== null)
+    if (sections.length === 0) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0]
+        if (visible) setActiveSection(visible.target.id as (typeof profileSections)[number]["id"])
+      },
+      { rootMargin: "-18% 0px -65% 0px", threshold: [0, 0.2, 0.5] },
+    )
+    sections.forEach((section) => observer.observe(section))
+    return () => observer.disconnect()
+  }, [loading])
 
   const initial = user?.display_name?.charAt(0).toUpperCase() || user?.username?.charAt(0).toUpperCase() || "U"
   const currentSession = useMemo(
@@ -540,9 +568,51 @@ export default function ProfilePage() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
-        <div className="space-y-6">
-          <section className="rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
+      <div className="grid items-start gap-6 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[270px_minmax(0,1fr)]">
+        <aside className="space-y-4 lg:sticky lg:top-20">
+          <nav aria-label="个人账户设置" className="rounded-2xl border border-border bg-white p-3 shadow-[0_10px_30px_rgba(31,45,38,.035)]">
+            <div className="px-3 pb-3 pt-2">
+              <p className="text-xs font-semibold text-secondary">账户设置</p>
+              <p className="mt-1 text-[11px] leading-5 text-muted-foreground">快速定位资料、安全和设备配置</p>
+            </div>
+            <div className="space-y-1">
+              {profileSections.map(({ id, label, description, icon: Icon }) => {
+                const active = activeSection === id
+                return (
+                  <a
+                    key={id}
+                    href={`#${id}`}
+                    onClick={() => setActiveSection(id)}
+                    aria-current={active ? "location" : undefined}
+                    className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${active ? "bg-[#e7eee9] text-[#2f5947]" : "text-[#656c67] hover:bg-[#f5f6f2] hover:text-[#26312b]"}`}
+                  >
+                    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${active ? "bg-white text-[#2f5947] shadow-sm" : "bg-[#f1f2ee] text-[#777e79] group-hover:bg-white"}`}>
+                      <Icon className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <strong className="block text-sm font-semibold">{label}</strong>
+                      <span className="block truncate text-[10px] opacity-70">{description}</span>
+                    </span>
+                  </a>
+                )
+              })}
+            </div>
+          </nav>
+
+          <a href="mailto:liwenrui53@gmail.com" className="group flex items-center gap-3 rounded-2xl border border-border bg-white p-4 text-sm font-medium shadow-[0_8px_24px_rgba(31,45,38,.025)] transition-all hover:-translate-y-0.5 hover:border-[#afbbb1] hover:shadow-[0_12px_30px_rgba(31,45,38,.06)]">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#e7eee9] text-[#2f5947]">
+              <Mail className="h-4 w-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <strong className="block text-sm">联系产品支持</strong>
+              <span className="block truncate text-[10px] font-normal text-muted-foreground">liwenrui53@gmail.com</span>
+            </span>
+            <ExternalLink className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+          </a>
+        </aside>
+
+        <div className="min-w-0 space-y-6">
+          <section id="profile-basic" className="scroll-mt-20 rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-accent-foreground">
                 <CircleUserRound className="h-5 w-5" />
@@ -683,7 +753,7 @@ export default function ProfilePage() {
             </form>
           </section>
 
-          <section className="rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
+          <section id="profile-email" className="scroll-mt-20 rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-accent-foreground">
                 <Mail className="h-5 w-5" />
@@ -823,7 +893,7 @@ export default function ProfilePage() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
+          <section id="profile-preferences" className="scroll-mt-20 rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-accent-foreground">
@@ -885,7 +955,7 @@ export default function ProfilePage() {
             </button>
           </section>
 
-          <section className="rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
+          <section id="profile-security" className="scroll-mt-20 rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
             <div className="flex items-center gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-accent-foreground">
                 <KeyRound className="h-5 w-5" />
@@ -1062,7 +1132,7 @@ export default function ProfilePage() {
             </form>
           </section>
 
-          <section className="rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
+          <section id="profile-sessions" className="scroll-mt-20 rounded-2xl border border-border bg-white p-5 shadow-[0_10px_30px_rgba(31,45,38,.035)] sm:p-6">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-accent-foreground">
@@ -1104,42 +1174,24 @@ export default function ProfilePage() {
                 </div>
               ))}
             </div>
-          </section>
-        </div>
 
-        <aside className="space-y-4">
-          <section className="rounded-2xl border border-border bg-white p-5">
-            <p className="text-xs font-semibold text-secondary">快捷入口</p>
-            <div className="mt-3 space-y-1">
-              <Link to="/cases" className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-accent">
-                <BriefcaseBusiness className="h-4 w-4 text-secondary" />
-                <span className="flex-1">我的案件</span>
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              </Link>
-              <Link to="/dashboard" className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-accent">
-                <FileText className="h-4 w-4 text-secondary" />
-                <span className="flex-1">数据仪表盘</span>
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              </Link>
+            <div className="mt-6 flex flex-col gap-4 rounded-2xl border border-[#cfe0d3] bg-[#f1f6f2] p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-[#2f5947] shadow-sm">
+                  <ShieldCheck className="h-5 w-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-semibold text-[#26362e]">账户安全建议</h3>
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-[#566c60]">公共设备完成操作后，请及时撤销对应设备；发现异常登录时，可以立即退出全部设备并重新登录。</p>
+                </div>
+              </div>
+              <button onClick={() => void handleLogoutAll()} disabled={logoutAllLoading} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-[#26362e] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#31453b] disabled:opacity-60">
+                {logoutAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+                退出全部设备
+              </button>
             </div>
           </section>
-
-          <section className="rounded-2xl bg-[#e7eee9] p-5">
-            <ShieldCheck className="h-6 w-6 text-[#2f5947]" />
-            <h3 className="mt-5 font-semibold text-[#26362e]">账户安全建议</h3>
-            <p className="mt-2 text-xs leading-5 text-[#566c60]">公共设备完成操作后，请尽快退出当前设备或执行“退出全部设备”。</p>
-            <button onClick={() => void handleLogoutAll()} disabled={logoutAllLoading} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[#26362e] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#31453b] disabled:opacity-60">
-              {logoutAllLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
-              退出全部设备
-            </button>
-          </section>
-
-          <a href="mailto:support@claimcraft.local" className="flex items-center gap-3 rounded-2xl border border-border bg-white p-5 text-sm font-medium transition-colors hover:bg-[#f5f6f2]">
-            <Mail className="h-4 w-4 text-secondary" />
-            <span className="flex-1">联系产品支持</span>
-            <ExternalLink className="h-4 w-4 text-muted-foreground" />
-          </a>
-        </aside>
+        </div>
       </div>
     </div>
   )

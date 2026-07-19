@@ -78,8 +78,31 @@ def _expand_region(region, image_size):
     )
 
 
+def _encode_lossless(image):
+    """无损编码遮罩图，优先 WebP（体积更小），不可用时回退 PNG。
+
+    两者均从 RGB 重新编码，天然丢弃原图 EXIF/GPS 等元数据（设计文档 §6.3），
+    且无损避免 JPEG 在遮盖边缘产生压缩伪影。
+    """
+    try:
+        buffer = io.BytesIO()
+        image.save(buffer, format='WEBP', lossless=True, method=6)
+        return buffer.getvalue(), 'webp'
+    except Exception as exc:
+        logger.warning('WebP 无损编码不可用，回退 PNG: %s', exc)
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG', optimize=True)
+        return buffer.getvalue(), 'png'
+
+
 def mask_evidence_image(evidence):
-    """生成打码图；无法可靠定位时抛错，不制造“已安全”的假象。"""
+    """从原图生成脱敏副本。
+
+    区分三种情况，避免把「干净图片」误判为失败（设计文档 阶段 A 纠偏）：
+    - OCR 不可用 / 解析异常 → 抛错（视为处理失败，由调用方置 failed）；
+    - OCR 成功且命中敏感文字 → 遮盖后输出；
+    - OCR 成功但无敏感内容 → 并非失败，仍输出一份去元数据的无损副本并置 done。
+    """
     if not evidence.image:
         raise ValueError('证据没有原始图片')
 
@@ -92,26 +115,26 @@ def mask_evidence_image(evidence):
         raise RuntimeError('Tesseract 不可用，无法安全定位敏感信息')
     pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
+    # image_to_data 抛错（如图片损坏）会向上传播 → 调用方标记为 failed（真实失败）。
     data = pytesseract.image_to_data(
         image,
         lang='chi_sim+eng',
         output_type=pytesseract.Output.DICT,
     )
     mask_regions = _line_regions(data)
-    if not mask_regions:
-        raise RuntimeError('未能可靠定位敏感文字，请人工检查原图')
 
-    draw = ImageDraw.Draw(image)
-    for region in mask_regions:
-        draw.rectangle(_expand_region(region, image.size), fill=(24, 24, 24))
+    # 无命中不是失败：不遮盖，仍输出去元数据的干净副本。
+    if mask_regions:
+        draw = ImageDraw.Draw(image)
+        for region in mask_regions:
+            draw.rectangle(_expand_region(region, image.size), fill=(24, 24, 24))
 
-    buffer = io.BytesIO()
-    image.save(buffer, format='JPEG', quality=92, optimize=True)
-    masked_name = f'masked_{evidence.id}_{uuid.uuid4().hex[:8]}.jpg'
+    payload, ext = _encode_lossless(image)
+    masked_name = f'masked_{evidence.id}_{uuid.uuid4().hex[:8]}.{ext}'
     old_masked = evidence.masked_image.name if evidence.masked_image else ''
     evidence.masked_image.save(
         masked_name,
-        ContentFile(buffer.getvalue()),
+        ContentFile(payload),
         save=False,
     )
     evidence.mask_status = 'done'
@@ -143,9 +166,8 @@ def mask_case_images(case, force=False):
             if evidence.mask_status == 'done' and evidence.masked_image and not force:
                 results.append(evidence)
                 continue
-            if evidence.mask_status == 'pending' and not force:
-                results.append(evidence)
-                continue
+            # 注意：不跳过 pending —— 上一次请求崩溃会遗留 pending，若跳过将永久卡死；
+            # 同步处理下 pending 视为可重跑，天然恢复卡住状态。
             evidence.mask_status = 'pending'
             evidence.save(update_fields=['mask_status'])
 

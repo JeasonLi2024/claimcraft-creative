@@ -1,129 +1,316 @@
-import { useEffect, useState } from "react"
-import { useParams } from "react-router"
+// 隐私检查与打码页（编排器）。
+// 职责：加载文本风险 + 图片证据 → 派生阶段状态 → 组合隐私组件。
+// 保持现有轻量模型（无异步扫描任务/画布编辑器/双轨导出，见 privacy-masking-upgrade-design 阶段 A）。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate, useParams } from "react-router"
+import { AlertTriangle, Loader2, Shield, X } from "lucide-react"
+
 import { useCaseStore } from "@/stores/case-store"
 import { useStatus } from "@/composables/useStatus"
-import PillTag from "@/components/PillTag"
+import { privacyApi } from "@/lib/privacy-api"
 import { cn } from "@/lib/utils"
 import {
-  Images, LockKeyhole, ScanFace, Shield,
-  ShieldCheck, Sparkles, X,
-} from "lucide-react"
+  countHighRisk,
+  derivePrivacyStage,
+  type TextRisk,
+} from "@/types/privacy"
 
-const TYPE_STYLES: Record<string, { variant: "warning" | "danger" | "success" | "default"; label: string }> = {
-  phone: { variant: "warning", label: "手机号" },
-  id_card: { variant: "danger", label: "身份证号" },
-  address: { variant: "success", label: "地址" },
-  name: { variant: "default", label: "姓名" },
-}
+import { PrivacyStageHero } from "@/components/privacy/PrivacyStageHero"
+import { PrivacyStatusBar } from "@/components/privacy/PrivacyStatusBar"
+import { PrivacyPolicyCard } from "@/components/privacy/PrivacyPolicyCard"
+import { TextRiskList } from "@/components/privacy/TextRiskList"
+import { ImageReviewGrid } from "@/components/privacy/ImageReviewGrid"
+import { PrivacyExportImpact } from "@/components/privacy/PrivacyExportImpact"
+import { PrivacyCompletionPanel } from "@/components/privacy/PrivacyCompletionPanel"
 
 export default function MaskPage() {
-  const { caseId } = useParams<{ caseId: string }>()
-  const fetchCaseDetail = useCaseStore((state) => state.fetchCaseDetail)
-  const fetchEvidences = useCaseStore((state) => state.fetchEvidences)
-  const fetchMaskResults = useCaseStore((state) => state.fetchMaskResults)
-  const maskImages = useCaseStore((state) => state.maskImages)
-  const maskResults = useCaseStore((state) => state.maskResults)
-  const evidences = useCaseStore((state) => state.evidences)
-  const currentCase = useCaseStore((state) => state.currentCase)
-  const error = useCaseStore((state) => state.error)
+  const { caseId: caseIdParam } = useParams<{ caseId: string }>()
+  const caseId = Number(caseIdParam)
+  const navigate = useNavigate()
+
+  const fetchCaseDetail = useCaseStore((s) => s.fetchCaseDetail)
+  const fetchEvidences = useCaseStore((s) => s.fetchEvidences)
+  const evidences = useCaseStore((s) => s.evidences)
+  const currentCase = useCaseStore((s) => s.currentCase)
   const { disputeLabel } = useStatus()
-  const [maskingImages, setMaskingImages] = useState(false)
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+
+  const [textRisks, setTextRisks] = useState<TextRisk[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [lightbox, setLightbox] = useState<{ src: string; label: string } | null>(null)
+
+  const mainRef = useRef<HTMLDivElement>(null)
+
+  // ---------- 加载 ----------
+
+  const loadRisks = useCallback(async () => {
+    if (!Number.isFinite(caseId)) return
+    setScanning(true)
+    try {
+      setTextRisks(await privacyApi.getTextRisks(caseId))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "加载文本风险失败")
+    } finally {
+      setScanning(false)
+    }
+  }, [caseId])
 
   useEffect(() => {
-    if (!caseId) return
-    const id = Number(caseId)
-    fetchCaseDetail(id)
-    fetchEvidences(id)
-    fetchMaskResults(id)
-  }, [caseId, fetchCaseDetail, fetchEvidences, fetchMaskResults])
-
-  async function handleMaskAllImages() {
-    if (!caseId || maskingImages) return
-    setMaskingImages(true)
-    try {
-      await maskImages(Number(caseId))
-      await fetchMaskResults(Number(caseId))
-    } catch {} finally {
-      setMaskingImages(false)
+    if (!Number.isFinite(caseId)) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    ;(async () => {
+      try {
+        await Promise.all([fetchCaseDetail(caseId), fetchEvidences(caseId)])
+        const risks = await privacyApi.getTextRisks(caseId)
+        if (!cancelled) setTextRisks(risks)
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "加载隐私检查失败")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-  }
+  }, [caseId, fetchCaseDetail, fetchEvidences])
 
-  const imageEvidences = evidences.filter((evidence) => evidence.image)
-  const maskedImages = imageEvidences.filter((evidence) => evidence.mask_status === "done").length
-  const typeCount = new Set(maskResults.map((result) => result.type)).size
+  // ---------- 派生 ----------
+
+  const imageEvidences = useMemo(() => evidences.filter((e) => e.image), [evidences])
+  const imageTotal = imageEvidences.length
+  const imageDone = imageEvidences.filter((e) => e.mask_status === "done").length
+  const imageFailed = imageEvidences.filter((e) => e.mask_status === "failed").length
+  const imageUndone = imageTotal - imageDone
+  const highRiskCount = useMemo(() => countHighRisk(textRisks), [textRisks])
+
+  const stage = useMemo(
+    () =>
+      derivePrivacyStage({
+        textRiskCount: textRisks.length,
+        imageTotal,
+        imageDone,
+        imageFailed,
+      }),
+    [textRisks.length, imageTotal, imageDone, imageFailed],
+  )
+
+  const progressText = imageTotal > 0 ? `已处理 ${imageDone} / ${imageTotal} 张。` : undefined
+
+  // 灯箱：支持 Escape 关闭（可访问性 §14.5）
+  useEffect(() => {
+    if (!lightbox) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setLightbox(null)
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [lightbox])
+
+  // ---------- 图片打码 ----------
+
+  const handleRemask = useCallback(
+    async (evidenceId: number) => {
+      if (busyId != null) return
+      setBusyId(evidenceId)
+      setError(null)
+      try {
+        await privacyApi.remaskImage(evidenceId)
+      } catch (e) {
+        // 后端失败时会把 mask_status 置为 failed，并在 422 响应体带可读 detail。
+        const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        setError(detail || (e instanceof Error ? e.message : "单张图片打码失败"))
+      } finally {
+        // 无论成败都刷新证据，让失败状态也能立即反映到卡片上。
+        await fetchEvidences(caseId).catch(() => {})
+        setBusyId(null)
+      }
+    },
+    [busyId, caseId, fetchEvidences],
+  )
+
+  const handleMaskAll = useCallback(async () => {
+    if (bulkBusy) return
+    setBulkBusy(true)
+    setError(null)
+    try {
+      await privacyApi.maskAllImages(caseId)
+      await fetchEvidences(caseId)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "批量打码失败")
+    } finally {
+      setBulkBusy(false)
+    }
+  }, [bulkBusy, caseId, fetchEvidences])
+
+  const handleStagePrimary = useCallback(() => {
+    if (stage === "empty") {
+      void loadRisks()
+      return
+    }
+    if (stage === "masked_done") {
+      navigate(`/cases/${caseId}/export`)
+      return
+    }
+    // review_required / partial_failed：有未完成图片则批量打码，否则滚动到清单
+    if (imageUndone > 0 || imageFailed > 0) {
+      void handleMaskAll()
+    } else {
+      mainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }
+  }, [stage, caseId, imageUndone, imageFailed, loadRisks, handleMaskAll, navigate])
+
+  // ---------- 完成条件 ----------
+
+  const completionConditions = useMemo(
+    () => [
+      {
+        label: imageTotal === 0 ? "无图片证据需打码" : "所有图片已完成打码",
+        met: imageTotal === 0 || (imageDone === imageTotal && imageFailed === 0),
+      },
+      { label: "没有处理失败的图片", met: imageFailed === 0 },
+    ],
+    [imageTotal, imageDone, imageFailed],
+  )
+
+  // ---------- 渲染 ----------
+
+  if (loading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-secondary" aria-hidden="true" />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-5 pb-8">
-      <section className="relative overflow-hidden rounded-[28px] bg-[#17231d] text-white shadow-[0_22px_65px_rgba(23,35,29,.14)]">
-        <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-[#6f9f83]/20 blur-3xl" />
-        <div className="relative grid gap-7 p-6 sm:p-8 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs text-white/70"><Sparkles className="h-3.5 w-3.5 text-[#d8b967]" />敏感信息保护</div>
-            <h1 className="mt-5 text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">隐私打码</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">识别文本和图片中的姓名、手机号、身份证号与地址，在材料提交前集中检查脱敏效果。</p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">{currentCase?.title || "当前案件"}</span>
-              {currentCase?.case_type && <span className="rounded-full bg-white/8 px-3 py-1.5 text-xs text-white/65">{disputeLabel(currentCase.case_type)}</span>}
+      <PrivacyStageHero
+        caseTitle={currentCase?.title || "当前案件"}
+        caseTypeLabel={currentCase?.case_type ? disputeLabel(currentCase.case_type) : undefined}
+        pendingCount={textRisks.length + imageUndone}
+        maskedImageCount={imageDone}
+        highRiskCount={highRiskCount}
+      />
+
+      {error && (
+        <div role="alert" className="flex items-center gap-2 rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {error}
+        </div>
+      )}
+
+      <PrivacyStatusBar stage={stage} progressText={progressText} onPrimary={handleStagePrimary} />
+
+      <PrivacyPolicyCard onRescan={() => void loadRisks()} scanning={scanning} />
+
+      <section ref={mainRef} className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-5">
+          {/* 文本风险清单 */}
+          <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
+            <div className="mb-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">文本检查</p>
+              <h2 className="mt-1 text-xl font-semibold tracking-tight">
+                {textRisks.length > 0 ? `发现 ${textRisks.length} 个可能的敏感项` : "文本风险清单"}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">自动建议，待人工复核；仅显示脱敏预览，不展示原文。</p>
             </div>
-          </div>
-          <div className="grid grid-cols-3 gap-3 self-end">
-            {[
-              { label: "敏感字段", value: maskResults.length, icon: ScanFace },
-              { label: "涉及类型", value: typeCount, icon: LockKeyhole },
-              { label: "图片已处理", value: maskedImages, icon: ShieldCheck },
-            ].map((item) => (
-              <div key={item.label} className="rounded-2xl border border-white/10 bg-white/8 p-4 backdrop-blur-sm">
-                <div className="flex items-center justify-between text-white/45"><span className="text-xs">{item.label}</span><item.icon className="h-4 w-4" /></div>
-                <div className="mt-2 text-2xl font-semibold">{item.value}</div>
+            <TextRiskList risks={textRisks} />
+          </section>
+
+          {/* 图片复核清单 */}
+          <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">图片检查</p>
+                <h2 className="mt-1 text-xl font-semibold tracking-tight">逐张复核并生成打码版本</h2>
+                <p className="mt-1 text-sm text-muted-foreground">对每张图片可单独打码或重试；点击图片查看原图与打码后对比。</p>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {error && <div role="alert" className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
-
-      <section className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
-        <div className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary text-white"><ShieldCheck className="h-5 w-5" /></span>
-              <div><h2 className="font-semibold">文本脱敏预览</h2><p className="text-sm text-muted-foreground">接口仅下发脱敏结果，原始敏感内容保留在案件证据中</p></div>
+              {imageUndone > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleMaskAll()}
+                  disabled={bulkBusy}
+                  className="inline-flex min-h-[40px] items-center gap-2 rounded-xl bg-[#17231d] px-4 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {bulkBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Shield className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {bulkBusy ? "处理中..." : `打码全部待处理图片（${imageUndone}）`}
+                </button>
+              )}
             </div>
-            <span className="rounded-full bg-accent px-3 py-1.5 text-xs font-medium text-secondary">安全预览</span>
-          </div>
+            <ImageReviewGrid
+              images={imageEvidences}
+              busyId={busyId}
+              onRemask={(id) => void handleRemask(id)}
+              onPreview={(src, label) => setLightbox({ src, label })}
+            />
+          </section>
         </div>
-        <div className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_32px_rgba(31,45,38,.05)]">
-          <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-secondary"><ShieldCheck className="h-5 w-5" /></span><div><h2 className="text-sm font-semibold">提交前检查</h2><p className="text-xs text-muted-foreground">避免泄露个人隐私</p></div></div>
-          <p className="mt-4 text-sm leading-6 text-muted-foreground">重点核对身份证号码、联系电话、详细住址和图片中的账号信息，确认打码后再导出。</p>
-        </div>
+
+        {/* 右侧栏 */}
+        <aside className="space-y-5 xl:sticky xl:top-5">
+          <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_32px_rgba(31,45,38,.06)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">当前检查概览</p>
+            <div className="mt-4 space-y-3 border-y border-border py-4 text-sm">
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">图片打码进度</span>
+                <span className="font-medium">{imageTotal > 0 ? `${imageDone} / ${imageTotal}` : "无图片"}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">待处理图片</span>
+                <span className="font-medium">{imageUndone}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">处理失败</span>
+                <span className={cn("font-medium", imageFailed > 0 && "text-red-600")}>{imageFailed}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">高风险文本项</span>
+                <span className={cn("font-medium", highRiskCount > 0 && "text-red-600")}>{highRiskCount}</span>
+              </div>
+            </div>
+          </section>
+
+          <PrivacyExportImpact caseId={caseId} />
+        </aside>
       </section>
 
-      <section className="overflow-hidden rounded-[24px] border border-border bg-card shadow-[0_12px_36px_rgba(31,45,38,.05)]">
-        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border p-5 sm:p-6">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">文本检查</p><h2 className="mt-1 text-xl font-semibold tracking-tight">识别到 {maskResults.length} 处敏感信息</h2></div>
-          <span className="rounded-full bg-muted px-3 py-1.5 text-xs text-muted-foreground">原始内容不下发</span>
-        </div>
-        {maskResults.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="bg-muted/40"><th className="px-5 py-3 text-left font-medium text-muted-foreground">证据编号</th><th className="px-5 py-3 text-left font-medium text-muted-foreground">信息类型</th><th className="px-5 py-3 text-left font-medium text-muted-foreground">脱敏结果</th></tr></thead>
-              <tbody>{maskResults.map((result, index) => <tr key={`${result.evidence_code}-${index}`} className="border-t border-border"><td className="px-5 py-3"><span className="rounded-lg bg-[#17231d] px-2.5 py-1 text-xs font-bold text-white">{result.evidence_code}</span></td><td className="px-5 py-3"><PillTag label={TYPE_STYLES[result.type]?.label || "待人工确认"} variant={TYPE_STYLES[result.type]?.variant || "default"} /></td><td className="px-5 py-3 font-mono text-xs text-muted-foreground">{result.masked}</td></tr>)}</tbody>
-            </table>
-          </div>
-        ) : <div className="px-6 py-12 text-center"><ScanFace className="mx-auto h-7 w-7 text-muted-foreground" /><p className="mt-3 text-sm text-muted-foreground">暂未识别到需要脱敏的文本信息</p></div>}
-      </section>
+      <PrivacyCompletionPanel
+        caseId={caseId}
+        conditions={completionConditions}
+        highRiskTextCount={highRiskCount}
+      />
 
-      <section className="rounded-[24px] border border-border bg-card p-5 shadow-[0_12px_36px_rgba(31,45,38,.05)] sm:p-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-secondary">图片检查</p><h2 className="mt-1 text-xl font-semibold tracking-tight">图片脱敏对比</h2><p className="mt-1 text-sm text-muted-foreground">并排查看原图与处理结果，点击图片可放大。</p></div>
-          {imageEvidences.length > 0 && <button type="button" onClick={handleMaskAllImages} disabled={maskingImages} className="inline-flex items-center gap-2 rounded-xl bg-[#17231d] px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"><Shield className={cn("h-4 w-4", maskingImages && "animate-pulse")} />{maskingImages ? "处理中..." : "一键打码所有图片"}</button>}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+          onClick={() => setLightbox(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={lightbox.label}
+        >
+          <button
+            type="button"
+            onClick={() => setLightbox(null)}
+            className="absolute right-4 top-4 rounded-xl bg-white/10 p-2 text-white hover:bg-white/20"
+            aria-label="关闭图片预览"
+          >
+            <X className="h-6 w-6" aria-hidden="true" />
+          </button>
+          <figure className="flex max-h-[90vh] max-w-[90vw] flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            <img src={lightbox.src} alt={lightbox.label} className="max-h-[80vh] max-w-[90vw] rounded-xl object-contain" />
+            <figcaption className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white">{lightbox.label}</figcaption>
+          </figure>
         </div>
-        {imageEvidences.length > 0 ? <div className="mt-5 grid gap-5 lg:grid-cols-2">{imageEvidences.map((evidence) => <article key={evidence.id} className="overflow-hidden rounded-2xl border border-border"><div className="flex items-center justify-between bg-muted/45 px-4 py-3"><span className="text-xs font-bold text-secondary">{evidence.code}</span><PillTag label={evidence.mask_status === "done" ? "已打码" : evidence.mask_status === "pending" ? "处理中" : evidence.mask_status === "failed" ? "处理失败" : "待处理"} variant={evidence.mask_status === "done" ? "success" : evidence.mask_status === "failed" ? "danger" : evidence.mask_status === "pending" ? "warning" : "default"} /></div><div className="grid grid-cols-2 gap-px bg-border"><button type="button" className="relative bg-white text-left" onClick={() => evidence.image && setLightboxSrc(evidence.image)}><img src={evidence.image || ""} alt={`${evidence.code} 原图`} className="h-44 w-full object-cover" /><span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">原图</span></button><button type="button" disabled={!evidence.masked_image} className="relative bg-white text-left disabled:cursor-not-allowed" onClick={() => evidence.masked_image && setLightboxSrc(evidence.masked_image)}>{evidence.masked_image ? <img src={evidence.masked_image} alt={`${evidence.code} 打码后`} className="h-44 w-full object-cover" /> : <span className="flex h-44 items-center justify-center px-4 text-center text-xs text-muted-foreground">{evidence.mask_status === "failed" ? "自动定位失败，请人工处理原图" : "尚未生成打码图"}</span>}<span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] text-white">打码后</span></button></div></article>)}</div> : <div className="mt-5 rounded-2xl bg-muted/55 px-6 py-12 text-center"><Images className="mx-auto h-7 w-7 text-muted-foreground" /><p className="mt-3 text-sm text-muted-foreground">当前案件暂无图片证据</p></div>}
-      </section>
-
-      {lightboxSrc && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm" onClick={() => setLightboxSrc(null)}><button className="absolute right-4 top-4 rounded-xl bg-white/10 p-2 text-white hover:bg-white/20" aria-label="关闭图片预览"><X className="h-6 w-6" /></button><img src={lightboxSrc} alt="脱敏图片预览" className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain" /></div>}
+      )}
     </div>
   )
 }
