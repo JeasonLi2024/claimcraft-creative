@@ -129,6 +129,12 @@ logs/
 frontend/output/
 
 # ========================
+# 字体原始大文件（已由 public/fonts/*/split/ 切片替代，不再部署）
+# ========================
+frontend/public/fonts/AlibabaPuHuiTi-3-55-RegularL3/AlibabaPuHuiTi-3-55-RegularL3.woff2
+frontend/public/fonts/MiSans_L3/MiSans L3.ttf
+
+# ========================
 # Misc
 # ========================
 *.bak

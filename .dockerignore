@@ -10,3 +10,6 @@ dist/
 *.egg-info/
 .env
 staticfiles/
+# 字体原始大文件：切片 woff2 已在 public/fonts/*/split/ 中，原始文件无需进入构建上下文
+frontend/public/fonts/AlibabaPuHuiTi-3-55-RegularL3/AlibabaPuHuiTi-3-55-RegularL3.woff2
+frontend/public/fonts/MiSans_L3/MiSans L3.ttf
