@@ -258,7 +258,7 @@ export default function HomePage() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
 
   return (
-    <div className="min-h-[100dvh] overflow-x-hidden bg-[#f8f8f5] text-[#181b1a]">
+    <div className="font-deyihei min-h-[100dvh] overflow-x-hidden bg-[#f8f8f5] text-[#181b1a]">
       <a href="#main-content" className={`sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-2 ${focusRing}`}>跳到主内容</a>
       <header className="sticky top-0 z-30 border-b border-[#d9ddd5]/80 bg-[#f8f8f5]/90 backdrop-blur-md">
         <nav className="mx-auto flex h-16 max-w-[1400px] items-center justify-between px-4 sm:px-6 lg:px-8">

@@ -665,7 +665,7 @@ export function DocumentEditor({
               </div>
             )}
 
-            <article className="mx-auto max-w-3xl space-y-3">
+            <article className="font-document mx-auto max-w-3xl space-y-3">
               {paragraphs.map((p, idx) => {
                 const style = getParagraphStyle(p)
                 const StyleIcon = style.Icon
