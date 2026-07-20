@@ -488,6 +488,7 @@ class Evidence(models.Model):
         '物证说明', max_length=500, blank=True, default='',
         help_text='用户提供的物证说明（损坏程度/现场环境/物证特征等）'
     )
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
         verbose_name = '证据'
